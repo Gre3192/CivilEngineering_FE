@@ -34,6 +34,17 @@ import {
 } from "lucide-react";
 
 import CadGeometryCanvas from "../components/CadGeometryCanvas";
+import SectionDesignTool from "../components/concrete/SectionDesignTool";
+import CoverCalcTool from "../components/concrete/CoverCalcTool";
+import VerifySectionTool from "../components/concrete/VerifySectionTool";
+import VerifyShearTool from "../components/concrete/VerifyShearTool";
+import VerifyCrackTool from "../components/concrete/VerifyCrackTool";
+import AnchorLapTool from "../components/concrete/AnchorLapTool";
+import LoadAnalysisTool from "../components/actions/LoadAnalysisTool";
+import LoadCombosTool from "../components/actions/LoadCombosTool";
+import SnowLoadTool from "../components/actions/SnowLoadTool";
+import WindLoadTool from "../components/actions/WindLoadTool";
+import SeismicSpectrumTool from "../components/actions/SeismicSpectrumTool";
 
 // Icona di riserva usata se una voce non ne specifica una valida.
 export const FALLBACK_ICON = Box;
@@ -72,17 +83,19 @@ export const DISCIPLINES = [
                         id: "progetto-sezione",
                         name: "Progetto sezione",
                         description:
-                            "Dimensionamento delle armature a pressoflessione a partire dalle sollecitazioni.",
+                            "Dimensionamento dell'armatura a flessione (SLU) di una sezione rettangolare in c.a.",
                         icon: SquarePen,
-                        status: "wip",
+                        status: "ready",
+                        component: SectionDesignTool,
                     },
                     {
                         id: "verifica-sezione",
                         name: "Verifica sezione",
                         description:
-                            "Verifica a pressoflessione retta/deviata con dominio di resistenza M-N.",
+                            "Verifica a pressoflessione retta con dominio di resistenza M-N.",
                         icon: Grid3x3,
-                        status: "wip",
+                        status: "ready",
+                        component: VerifySectionTool,
                     },
                 ],
             },
@@ -95,7 +108,8 @@ export const DISCIPLINES = [
                         description:
                             "Determinazione del copriferro nominale in funzione di classe di esposizione e durabilità.",
                         icon: Ruler,
-                        status: "wip",
+                        status: "ready",
+                        component: CoverCalcTool,
                     },
                     {
                         id: "ancoraggi",
@@ -103,7 +117,8 @@ export const DISCIPLINES = [
                         description:
                             "Lunghezze di ancoraggio e di sovrapposizione delle barre.",
                         icon: Anchor,
-                        status: "wip",
+                        status: "ready",
+                        component: AnchorLapTool,
                     },
                 ],
             },
@@ -114,17 +129,19 @@ export const DISCIPLINES = [
                         id: "fessurazione",
                         name: "Verifica a fessurazione",
                         description:
-                            "Controllo dell'ampiezza delle fessure (SLE) secondo normativa.",
+                            "Controllo dell'ampiezza delle fessure w_k (SLE) secondo NTC2018/EC2.",
                         icon: Activity,
-                        status: "wip",
+                        status: "ready",
+                        component: VerifyCrackTool,
                     },
                     {
                         id: "taglio",
                         name: "Verifica a taglio",
                         description:
-                            "Verifica a taglio con e senza armatura trasversale.",
+                            "Verifica a taglio con traliccio ad inclinazione variabile (staffe e bielle).",
                         icon: Scissors,
-                        status: "wip",
+                        status: "ready",
+                        component: VerifyShearTool,
                     },
                 ],
             },
@@ -299,7 +316,8 @@ export const DISCIPLINES = [
                         description:
                             "Carichi permanenti e variabili per destinazione d'uso.",
                         icon: FileText,
-                        status: "wip",
+                        status: "ready",
+                        component: LoadAnalysisTool,
                     },
                     {
                         id: "combinazioni",
@@ -307,7 +325,8 @@ export const DISCIPLINES = [
                         description:
                             "Generazione delle combinazioni SLU/SLE con i coefficienti.",
                         icon: Calculator,
-                        status: "wip",
+                        status: "ready",
+                        component: LoadCombosTool,
                     },
                 ],
             },
@@ -320,7 +339,8 @@ export const DISCIPLINES = [
                         description:
                             "Valutazione del carico da neve in funzione di zona e altitudine.",
                         icon: Snowflake,
-                        status: "wip",
+                        status: "ready",
+                        component: SnowLoadTool,
                     },
                     {
                         id: "vento",
@@ -328,7 +348,8 @@ export const DISCIPLINES = [
                         description:
                             "Pressione del vento e coefficienti aerodinamici.",
                         icon: Wind,
-                        status: "wip",
+                        status: "ready",
+                        component: WindLoadTool,
                     },
                     {
                         id: "sisma",
@@ -336,7 +357,8 @@ export const DISCIPLINES = [
                         description:
                             "Spettri di risposta e definizione dell'azione sismica.",
                         icon: Activity,
-                        status: "wip",
+                        status: "ready",
+                        component: SeismicSpectrumTool,
                     },
                 ],
             },
