@@ -45,6 +45,16 @@ import LoadCombosTool from "../components/actions/LoadCombosTool";
 import SnowLoadTool from "../components/actions/SnowLoadTool";
 import WindLoadTool from "../components/actions/WindLoadTool";
 import SeismicSpectrumTool from "../components/actions/SeismicSpectrumTool";
+import WoodSLUTool from "../components/wood/WoodSLUTool";
+import WoodSLETool from "../components/wood/WoodSLETool";
+import WoodConnectionTool from "../components/wood/WoodConnectionTool";
+import WoodTaperedBeamTool from "../components/wood/WoodTaperedBeamTool";
+import WoodNotchBearingTool from "../components/wood/WoodNotchBearingTool";
+import SteelAxialTool from "../components/steel/SteelAxialTool";
+import SteelBendingShearTool from "../components/steel/SteelBendingShearTool";
+import SteelBucklingTool from "../components/steel/SteelBucklingTool";
+import SteelBoltTool from "../components/steel/SteelBoltTool";
+import SteelWeldTool from "../components/steel/SteelWeldTool";
 
 // Icona di riserva usata se una voce non ne specifica una valida.
 export const FALLBACK_ICON = Box;
@@ -173,7 +183,8 @@ export const DISCIPLINES = [
                         description:
                             "Verifica di resistenza di aste tese e compresse.",
                         icon: Columns3,
-                        status: "wip",
+                        status: "ready",
+                        component: SteelAxialTool,
                     },
                     {
                         id: "flessione-taglio",
@@ -181,15 +192,17 @@ export const DISCIPLINES = [
                         description:
                             "Verifica di resistenza a flessione e taglio delle travi.",
                         icon: Activity,
-                        status: "wip",
+                        status: "ready",
+                        component: SteelBendingShearTool,
                     },
                     {
                         id: "instabilita",
                         name: "Instabilità",
                         description:
-                            "Verifica di stabilità: aste compresse e svergolamento (LTB).",
+                            "Verifica di stabilità delle aste compresse (carico di punta).",
                         icon: Layers,
-                        status: "wip",
+                        status: "ready",
+                        component: SteelBucklingTool,
                     },
                 ],
             },
@@ -200,17 +213,19 @@ export const DISCIPLINES = [
                         id: "unioni-bullonate",
                         name: "Unioni bullonate",
                         description:
-                            "Progetto e verifica di collegamenti bullonati.",
+                            "Resistenza dei collegamenti bullonati a taglio/rifollamento.",
                         icon: Wrench,
-                        status: "wip",
+                        status: "ready",
+                        component: SteelBoltTool,
                     },
                     {
                         id: "unioni-saldate",
                         name: "Unioni saldate",
                         description:
-                            "Progetto e verifica dei cordoni di saldatura.",
+                            "Verifica dei cordoni d'angolo (metodo semplificato).",
                         icon: Combine,
-                        status: "wip",
+                        status: "ready",
+                        component: SteelWeldTool,
                     },
                 ],
             },
@@ -242,15 +257,17 @@ export const DISCIPLINES = [
                         description:
                             "Verifiche di resistenza agli stati limite ultimi.",
                         icon: Activity,
-                        status: "wip",
+                        status: "ready",
+                        component: WoodSLUTool,
                     },
                     {
                         id: "verifiche-sle",
                         name: "Verifiche SLE",
                         description:
-                            "Verifiche di deformabilità e vibrazioni (esercizio).",
+                            "Verifiche di deformabilità (frecce) agli stati limite di esercizio.",
                         icon: Ruler,
-                        status: "wip",
+                        status: "ready",
+                        component: WoodSLETool,
                     },
                 ],
             },
@@ -261,9 +278,10 @@ export const DISCIPLINES = [
                         id: "unioni",
                         name: "Unioni",
                         description:
-                            "Progetto e verifica di unioni con connettori metallici.",
+                            "Capacità dei connettori a gambo cilindrico (Johansen).",
                         icon: Wrench,
-                        status: "wip",
+                        status: "ready",
+                        component: WoodConnectionTool,
                     },
                 ],
             },
@@ -274,9 +292,10 @@ export const DISCIPLINES = [
                         id: "travi-speciali",
                         name: "Travi speciali",
                         description:
-                            "Travi rastremate, curve e con altezza variabile.",
+                            "Travi rastremate: verifica a flessione del bordo inclinato.",
                         icon: Layers,
-                        status: "wip",
+                        status: "ready",
+                        component: WoodTaperedBeamTool,
                     },
                     {
                         id: "intaglio-appoggio",
@@ -284,7 +303,8 @@ export const DISCIPLINES = [
                         description:
                             "Verifica di travi con intaglio e delle zone di appoggio.",
                         icon: Scissors,
-                        status: "wip",
+                        status: "ready",
+                        component: WoodNotchBearingTool,
                     },
                 ],
             },
