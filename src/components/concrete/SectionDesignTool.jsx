@@ -3,8 +3,8 @@
 // Strumento: Progetto (dimensionamento) a flessione (SLU) di una sezione
 // rettangolare in c.a. — metodo degli appunti (X = 0.2593 d).
 
-import { useMemo, useRef, useState } from "react";
-import { CheckCircle2, AlertTriangle, Info, RotateCcw, ChevronDown } from "lucide-react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { CheckCircle2, AlertTriangle, Info, RotateCcw, ChevronDown, Copy, Download, Check } from "lucide-react";
 import {
     designSection,
     CONCRETE_CLASSES,
@@ -31,20 +31,138 @@ function fmt(value, dec = 2) {
 
 export default function SectionDesignTool() {
     const [input, setInput] = useState(DEFAULT_INPUT);
-    const [showAdvanced, setShowAdvanced] = useState(false);
+    const [adoptedDimensions, setAdoptedDimensions] = useState({});
+    const [adoptedReinforcement, setAdoptedReinforcement] = useState({});
+    const [cardCommand, setCardCommand] = useState({ id: 0, open: null });
     const [showSteps, setShowSteps] = useState(false);
     const [drawUnit, setDrawUnit] = useState("mm"); // unità delle quote del disegno
+    const drawingSvgRef = useRef(null);
+    const copiedTimer = useRef(null);
+    const savedTimer = useRef(null);
+    const [exportMessage, setExportMessage] = useState("");
+    const [isCopied, setIsCopied] = useState(false);
+    const [isSaved, setIsSaved] = useState(false);
 
     const result = useMemo(() => designSection(input), [input]);
 
+    const createPng = async () => {
+        const svg = drawingSvgRef.current;
+        if (!svg) throw new Error("Disegno non disponibile");
+        const clone = svg.cloneNode(true);
+        clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+        clone.setAttribute("width", String(BOX_W * 2));
+        clone.setAttribute("height", String(BOX_H * 2));
+        const svgBlob = new Blob([new XMLSerializer().serializeToString(clone)], { type: "image/svg+xml;charset=utf-8" });
+        const url = URL.createObjectURL(svgBlob);
+        try {
+            const image = new Image();
+            const imageReady = new Promise((resolve, reject) => {
+                image.onload = resolve;
+                image.onerror = () => reject(new Error("Impossibile esportare il disegno"));
+            });
+            image.src = url;
+            await imageReady;
+            const canvas = document.createElement("canvas");
+            canvas.width = BOX_W * 2;
+            canvas.height = BOX_H * 2;
+            const context = canvas.getContext("2d");
+            context.fillStyle = "#ffffff";
+            context.fillRect(0, 0, canvas.width, canvas.height);
+            context.drawImage(image, 0, 0, canvas.width, canvas.height);
+            return await new Promise((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Impossibile creare il PNG")), "image/png"));
+        } finally {
+            URL.revokeObjectURL(url);
+        }
+    };
+    const copyImage = async () => {
+        try {
+            if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") throw new Error("Copia immagine non supportata dal browser");
+            const png = await createPng();
+            await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
+            setExportMessage("");
+            setIsCopied(true);
+            window.clearTimeout(copiedTimer.current);
+            copiedTimer.current = window.setTimeout(() => setIsCopied(false), 1600);
+        } catch {
+            setExportMessage("Copia non riuscita: verifica i permessi del browser");
+        }
+    };
+    const saveImage = async () => {
+        try {
+            const png = await createPng();
+            const url = URL.createObjectURL(png);
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = "sezione-progettata.png";
+            link.click();
+            window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+            setExportMessage("");
+            setIsSaved(true);
+            window.clearTimeout(savedTimer.current);
+            savedTimer.current = window.setTimeout(() => setIsSaved(false), 1600);
+        } catch {
+            setExportMessage("Salvataggio non riuscito");
+        }
+    };
+
+    const calculatedB = result.ok && result.mode === "fixH" ? result.Breq : result.ok ? result.B : 0;
+    const calculatedH = result.ok && result.mode === "fixB" ? result.dReq + input.c : result.ok ? result.h : 0;
+    const adoptedB = Number(adoptedDimensions.B) > 0 ? Number(adoptedDimensions.B) : calculatedB;
+    const adoptedH = Number(adoptedDimensions.h) > 0 ? Number(adoptedDimensions.h) : calculatedH;
+    const selectedTensionBars = Number(adoptedReinforcement.tensionBars);
+    const selectedTensionPhi = Number(adoptedReinforcement.tensionPhi || result.phi);
+    const selectedCompressionBars = Number(adoptedReinforcement.compressionBars);
+    const selectedCompressionPhi = Number(adoptedReinforcement.compressionPhi || result.phi);
+    const adoptedTensionBars = selectedTensionBars >= 2 ? selectedTensionBars : result.ok ? result.nBars : 0;
+    const adoptedCompressionBars = selectedCompressionBars >= 2 ? selectedCompressionBars : result.ok ? result.nBarsPrime : 0;
+    const adoptedTensionPhi = selectedTensionPhi > 0 ? selectedTensionPhi : result.ok ? result.phi : input.phi;
+    const adoptedCompressionPhi = selectedCompressionPhi > 0 ? selectedCompressionPhi : result.ok ? result.phi : input.phi;
+    const adoptedTensionArea = selectedTensionBars >= 2 && selectedTensionPhi > 0 ? selectedTensionBars * Math.PI * selectedTensionPhi ** 2 / 4 : null;
+    const adoptedCompressionArea = selectedCompressionBars >= 2 && selectedCompressionPhi > 0 ? selectedCompressionBars * Math.PI * selectedCompressionPhi ** 2 / 4 : null;
+    const checkedTensionArea = adoptedTensionArea ?? result.AsAdopt;
+    const checkedTensionAreaIsAdopted = adoptedTensionArea !== null;
+    const checkedCompressionArea = adoptedCompressionArea ?? result.AsPrimeProvided;
+    const checkedCompressionAreaIsAdopted = adoptedCompressionArea !== null;
+    const checkedBarCount = selectedTensionBars >= 2 ? selectedTensionBars : result.nBars;
+    const checkedBarDiameter = selectedTensionPhi > 0 ? selectedTensionPhi : result.phi;
+    const checkedBarGap = Math.max(checkedBarDiameter, 20);
+    const checkedWidth = checkedBarCount * checkedBarDiameter + (checkedBarCount - 1) * checkedBarGap + 2 * input.phiStirrup + 2 * input.cLat;
+    const checkedWidthLimit = adoptedB || result.B;
+    const checkedWidthOk = checkedWidth <= checkedWidthLimit;
+    const drawingResult = result.ok ? {
+        ...result,
+        h: adoptedH,
+        d: Math.max(1, adoptedH - input.c),
+        X: result.d > 0 ? result.X * Math.max(1, adoptedH - input.c) / result.d : result.X,
+        nBars: adoptedTensionBars,
+        nBarsPrime: adoptedCompressionBars,
+        phi: adoptedTensionPhi,
+        phiPrime: adoptedCompressionPhi,
+    } : result;
+
     const setField = (f) => (v) => setInput((p) => ({ ...p, [f]: v }));
     const setNumber = (f) => (v) => setInput((p) => ({ ...p, [f]: Number(v) || 0 }));
+    const setAdoptedD = (value) => setAdoptedDimensions((p) => value === ""
+        ? { ...p, d: "", h: "" }
+        : { ...p, d: value, h: String(Number(value) + input.c) });
+    const setAdoptedH = (value) => setAdoptedDimensions((p) => value === ""
+        ? { ...p, d: "", h: "" }
+        : { ...p, h: value, d: String(Number(value) - input.c) });
 
     return (
         <div className="grid gap-6 lg:grid-cols-[380px_1fr]">
             {/* -------- INPUT -------- */}
             <div className="space-y-4">
-                <CollapsibleCard title="Dati di progetto">
+                <div className="flex items-center justify-between gap-2">
+                    <button type="button" onClick={() => { setInput(DEFAULT_INPUT); setAdoptedDimensions({}); setAdoptedReinforcement({}); }} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50">
+                        <RotateCcw size={14} /> Valori predefiniti
+                    </button>
+                    <div className="flex gap-2">
+                        <button type="button" onClick={() => setCardCommand((p) => ({ id: p.id + 1, open: true }))} className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50">Apri tutti</button>
+                        <button type="button" onClick={() => setCardCommand((p) => ({ id: p.id + 1, open: false }))} className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50">Collassa tutti</button>
+                    </div>
+                </div>
+                <CollapsibleCard title="Dati di progetto" command={cardCommand}>
                     <div className="mb-3">
                         <span className="mb-1 block text-xs font-semibold text-slate-500">Fissa</span>
                         <ModeToggle value={input.mode} onChange={setField("mode")} />
@@ -70,7 +188,7 @@ export default function SectionDesignTool() {
                     </p>
                 </CollapsibleCard>
 
-                <CollapsibleCard title="Materiali">
+                <CollapsibleCard title="Materiali" command={cardCommand}>
                     <div className="grid grid-cols-2 gap-3">
                         <SelectField label="Calcestruzzo" value={input.fck} onChange={setNumber("fck")} options={CONCRETE_CLASSES.map((c) => ({ value: c.fck, label: c.id }))} />
                         <SelectField label="Acciaio" value={input.fyk} onChange={setNumber("fyk")} options={STEEL_GRADES.map((s) => ({ value: s.fyk, label: s.id }))} />
@@ -90,32 +208,23 @@ export default function SectionDesignTool() {
                     </div>
                 </CollapsibleCard>
 
-                <CollapsibleCard title="Barre">
+                <CollapsibleCard title="Barre" command={cardCommand}>
                     <div className="grid grid-cols-2 gap-3">
                         <SelectField label="Diametro φ" value={input.phi} onChange={setNumber("phi")} options={BAR_DIAMETERS.map((d) => ({ value: d, label: `φ ${d}` }))} />
                         <SelectField label="Staffa φ" value={input.phiStirrup} onChange={setNumber("phiStirrup")} options={STIRRUP_DIAMETERS.map((d) => ({ value: d, label: `φ ${d}` }))} />
                     </div>
                 </CollapsibleCard>
 
-                <Card>
-                    <button type="button" onClick={() => setShowAdvanced((p) => !p)} className="flex w-full items-center justify-between text-sm font-semibold text-slate-600">
-                        Dettagli avanzati
-                        <span className="text-xs text-slate-400">{showAdvanced ? "nascondi" : "mostra"}</span>
-                    </button>
-                    {showAdvanced && (
-                        <div className="mt-3 grid grid-cols-2 gap-3">
+                <CollapsibleCard title="Dettagli avanzati" defaultOpen={false} command={cardCommand}>
+                        <div className="grid grid-cols-2 gap-3">
                             <NumberField label="Copriferro laterale" unit="mm" value={input.cLat} onChange={setNumber("cLat")} />
                             <NumberField label="Arrotond. d" unit="mm" value={input.dRound} onChange={setNumber("dRound")} />
                             <NumberField label="α_cc" value={input.alphaCc} step="0.05" onChange={setNumber("alphaCc")} />
                             <NumberField label="γ_c" value={input.gammaC} step="0.05" onChange={setNumber("gammaC")} />
                             <NumberField label="γ_s" value={input.gammaS} step="0.05" onChange={setNumber("gammaS")} />
                         </div>
-                    )}
-                </Card>
+                </CollapsibleCard>
 
-                <button type="button" onClick={() => setInput(DEFAULT_INPUT)} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-50">
-                    <RotateCcw size={15} /> Valori predefiniti
-                </button>
             </div>
 
             {/* -------- OUTPUT -------- */}
@@ -135,43 +244,98 @@ export default function SectionDesignTool() {
                 ) : (
                     <>
                         <div className="grid gap-4 sm:grid-cols-3">
-                            {result.mode === "fixB" && (
-                                <>
-                                    <BigResult title="Altezza utile d" value={fmt(result.d, 0)} unit="mm" note={`richiesta ${fmt(result.dReq, 0)} mm`} />
-                                    <BigResult title="Altezza h" value={fmt(result.h, 0)} unit="mm" note="= d + c" />
-                                </>
-                            )}
-                            {result.mode === "fixH" && (
-                                <>
-                                    <BigResult title="Larghezza B" value={fmt(result.B, 0)} unit="mm" note={`richiesta ${fmt(result.Breq, 0)} mm`} />
-                                    <BigResult title="Altezza h" value={fmt(result.h, 0)} unit="mm" note={`d = ${fmt(result.d, 0)} mm`} />
-                                </>
-                            )}
-                            {result.mode === "fixBH" && (
-                                <>
-                                    <BigResult title="Sezione B × h" value={`${fmt(result.B, 0)}×${fmt(result.h, 0)}`} unit="mm" note={`x = ${fmt(result.X, 1)} mm`} />
-                                    <BigResult title={result.doubleReinf ? "Doppia armatura" : "Semplice armatura"} value={result.doubleReinf ? `${result.nBarsPrime}φ${result.phi}` : "—"} note={result.doubleReinf ? `A's = ${fmt(result.AsPrimeProvided, 0)} mm²` : "A's non necessaria"} />
-                                </>
-                            )}
-                            <BigResult title="Armatura A_s" value={fmt(result.AsAdopt, 0)} unit="mm²" note={`${result.nBars} φ ${result.phi}`} />
+                            <BigResult title="Larghezza B" titleSuffix="richiesta" value={fmt(result.mode === "fixH" ? result.Breq : result.B, result.mode === "fixH" ? 1 : 0)} unit="mm"
+                                {...(result.mode === "fixH" || result.mode === "fixBH" ? { onReset: () => setAdoptedDimensions((p) => ({ ...p, B: "" })), resetLabel: "Ripristina larghezza richiesta" } : {})}>
+                                {(result.mode === "fixH" || result.mode === "fixBH") && <NumberField label="Larghezza adottata B" unit="mm" value={adoptedDimensions.B ?? ""} onChange={(v) => setAdoptedDimensions((p) => ({ ...p, B: v }))} />}
+                            </BigResult>
+                            <BigResult title="Altezza h" titleSuffix="richiesta" value={fmt(result.mode === "fixB" ? result.dReq + input.c : result.h, result.mode === "fixB" ? 1 : 0)} unit="mm"
+                                {...(result.mode === "fixB" || result.mode === "fixBH" ? { onReset: () => setAdoptedDimensions((p) => ({ ...p, d: "", h: "" })), resetLabel: "Ripristina altezza richiesta" } : {})}>
+                                {result.mode === "fixB" && <NumberField label="Altezza adottata h" unit="mm" value={adoptedDimensions.h ?? ""} onChange={setAdoptedH} />}
+                                {result.mode === "fixBH" && <NumberField label="Altezza adottata h" unit="mm" value={adoptedDimensions.h ?? ""} onChange={setAdoptedH} />}
+                            </BigResult>
+                            <BigResult title="Altezza utile d" titleSuffix="richiesta" value={fmt(result.mode === "fixB" ? result.dReq : result.d, result.mode === "fixB" ? 1 : 0)} unit="mm"
+                                {...(result.mode === "fixB" ? { onReset: () => setAdoptedDimensions((p) => ({ ...p, d: "", h: "" })), resetLabel: "Ripristina altezza utile richiesta" } : {})}>
+                                {result.mode === "fixB" && <NumberField label="Altezza utile adottata d" unit="mm" value={adoptedDimensions.d ?? ""} onChange={setAdoptedD} />}
+                            </BigResult>
                         </div>
+
+                        <Card>
+                            <CardTitle>Armatura adottata</CardTitle>
+                            <div className="grid gap-4 sm:grid-cols-2">
+                                <div className="rounded-xl bg-sky-50 p-4">
+                                    <div className="flex items-center justify-between gap-2">
+                                        <p className="flex items-baseline gap-1.5 text-xs font-semibold uppercase tracking-wide text-sky-700">Armatura tesa <span className="text-[10px] font-medium normal-case tracking-normal text-slate-400">richiesta</span></p>
+                                        <button type="button" onClick={() => setAdoptedReinforcement((p) => ({ ...p, tensionBars: "", tensionPhi: "" }))} title="Ripristina armatura richiesta" aria-label="Ripristina armatura tesa richiesta" className="rounded-md p-1 text-slate-500 transition hover:bg-sky-100 hover:text-sky-700">
+                                            <RotateCcw size={15} />
+                                        </button>
+                                    </div>
+                                    <p className="mt-1 flex flex-wrap items-baseline gap-x-2 text-2xl font-bold text-slate-900">{result.nBars} φ {result.phi}<span className="text-sm font-medium text-slate-500">{fmt(result.AsAdopt, 0)} mm²</span></p>
+                                    <div className="mt-3 grid grid-cols-2 gap-3">
+                                        <NumberField label="Numero adottato" value={adoptedReinforcement.tensionBars ?? ""} onChange={(v) => setAdoptedReinforcement((p) => ({ ...p, tensionBars: v }))} step="1" />
+                                        <SelectField label="Diametro adottato" value={adoptedReinforcement.tensionPhi || String(result.phi)} onChange={(v) => setAdoptedReinforcement((p) => ({ ...p, tensionPhi: v }))} options={[{ value: "", label: "Seleziona" }, ...BAR_DIAMETERS.map((d) => ({ value: d, label: `φ ${d}` }))]} />
+                                    </div>
+                                    <p className="mt-2 text-sm font-semibold text-slate-700">A_s adottata = {adoptedTensionArea ? `${fmt(adoptedTensionArea, 0)} mm²` : "—"}</p>
+                                </div>
+                                {result.AsPrime > 0 && (
+                                    <div className="rounded-xl bg-sky-50 p-4">
+                                        <div className="flex items-center justify-between gap-2">
+                                            <p className="flex items-baseline gap-1.5 text-xs font-semibold uppercase tracking-wide text-sky-700">Armatura compressa <span className="text-[10px] font-medium normal-case tracking-normal text-slate-400">richiesta</span></p>
+                                            <button type="button" onClick={() => setAdoptedReinforcement((p) => ({ ...p, compressionBars: "", compressionPhi: "" }))} title="Ripristina armatura richiesta" aria-label="Ripristina armatura compressa richiesta" className="rounded-md p-1 text-slate-500 transition hover:bg-sky-100 hover:text-sky-700">
+                                                <RotateCcw size={15} />
+                                            </button>
+                                        </div>
+                                        <p className="mt-1 flex flex-wrap items-baseline gap-x-2 text-2xl font-bold text-slate-900">{result.nBarsPrime} φ {result.phi}<span className="text-sm font-medium text-slate-500">{fmt(result.AsPrime, 0)} mm²</span></p>
+                                        <div className="mt-3 grid grid-cols-2 gap-3">
+                                            <NumberField label="Numero adottato" value={adoptedReinforcement.compressionBars ?? ""} onChange={(v) => setAdoptedReinforcement((p) => ({ ...p, compressionBars: v }))} step="1" />
+                                            <SelectField label="Diametro adottato" value={adoptedReinforcement.compressionPhi || String(result.phi)} onChange={(v) => setAdoptedReinforcement((p) => ({ ...p, compressionPhi: v }))} options={[{ value: "", label: "Seleziona" }, ...BAR_DIAMETERS.map((d) => ({ value: d, label: `φ ${d}` }))]} />
+                                        </div>
+                                        <p className="mt-2 text-sm font-semibold text-slate-700">A'_s adottata = {adoptedCompressionArea ? `${fmt(adoptedCompressionArea, 0)} mm²` : "—"}</p>
+                                    </div>
+                                )}
+                            </div>
+                            <div className="mt-3 space-y-2">
+                                <CheckRow ok={checkedWidthOk} label={`Ingombro barre${selectedTensionBars >= 2 || selectedTensionPhi > 0 ? " adottate" : ""}: ${fmt(checkedWidth, 0)} mm ≤ B = ${fmt(checkedWidthLimit, 0)} mm`} />
+                                <CheckRow ok={checkedTensionArea >= result.AsMin} warn label={`${checkedTensionAreaIsAdopted ? "A_s adottata" : "A_s calcolata"} ${checkedTensionArea >= result.AsMin ? "≥" : "<"} A_s,min (${fmt(checkedTensionArea, 0)} / ${fmt(result.AsMin, 0)} mm²)`} />
+                                <CheckRow ok={checkedTensionArea <= result.AsMax} label={`${checkedTensionAreaIsAdopted ? "A_s adottata" : "A_s calcolata"} ${checkedTensionArea <= result.AsMax ? "≤" : ">"} A_s,max (${fmt(checkedTensionArea, 0)} / ${fmt(result.AsMax, 0)} mm²)`} />
+                                {result.beta > 0 && (
+                                    <CheckRow ok={checkedCompressionAreaIsAdopted ? checkedCompressionArea >= result.AsPrime : result.comprYield} warn label={checkedCompressionAreaIsAdopted
+                                        ? `A'_s adottata ${checkedCompressionArea >= result.AsPrime ? "≥" : "<"} A'_s richiesta (${fmt(checkedCompressionArea, 0)} / ${fmt(result.AsPrime, 0)} mm²)`
+                                        : result.comprYield ? "Acciaio compresso snervato (σ'_s = f_yd)" : "Acciaio compresso NON snervato: risultato approssimato"} />
+                                )}
+                            </div>
+                        </Card>
 
                         <Card>
                             <div className="mb-3 flex items-center justify-between gap-3">
                                 <h3 className="text-sm font-bold text-slate-800">Sezione progettata</h3>
-                                <select
-                                    value={drawUnit}
-                                    onChange={(e) => setDrawUnit(e.target.value)}
-                                    aria-label="Unità di misura delle quote"
-                                    className="rounded-full border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-sky-200"
-                                >
-                                    <option value="mm">mm</option>
-                                    <option value="cm">cm</option>
-                                    <option value="m">m</option>
-                                </select>
+                                <div className="flex items-center gap-2">
+                                    <select
+                                        value={drawUnit}
+                                        onChange={(e) => setDrawUnit(e.target.value)}
+                                        aria-label="Unità di misura delle quote"
+                                        className="rounded-full border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-sky-200"
+                                    >
+                                        <option value="mm">mm</option>
+                                        <option value="cm">cm</option>
+                                        <option value="m">m</option>
+                                    </select>
+                                    <button type="button" onClick={copyImage} title="Copia immagine" aria-label={isCopied ? "Immagine copiata" : "Copia immagine negli appunti"} className="rounded-full border border-slate-300 bg-white p-2 text-slate-700 shadow-sm transition hover:bg-slate-50">
+                                        <span className="relative block h-[15px] w-[15px]">
+                                            <Copy size={15} className={`absolute inset-0 transition-all duration-300 ease-in-out ${isCopied ? "rotate-90 scale-50 opacity-0" : "rotate-0 scale-100 opacity-100"}`} />
+                                            <Check size={15} className={`absolute inset-0 transition-all duration-300 ease-in-out ${isCopied ? "rotate-0 scale-100 opacity-100" : "-rotate-90 scale-50 opacity-0"}`} />
+                                        </span>
+                                    </button>
+                                    <button type="button" onClick={saveImage} title="Salva immagine PNG" aria-label={isSaved ? "Immagine salvata" : "Salva immagine PNG"} className="rounded-full border border-slate-300 bg-white p-2 text-slate-700 shadow-sm transition hover:bg-slate-50">
+                                        <span className="relative block h-[15px] w-[15px]">
+                                            <Download size={15} className={`absolute inset-0 transition-all duration-300 ease-in-out ${isSaved ? "rotate-90 scale-50 opacity-0" : "rotate-0 scale-100 opacity-100"}`} />
+                                            <Check size={15} className={`absolute inset-0 transition-all duration-300 ease-in-out ${isSaved ? "rotate-0 scale-100 opacity-100" : "-rotate-90 scale-50 opacity-0"}`} />
+                                        </span>
+                                    </button>
+                                </div>
                             </div>
+                            {exportMessage && <p role="status" className="mb-2 text-right text-xs text-slate-500">{exportMessage}</p>}
                             <div className="mx-auto max-w-[480px]">
-                                <DesignDrawing result={result} B={result.B} cPrime={input.cPrime} phiStirrup={input.phiStirrup} cLat={input.cLat} mode={input.mode} unit={drawUnit} />
+                                <DesignDrawing result={drawingResult} B={adoptedB} cPrime={input.cPrime} phiStirrup={input.phiStirrup} cLat={input.cLat} mode="fixBH" unit={drawUnit} svgRef={drawingSvgRef} />
                             </div>
                         </Card>
 
@@ -199,37 +363,13 @@ export default function SectionDesignTool() {
                         </Card>
 
                         <Card>
-                            <CardTitle>Armatura adottata</CardTitle>
-                            <div className="grid gap-4 sm:grid-cols-2">
-                                <div className="rounded-xl bg-sky-50 p-4">
-                                    <p className="text-xs font-semibold uppercase tracking-wide text-sky-700">Armatura tesa</p>
-                                    <p className="mt-1 text-2xl font-bold text-slate-900">{result.nBars} φ {result.phi}</p>
-                                    <p className="mt-1 text-sm text-slate-500">A_s = {fmt(result.AsProvided, 0)} mm² · sfrutt. {fmt(result.utilization * 100, 0)}%</p>
-                                </div>
-                                {result.AsPrime > 0 && (
-                                    <div className="rounded-xl bg-sky-50 p-4">
-                                        <p className="text-xs font-semibold uppercase tracking-wide text-sky-700">Armatura compressa</p>
-                                        <p className="mt-1 text-2xl font-bold text-slate-900">{result.nBarsPrime} φ {result.phi}</p>
-                                        <p className="mt-1 text-sm text-slate-500">A's = {fmt(result.AsPrimeProvided, 0)} mm² · ε'_s = {fmt(result.epsSc * 1000, 2)}‰</p>
-                                    </div>
-                                )}
-                            </div>
-                            <div className="mt-3 space-y-2">
-                                <CheckRow ok={result.widthOk} label={`Ingombro barre: ${fmt(result.reqWidth, 0)} mm ≤ B = ${fmt(input.B, 0)} mm`} />
-                                <CheckRow ok={!result.belowMin} warn label={result.belowMin ? "A_s da calcolo < A_s,min: adottato il minimo" : "A_s ≥ A_s,min"} />
-                                <CheckRow ok={!result.exceedsMax} label={result.exceedsMax ? "A_s supera A_s,max (0,04·A_c)" : "A_s ≤ A_s,max"} />
-                                {result.beta > 0 && (
-                                    <CheckRow ok={result.comprYield} warn label={result.comprYield ? "Acciaio compresso snervato (σ'_s = f_yd)" : "Acciaio compresso NON snervato: risultato approssimato"} />
-                                )}
-                            </div>
-                        </Card>
-
-                        <Card>
-                            <button type="button" onClick={() => setShowSteps((s) => !s)} className="flex w-full items-center justify-between text-sm font-bold text-slate-800">
+                            <button type="button" aria-expanded={showSteps} onClick={() => setShowSteps((s) => !s)} className="flex w-full items-center justify-between text-sm font-bold text-slate-800">
                                 Foglio dei passaggi di calcolo
-                                <span className="text-xs font-semibold text-sky-600">{showSteps ? "nascondi" : "mostra"}</span>
+                                <ChevronDown size={15} aria-hidden="true" className={`text-slate-400 transition-transform duration-300 ${showSteps ? "" : "-rotate-90"}`} />
                             </button>
-                            {showSteps && <CalcReport result={result} input={input} />}
+                            <AnimatedPanel isOpen={showSteps}>
+                                <CalcReport result={result} input={input} />
+                            </AnimatedPanel>
                         </Card>
 
                         <AssumptionsBox />
@@ -295,7 +435,7 @@ function CalcReport({ result, input }) {
                         <Eq lhs="X" sym="\xi\,d" num={`${T(r.xi, 4)}\\cdot ${T(r.d, 0)}`} val={`${T(r.X, 1)}${mm}`} />
                         <Eq lhs="z" sym="d-k_G X" num={`${T(r.d, 0)}-${T(r.kG, 3)}\\cdot ${T(r.X, 1)}`} val={`${T(r.z, 1)}${mm}`} />
                     </Step>
-                    <Step n="6" title="Armatura tesa (con d adottato)">
+                    <Step n="6" title="Armatura tesa (con d di progetto calcolato)">
                         <Eq lhs="A_s" sym="\dfrac{M_{Ed}}{[(d-k_G X)+\beta(k_G X-c')]\,f_{yd}}" num={`\\dfrac{${Mx}}{${T(leverAs, 1)}\\cdot ${T(r.fyd, 1)}}`} val={`${T(r.As, 0)}${mm2}`} />
                         {beta > 0 && <Eq lhs="A_s'" sym="\beta\,A_s" num={`${T(beta, 2)}\\cdot ${T(r.As, 0)}`} val={`${T(r.AsPrime, 0)}${mm2}`} />}
                     </Step>
@@ -337,12 +477,12 @@ function CalcReport({ result, input }) {
             <Step n={base + 1} title="Armature limite (NTC2018 §4.1.6.1.1)">
                 <Eq lhs="A_{s,min}" sym="\max\!\Big(0{,}26\tfrac{f_{ctm}}{f_{yk}}Bd,\;0{,}0013\,Bd\Big)" num={`\\max\\!\\Big(0{,}26\\tfrac{${T(r.fctm, 2)}}{${T(fyk, 0)}}\\cdot ${T(B, 0)}\\cdot ${T(r.d, 0)},\\;0{,}0013\\cdot ${T(B, 0)}\\cdot ${T(r.d, 0)}\\Big)`} val={`${T(r.AsMin, 0)}${mm2}`} />
                 <Eq lhs="A_{s,max}" sym="0{,}04\,B\,h" num={`0{,}04\\cdot ${T(B, 0)}\\cdot ${T(r.h, 0)}`} val={`${T(r.AsMax, 0)}${mm2}`} />
-                <Eq lhs="A_{s,ad}" sym="\max(A_s,\,A_{s,min})" val={`${T(r.AsAdopt, 0)}${mm2}`} />
+                <Eq lhs="A_{s,req}" sym="\max(A_s,\,A_{s,min})" val={`${T(r.AsAdopt, 0)}${mm2}`} />
             </Step>
 
             <Step n={base + 2} title="Scelta delle barre">
                 <Eq lhs="A_\phi" sym="\dfrac{\pi\phi^2}{4}" num={`\\dfrac{\\pi\\cdot ${T(phi, 0)}^2}{4}`} val={`${T(r.areaPhi, 1)}${mm2}`} />
-                <Eq lhs="n" sym="\left\lceil\dfrac{A_{s,ad}}{A_\phi}\right\rceil" num={`\\left\\lceil\\dfrac{${T(r.AsAdopt, 0)}}{${T(r.areaPhi, 1)}}\\right\\rceil`} val={`${r.nBars}\\Rightarrow ${r.nBars}\\,\\phi${phi}`} />
+                <Eq lhs="n" sym="\left\lceil\dfrac{A_{s,req}}{A_\phi}\right\rceil" num={`\\left\\lceil\\dfrac{${T(r.AsAdopt, 0)}}{${T(r.areaPhi, 1)}}\\right\\rceil`} val={`${r.nBars}\\Rightarrow ${r.nBars}\\,\\phi${phi}`} />
                 <Eq lhs="A_{s,prov}" sym="n\,A_\phi" num={`${r.nBars}\\cdot ${T(r.areaPhi, 1)}`} val={`${T(r.AsProvided, 0)}${mm2}`} />
             </Step>
 
@@ -439,8 +579,8 @@ function VDim({ dimX, yA, yB, edgeX, label, color = "#475569" }) {
 const BOX_W = 440;
 const BOX_H = 360;
 
-function DesignDrawing({ result, B, cPrime, phiStirrup = 8, cLat = 30, mode = "fixB", unit = "mm" }) {
-    const { h, d, X, phi, nBars, nBarsPrime, beta } = result;
+function DesignDrawing({ result, B, cPrime, phiStirrup = 8, cLat = 30, mode = "fixB", unit = "mm", svgRef }) {
+    const { h, d, X, phi, phiPrime = phi, nBars, nBarsPrime, beta } = result;
     const cP = cPrime ?? 40;
     const c = h - d; // copriferro all'asse arm. tesa (dal lembo teso)
 
@@ -485,17 +625,19 @@ function DesignDrawing({ result, B, cPrime, phiStirrup = 8, cLat = 30, mode = "f
     // Posizione orizzontale delle barre: l'asse delle barre d'angolo è a
     // (cLat + phi_st + phi/2) dal bordo, così poggiano dentro la staffa.
     const lat = Math.min(cLat + phiStirrup + phi / 2, B / 2 - phi / 2); // asse barra d'angolo dal bordo [mm]
-    const barsAt = (n, depthY) => {
+    const barsAt = (n, depthY, barLat = lat) => {
         const arr = [];
         for (let i = 0; i < n; i++) {
-            const pos = n === 1 ? B / 2 : lat + ((B - 2 * lat) * i) / (n - 1);
+            const pos = n === 1 ? B / 2 : barLat + ((B - 2 * barLat) * i) / (n - 1);
             arr.push({ x: secLeft + pos * scale, y: yOf(depthY) });
         }
         return arr;
     };
     const barR = Math.max(2.5, (phi * scale) / 2);
+    const barRPrime = Math.max(2.5, (phiPrime * scale) / 2);
+    const latPrime = Math.min(cLat + phiStirrup + phiPrime / 2, B / 2 - phiPrime / 2);
     const tensionBars = barsAt(nBars, d);
-    const comprBars = beta > 0 ? barsAt(nBarsPrime, cP) : [];
+    const comprBars = nBarsPrime > 0 ? barsAt(nBarsPrime, cP, latPrime) : [];
 
     // Staffa TANGENTE alle armature: l'asse della staffa è distante
     // (phi/2 + phi_st/2) dall'asse delle barre, così la faccia interna tocca
@@ -503,10 +645,11 @@ function DesignDrawing({ result, B, cPrime, phiStirrup = 8, cLat = 30, mode = "f
     // tangente alle barre tese; lato superiore tangente alle barre compresse
     // (se presenti), altrimenti al copriferro laterale.
     const off = phi / 2 + phiStirrup / 2; // distanza asse staffa - asse barra [mm]
-    const xLeftA = lat - off; // = cLat + phi_st/2 (asse staffa dal bordo sx)
-    const xRightA = B - lat + off;
+    const offPrime = phiPrime / 2 + phiStirrup / 2;
+    const xLeftA = nBarsPrime > 0 ? Math.min(lat - phi / 2, latPrime - phiPrime / 2) - phiStirrup / 2 : lat - off;
+    const xRightA = nBarsPrime > 0 ? Math.max(B - lat + phi / 2, B - latPrime + phiPrime / 2) + phiStirrup / 2 : B - lat + off;
     const yBotA = Math.min(d + off, h - (cLat + phiStirrup / 2)); // depth asse inferiore
-    const yTopA = beta > 0 ? Math.max(cP - off, cLat + phiStirrup / 2) : cLat + phiStirrup / 2;
+    const yTopA = nBarsPrime > 0 ? Math.max(cP - offPrime, cLat + phiStirrup / 2) : cLat + phiStirrup / 2;
     const stX = secLeft + xLeftA * scale;
     const stY = secTop + yTopA * scale;
     const stW = (xRightA - xLeftA) * scale;
@@ -542,7 +685,7 @@ function DesignDrawing({ result, B, cPrime, phiStirrup = 8, cLat = 30, mode = "f
                 <Toggle k="dims" label="Quote" color="#64748b" />
             </div>
 
-            <svg width="100%" viewBox={`0 0 ${BOX_W} ${BOX_H}`} role="img" aria-label="Sezione progettata quotata">
+            <svg ref={svgRef} width="100%" viewBox={`0 0 ${BOX_W} ${BOX_H}`} role="img" aria-label="Sezione progettata quotata">
                 {/* zona compressa + contorno */}
                 <rect x={secLeft} y={secTop} width={w} height={Math.min(X * scale, ht)} fill="#e0f2fe" />
                 <rect x={secLeft} y={secTop} width={w} height={ht} fill="none" stroke="#334155" strokeWidth="2" />
@@ -567,7 +710,7 @@ function DesignDrawing({ result, B, cPrime, phiStirrup = 8, cLat = 30, mode = "f
 
                 {/* barre */}
                 {show.bars && tensionBars.map((b, i) => <circle key={`t${i}`} cx={b.x} cy={b.y} r={barR} fill="#0f172a" />)}
-                {show.bars && comprBars.map((b, i) => <circle key={`c${i}`} cx={b.x} cy={b.y} r={barR} fill="#64748b" />)}
+                {show.bars && comprBars.map((b, i) => <circle key={`c${i}`} cx={b.x} cy={b.y} r={barRPrime} fill="#64748b" />)}
 
                 {/* quote */}
                 {show.dims && (
@@ -638,24 +781,31 @@ function AssumptionsBox() {
 function Card({ children }) {
     return <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">{children}</div>;
 }
-function CollapsibleCard({ title, children }) {
-    const [isOpen, setIsOpen] = useState(true);
-    const [contentHeight, setContentHeight] = useState("auto");
+function CollapsibleCard({ title, children, defaultOpen = true, command }) {
+    const [isOpen, setIsOpen] = useState(defaultOpen);
+    const [contentHeight, setContentHeight] = useState(defaultOpen ? "auto" : "0px");
     const contentRef = useRef(null);
-    const toggle = () => {
+    const previousCommand = useRef(command.id);
+    const setOpen = (nextOpen) => {
+        if (nextOpen === isOpen) return;
         const height = contentRef.current?.scrollHeight ?? 0;
-        if (isOpen) {
-            setContentHeight(`${height}px`);
-            requestAnimationFrame(() => setContentHeight("0px"));
-        } else {
+        if (nextOpen) {
             setContentHeight(`${height}px`);
             setIsOpen(true);
+        } else {
+            setContentHeight(`${height}px`);
+            requestAnimationFrame(() => setContentHeight("0px"));
+            setIsOpen(false);
         }
-        if (isOpen) setIsOpen(false);
     };
+    useLayoutEffect(() => {
+        if (previousCommand.current === command.id) return;
+        previousCommand.current = command.id;
+        if (command.open !== null) setOpen(command.open);
+    }, [command]);
     return (
         <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <button type="button" aria-expanded={isOpen} onClick={toggle}
+            <button type="button" aria-expanded={isOpen} onClick={() => setOpen(!isOpen)}
                 className={`flex w-full items-center justify-between text-left text-sm font-bold text-slate-800 ${isOpen ? "" : "cursor-pointer"}`}>
                 {title}
                 <ChevronDown size={16} aria-hidden="true" className={`text-slate-400 transition-transform ${isOpen ? "" : "-rotate-90"}`} />
@@ -669,18 +819,47 @@ function CollapsibleCard({ title, children }) {
         </section>
     );
 }
+function AnimatedPanel({ isOpen, children }) {
+    const [height, setHeight] = useState("0px");
+    const contentRef = useRef(null);
+    const previousOpen = useRef(isOpen);
+    useLayoutEffect(() => {
+        if (previousOpen.current === isOpen) return;
+        previousOpen.current = isOpen;
+        const contentHeight = contentRef.current?.scrollHeight ?? 0;
+        setHeight(`${contentHeight}px`);
+        if (!isOpen) requestAnimationFrame(() => setHeight("0px"));
+    }, [isOpen]);
+    return (
+        <div aria-hidden={!isOpen} inert={!isOpen} className="overflow-hidden transition-[height] duration-300 ease-in-out"
+            style={{ height }} onTransitionEnd={(event) => {
+                if (event.propertyName === "height" && isOpen) setHeight("auto");
+            }}>
+            <div ref={contentRef} className="flow-root">{children}</div>
+        </div>
+    );
+}
 function CardTitle({ children }) {
     return <h3 className="mb-3 text-sm font-bold text-slate-800">{children}</h3>;
 }
-function BigResult({ title, value, unit, note }) {
+function BigResult({ title, titleSuffix, value, unit, note, children, onReset, resetLabel = "Ripristina valore richiesto" }) {
     return (
         <div className="rounded-2xl border border-sky-200 bg-gradient-to-br from-sky-50 to-white p-5">
-            <p className="text-xs font-semibold uppercase tracking-wide text-sky-700">{title}</p>
+            <div className="relative min-h-4">
+                <p className={`flex items-baseline gap-1.5 text-xs font-semibold uppercase tracking-wide text-sky-700 ${onReset ? "pr-7" : ""}`}>
+                    {title}
+                    {titleSuffix && <span className="text-[10px] font-medium normal-case tracking-normal text-slate-400">{titleSuffix}</span>}
+                </p>
+                {onReset && <button type="button" onClick={onReset} title={resetLabel} aria-label={resetLabel} className="absolute right-0 top-0 rounded-md p-1 text-slate-500 transition hover:bg-sky-100 hover:text-sky-700">
+                    <RotateCcw size={15} />
+                </button>}
+            </div>
             <div className="mt-1 flex items-end gap-2">
                 <span className="text-3xl font-bold text-slate-900">{value}</span>
                 {unit && <span className="mb-1 text-base font-semibold text-slate-400">{unit}</span>}
             </div>
             {note && <p className="mt-1 text-sm text-slate-500">{note}</p>}
+            {children && <div className="mt-3">{children}</div>}
         </div>
     );
 }
