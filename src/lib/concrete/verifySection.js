@@ -33,7 +33,15 @@ export const DEFAULT_VERIFY_INPUT = {
     NEd: 0, // sforzo normale di progetto [kN] (compressione +)
     MEd: 150, // momento di progetto [kNm]
     concreteModel: "rectangular", // diagramma costitutivo del cls
+    steelModel: "ep", // "ep" elasto-plastico | "hardening" incrudente
+    ks: 1.15, // ft/fy (incrudimento acciaio; B450C: k >= 1.15)
 };
+
+// Modelli costitutivi dell'acciaio selezionabili.
+export const STEEL_MODELS = [
+    { id: "ep", label: "Elasto-plastico" },
+    { id: "hardening", label: "Incrudente (k_s)" },
+];
 
 const EPS_CU = 0.0035; // 3.5 permille (deformazione ultima cls)
 const EPS_C2 = 0.002; // 2.0 permille (parabola-rettangolo)
@@ -67,6 +75,37 @@ function sigmaC(eps, model, fcd) {
     return fcd; // rettangolo: tensione costante eta*fcd (gestito a parte)
 }
 
+// Coefficienti psi (riempimento) e lambda (posizione baricentro, dalla fibra
+// compressa estrema, in frazione di x) del diagramma parabola-rettangolo, in
+// funzione della deformazione eps_c della fibra estrema (n=2, fck<=50).
+// Formule da "Coefficienti parabola-rettangolo" (appunti).
+export function psiLambdaParabola(epsC) {
+    const e2 = EPS_C2;
+    if (epsC <= e2) {
+        const psi = (epsC / (3 * e2 * e2)) * (3 * e2 - epsC);
+        const lam = (4 * e2 - epsC) / (4 * (3 * e2 - epsC));
+        return { psi, lam };
+    }
+    const psi = 1 - (1 / 3) * (e2 / epsC);
+    const lam = (6 * epsC * epsC - 4 * epsC * e2 + e2 * e2) / (4 * epsC * (3 * epsC - e2));
+    return { psi, lam };
+}
+
+// Tensione dell'acciaio (compressione/trazione) secondo il modello scelto.
+//  - "ep": elasto-plastico (plateau a fyd)
+//  - "hardening": incrudente, sigma sale da fyd (a eps_yd) a ks*fyd (a eps_ud)
+function sigmaSteel(eps, fyd, model, ks) {
+    const epsYd = fyd / ES;
+    const a = Math.abs(eps);
+    const s = Math.sign(eps);
+    if (a <= epsYd) return ES * eps; // tratto elastico
+    if (model === "hardening") {
+        if (a >= EPS_SU) return s * ks * fyd;
+        return s * (fyd + ((a - epsYd) / (EPS_SU - epsYd)) * (ks - 1) * fyd);
+    }
+    return s * fyd; // elasto-plastico
+}
+
 // Risultante di compressione del calcestruzzo e suo momento rispetto al
 // baricentro. Il rettangolo (stress-block) e' in forma chiusa; parabola e
 // bilineare sono integrati numericamente sulla zona compressa.
@@ -78,6 +117,15 @@ function concreteResultant(x, curv, p) {
         const a = Math.min(LAMBDA * x, h);
         const Nc = ETA * fcd * b * a;
         return { Nc, Mc: Nc * (h / 2 - a / 2) };
+    }
+
+    // Parabola-rettangolo: forma chiusa con psi/lambda quando l'asse neutro e'
+    // interno alla sezione (x <= h); altrimenti integrazione numerica.
+    if (model === "parabola" && x <= h) {
+        const epsTop = Math.min(curv * x, EPS_CU);
+        const { psi, lam } = psiLambdaParabola(epsTop);
+        const Nc = psi * fcd * b * x;
+        return { Nc, Mc: Nc * (h / 2 - lam * x) };
     }
 
     const yEnd = Math.min(x, h);
@@ -94,10 +142,6 @@ function concreteResultant(x, curv, p) {
         Mc += dN * (h / 2 - y);
     }
     return { Nc, Mc };
-}
-
-function clamp(v, lo, hi) {
-    return Math.min(Math.max(v, lo), hi);
 }
 
 // Metadati dei campi di rottura (1..6).
@@ -123,7 +167,7 @@ function classifyField(x, p) {
 // Punto del dominio per una data posizione x dell'asse neutro (dal lembo
 // compresso). Restituisce {x, N, M} in N e N*mm.
 function domainPoint(x, p) {
-    const { h, d, dPrime, As, AsPrime, fyd, xAB, yC, epsC0 } = p;
+    const { h, d, dPrime, As, AsPrime, fyd, xAB, yC, epsC0, steelModel, ks } = p;
 
     let curv; // curvatura (deformazione per unita' di lunghezza)
     if (x <= xAB) {
@@ -143,9 +187,9 @@ function domainPoint(x, p) {
     // Risultante di compressione del calcestruzzo (diagramma scelto)
     const { Nc, Mc } = concreteResultant(x, curv, p);
 
-    // Acciai
-    const sigmaS = clamp(ES * strainAt(d), -fyd, fyd);
-    const sigmaSp = clamp(ES * strainAt(dPrime), -fyd, fyd);
+    // Acciai (modello elasto-plastico o incrudente)
+    const sigmaS = sigmaSteel(strainAt(d), fyd, steelModel, ks);
+    const sigmaSp = sigmaSteel(strainAt(dPrime), fyd, steelModel, ks);
     const Fs = As * sigmaS;
     const Fsp = AsPrime * sigmaSp;
 
@@ -206,6 +250,8 @@ export function verifySection(input) {
         NEd: NEd_kN,
         MEd: MEd_kNm,
         concreteModel = "rectangular",
+        steelModel = "ep",
+        ks = 1.15,
     } = input;
 
     const errors = [];
@@ -233,7 +279,7 @@ export function verifySection(input) {
 
     const p = {
         b, h, d, dPrime, As, AsPrime, fcd, fyd, xAB, xLim, yC, epsC0,
-        model: concreteModel,
+        model: concreteModel, steelModel, ks,
     };
 
     // Ramo positivo (As tesa in basso)
@@ -286,6 +332,20 @@ export function verifySection(input) {
     const verified = axialInRange && MRdAtN !== null && Math.abs(MEd) <= MRdAtN;
     const failureField = resAtN ? resAtN.field : null;
 
+    // Coefficienti psi/lambda del cls al punto di progetto (solo parabola, x<=h)
+    let psiDesign = null;
+    let lamDesign = null;
+    if (resAtN && concreteModel === "parabola" && resAtN.x > 0 && resAtN.x <= h) {
+        const xD = resAtN.x;
+        let curvD;
+        if (xD <= xAB) curvD = EPS_SU / (d - xD);
+        else if (xD <= h) curvD = EPS_CU / xD;
+        else curvD = epsC0 / (xD - yC);
+        const { psi, lam } = psiLambdaParabola(Math.min(curvD * xD, EPS_CU));
+        psiDesign = psi;
+        lamDesign = lam;
+    }
+
     // Dominio chiuso per il disegno (kN, kNm), con il campo di ciascun punto
     const toKN = (pt) => ({ N: pt.N / 1000, M: pt.M / 1e6, field: pt.field });
     const domain = [
@@ -327,5 +387,9 @@ export function verifySection(input) {
         epsC0,
         epsSu: EPS_SU,
         concreteModel,
+        steelModel,
+        ks,
+        psiDesign,
+        lamDesign,
     };
 }

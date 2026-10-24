@@ -1,14 +1,16 @@
 // src/lib/concrete/sectionDesign.js
 //
-// Progetto a flessione semplice (SLU) di una sezione rettangolare in c.a.
-// secondo l'impostazione di Tecnica delle Costruzioni (NTC2018 / EC2).
+// Progetto (dimensionamento) a flessione semplice (SLU) di una sezione
+// rettangolare in c.a., secondo gli appunti di Tecnica delle Costruzioni
+// (NTC2018 / EC2). Metodo: si fissa la posizione dell'asse neutro a
+// X = 0.2593 d (acciaio teso a eps_s = 10 permille, cls a eps_cu = 3.5 permille),
+// e si ricavano contemporaneamente l'altezza utile d e l'armatura A_s.
 //
 // Ipotesi:
-//  - diagramma delle tensioni del calcestruzzo tipo "stress-block"
-//    (rettangolo: profondita' lambda*x, tensione eta*fcd);
-//  - per fck <= 50 MPa: lambda = 0.8, eta = 1.0, eps_cu = 3.5 permille;
-//  - acciaio elasto-plastico indefinito, Es = 200 GPa;
-//  - conservazione delle sezioni piane, perfetta aderenza.
+//  - diagramma delle tensioni del calcestruzzo rettangolare (stress-block,
+//    profondita' 0.8 X, tensione fcd);
+//  - acciaio elasto-plastico, Es = 200 GPa;
+//  - armatura compressa definita dal rapporto beta = A's/A_s.
 //
 // Tutte le lunghezze in mm, le forze in N, i momenti in N*mm.
 
@@ -33,18 +35,36 @@ export const STEEL_GRADES = [
 ];
 
 export const DEFAULT_INPUT = {
-    b: 300, // base [mm]
-    h: 500, // altezza [mm]
-    c: 40, // distanza baricentro armatura tesa dal lembo teso [mm]
-    cPrime: 40, // distanza armatura compressa dal lembo compresso [mm]
+    mode: "fixB", // "fixB" (fissa base), "fixH" (fissa altezza), "fixBH" (entrambe)
+    B: 300, // larghezza della sezione [mm]
+    h: 500, // altezza della sezione [mm] (usata per fixH / fixBH)
     MEd: 150, // momento di progetto [kNm]
+    beta: 0, // A's/A_s (0 = semplice armatura) - solo fixB/fixH
+    c: 40, // copriferro all'asse armatura tesa [mm]
+    cPrime: 40, // copriferro all'asse armatura compressa [mm]
     fck: 25, // [MPa]
     fyk: 450, // [MPa]
     alphaCc: 0.85,
     gammaC: 1.5,
     gammaS: 1.15,
-    phi: 16, // diametro barre per il progetto [mm]
+    phi: 16, // diametro barre longitudinali [mm]
+    phiStirrup: 8, // diametro staffa [mm]
+    cLat: 30, // copriferro laterale netto [mm]
+    dRound: 10, // arrotondamento della dimensione progettata [mm]
+    concreteModel: "rectangular", // diagramma costitutivo del cls
 };
+
+export const DESIGN_MODES = [
+    { id: "fixB", label: "Fissa base B (progetta h)" },
+    { id: "fixH", label: "Fissa altezza h (progetta B)" },
+    { id: "fixBH", label: "Fissa base e altezza (progetta A_s)" },
+];
+
+export const CONCRETE_MODELS = [
+    { id: "rectangular", label: "Rettangolo (stress-block)" },
+    { id: "parabola", label: "Parabola-rettangolo" },
+    { id: "bilinear", label: "Triangolo-rettangolo (bilineare)" },
+];
 
 /** Resistenza media a trazione del calcestruzzo (fck <= 50). */
 export function fctm(fck) {
@@ -55,164 +75,206 @@ function barArea(phi) {
     return (Math.PI * phi * phi) / 4;
 }
 
+const EPS_CU = 0.0035; // deformazione ultima cls
+const EPS_C2 = 0.002; // ginocchio parabola-rettangolo
+const EPS_C3 = 0.00175; // ginocchio triangolo-rettangolo
+const EPS_S_DESIGN = 0.01; // deformazione di progetto dell'acciaio teso (10 permille)
+
+// Coefficienti della risultante di compressione del cls alla fibra estrema
+// (eps_c = eps_cu): psi = riempimento (C = psi*b*X*fcd), kG = posizione del
+// baricentro dal lembo compresso (frazione di X).
+export function getCompressionCoeffs(model) {
+    if (model === "parabola") {
+        const e = EPS_CU, e2 = EPS_C2;
+        const psi = 1 - (1 / 3) * (e2 / e);
+        const kG = (6 * e * e - 4 * e * e2 + e2 * e2) / (4 * e * (3 * e - e2));
+        return { psi, kG };
+    }
+    if (model === "bilinear") {
+        const a = EPS_C3 / EPS_CU; // frazione a strain costante
+        const psi = 1 - a / 2;
+        const kG = (Math.pow(1 - a, 2) / 2 + (a / 2) * ((1 - a) + a / 3)) / psi;
+        return { psi, kG };
+    }
+    return { psi: 0.8, kG: 0.4 }; // rettangolo (stress-block)
+}
+
 /**
- * Progetta l'armatura a flessione di una sezione rettangolare.
- * @returns oggetto con tutti i valori intermedi, i risultati e gli errori.
+ * Dimensiona la sezione a flessione secondo tre modalita':
+ *  - "fixB": fissa B, progetta d e A_s (X = xi_d * d);
+ *  - "fixH": fissa h, progetta B e A_s (X = xi_d * d);
+ *  - "fixBH": fissa B e h, progetta A_s (x dall'equilibrio, eventuale doppia armatura).
  */
 export function designSection(input) {
     const {
-        b,
-        h,
+        mode = "fixB",
+        B: Bin,
+        h: hIn,
+        MEd: MEd_kNm,
+        beta,
         c,
         cPrime,
-        MEd: MEd_kNm,
         fck,
         fyk,
         alphaCc,
         gammaC,
         gammaS,
         phi,
+        phiStirrup,
+        cLat,
+        dRound,
+        concreteModel = "rectangular",
     } = input;
 
     const errors = [];
-
-    if (!(b > 0)) errors.push("La base b deve essere positiva.");
-    if (!(h > 0)) errors.push("L'altezza h deve essere positiva.");
+    if (mode !== "fixH" && !(Bin > 0)) errors.push("La larghezza B deve essere positiva.");
+    if (mode !== "fixB" && !(hIn > c)) errors.push("L'altezza h deve essere maggiore del copriferro c.");
+    if (!(MEd_kNm > 0)) errors.push("Il momento M_Ed deve essere positivo.");
     if (!(fck > 0)) errors.push("Selezionare una classe di calcestruzzo.");
-    if (!(fyk > 0)) errors.push("Definire la resistenza dell'acciaio fyk.");
+    if (mode !== "fixBH" && !(beta >= 0 && beta < 0.95)) errors.push("beta = A's/A_s deve essere 0 ≤ β < 0,95.");
+    if (errors.length > 0) return { ok: false, errors };
 
-    const d = h - c; // altezza utile [mm]
-    if (!(d > 0)) errors.push("Il copriferro c e' troppo grande rispetto ad h.");
-
-    if (errors.length > 0) {
-        return { ok: false, errors };
-    }
-
-    // --- Grandezze di calcolo dei materiali ---
-    const fcd = (alphaCc * fck) / gammaC; // [MPa]
-    const fyd = fyk / gammaS; // [MPa]
-    const epsCu = 0.0035; // 3.5 permille
+    const fcd = (alphaCc * fck) / gammaC;
+    const fyd = fyk / gammaS;
     const epsYd = fyd / ES;
-
-    // Stress-block (fck <= 50)
-    const lambda = 0.8;
-    const eta = 1.0;
-
-    // Momento sollecitante in N*mm
     const MEd = MEd_kNm * 1e6;
+    const step = dRound > 0 ? dRound : 1;
 
-    // --- Limite di duttilita' (posizione asse neutro limite) ---
-    // xi = x/d al limite tra snervamento acciaio e rottura cls
-    const xiLim = epsCu / (epsCu + epsYd);
-    const xLim = xiLim * d;
-    // Momento adimensionale resistente al limite
-    const muLim = lambda * xiLim * (1 - (lambda / 2) * xiLim);
+    const xi = EPS_CU / (EPS_CU + EPS_S_DESIGN); // = 0.2593 (progetto, fixB/fixH)
+    const xiLim = EPS_CU / (EPS_CU + epsYd); // limite di snervamento (fixBH)
+    const { psi, kG } = getCompressionCoeffs(concreteModel);
 
-    // Momento adimensionale sollecitante
-    const mu = MEd / (b * d * d * (eta * fcd));
+    let B, h, d, X, z, As, AsPrime, dReq, Breq, doubleReinf;
+    let coeff1 = null, coeff2 = null, AsDesignRaw = null, M1 = null, M2 = null;
+    let epsSc = null, sigmaSc = null, comprYield = true;
+    const betaEff = mode === "fixBH" ? 0 : beta; // in fixBH l'armatura compr. deriva dall'equilibrio
 
-    const result = {
-        ok: true,
-        errors: [],
-        // dati
-        d,
-        fcd,
-        fyd,
-        epsCu,
-        epsYd,
-        fctm: fctm(fck),
-        lambda,
-        eta,
-        // limiti
-        xiLim,
-        xLim,
-        muLim,
-        mu,
-    };
-
-    let x, z, As, AsPrime, doubleReinf, sigmaSc, epsSc;
-
-    if (mu <= muLim) {
-        // ---- Armatura semplice ----
-        doubleReinf = false;
-        AsPrime = 0;
-
-        // 0.32*xi^2 - 0.8*xi + mu = 0  ->  xi = (0.8 - sqrt(0.64 - 1.28*mu))/0.64
-        const disc = 0.64 - 1.28 * mu;
-        const xi = (0.8 - Math.sqrt(Math.max(disc, 0))) / 0.64;
-
-        x = xi * d;
-        z = d - (lambda / 2) * x; // braccio della coppia interna
-        As = MEd / (fyd * z); // area acciaio teso [mm^2]
-
-        result.xi = xi;
-    } else {
-        // ---- Doppia armatura ----
-        // Si fissa x = xLim e si affida l'eccesso di momento all'acciaio compresso.
-        doubleReinf = true;
-        x = xLim;
-        z = d - (lambda / 2) * x;
-
-        const M1 = muLim * b * d * d * (eta * fcd); // momento della sezione a semplice armatura al limite
-        const M2 = MEd - M1; // momento affidato alla coppia di armature
-
-        // Deformazione e tensione dell'acciaio compresso
-        epsSc = epsCu * ((x - cPrime) / x);
+    if (mode === "fixB") {
+        B = Bin;
+        const kGxi = kG * xi;
+        const K = fyd / (B * psi * xi * fcd);
+        coeff2 = K * fyd * (1 - beta) * ((1 - kGxi) + kGxi * beta);
+        coeff1 = beta * fyd * cPrime;
+        AsDesignRaw = (coeff1 + Math.sqrt(coeff1 * coeff1 + 4 * coeff2 * MEd)) / (2 * coeff2);
+        dReq = K * AsDesignRaw * (1 - beta);
+        d = Math.ceil(dReq / step) * step;
+        h = d + c;
+        X = xi * d;
+        z = d - kG * X;
+        As = MEd / ((d - kG * X + beta * (kG * X - cPrime)) * fyd);
+        AsPrime = beta * As;
+        epsSc = EPS_CU * (1 - cPrime / X);
         sigmaSc = Math.min(Math.max(epsSc, 0) * ES, fyd);
-
-        AsPrime = sigmaSc > 0 ? M2 / (sigmaSc * (d - cPrime)) : 0; // acciaio compresso
-        // Acciaio teso = quota che equilibra il cls + quota della coppia
-        const Ts_cls = eta * fcd * b * lambda * x; // risultante di compressione del cls
-        As = (Ts_cls + AsPrime * sigmaSc) / fyd;
-
-        result.xi = xiLim;
-        result.M1 = M1;
-        result.M2 = M2;
-        result.epsSc = epsSc;
-        result.sigmaSc = sigmaSc;
+        comprYield = epsSc >= epsYd;
+    } else if (mode === "fixH") {
+        h = hIn;
+        d = h - c;
+        X = xi * d;
+        z = d - kG * X;
+        As = MEd / ((d - kG * X + beta * (kG * X - cPrime)) * fyd);
+        AsPrime = beta * As;
+        // Larghezza richiesta dall'equilibrio alla traslazione
+        Breq = (As * fyd * (1 - beta)) / (psi * xi * d * fcd);
+        B = Math.ceil(Breq / step) * step;
+        epsSc = EPS_CU * (1 - cPrime / X);
+        sigmaSc = Math.min(Math.max(epsSc, 0) * ES, fyd);
+        comprYield = epsSc >= epsYd;
+    } else {
+        // fixBH: sezione assegnata, x dall'equilibrio
+        B = Bin;
+        h = hIn;
+        d = h - c;
+        // psi fcd B kG x^2 - psi fcd B d x + MEd = 0
+        const A2 = psi * fcd * B * kG;
+        const A1 = -psi * fcd * B * d;
+        const disc = A1 * A1 - 4 * A2 * MEd;
+        let xSingle = disc >= 0 ? (-A1 - Math.sqrt(disc)) / (2 * A2) : Infinity;
+        if (disc >= 0 && xSingle <= xiLim * d) {
+            doubleReinf = false;
+            X = xSingle;
+            z = d - kG * X;
+            As = (psi * fcd * B * X) / fyd;
+            AsPrime = 0;
+        } else {
+            doubleReinf = true;
+            X = xiLim * d;
+            z = d - kG * X;
+            M1 = psi * fcd * B * X * (d - kG * X);
+            M2 = MEd - M1;
+            epsSc = EPS_CU * (1 - cPrime / X);
+            sigmaSc = Math.min(Math.max(epsSc, 0) * ES, fyd);
+            comprYield = epsSc >= epsYd;
+            AsPrime = sigmaSc > 0 ? M2 / (sigmaSc * (d - cPrime)) : 0;
+            As = (psi * fcd * B * X) / fyd + M2 / (fyd * (d - cPrime));
+        }
     }
 
     // --- Armature minime e massime (NTC2018 4.1.6.1.1) ---
-    const AsMin = Math.max(0.26 * (fctm(fck) / fyk) * b * d, 0.0013 * b * d);
-    const AsMax = 0.04 * b * h;
+    const AsMin = Math.max(0.26 * (fctm(fck) / fyk) * B * d, 0.0013 * B * d);
+    const AsMax = 0.04 * B * h;
+    const AsAdopt = Math.max(As, AsMin);
 
-    const AsRequired = As; // da calcolo
-    const AsDesign = Math.max(As, AsMin); // area da adottare (>= minima)
-
-    // --- Scelta delle barre per l'armatura tesa ---
+    // --- Scelta barre ---
     const areaPhi = barArea(phi);
-    const nBars = Math.max(2, Math.ceil(AsDesign / areaPhi)); // almeno 2 barre
+    const nBars = Math.max(2, Math.ceil(AsAdopt / areaPhi));
     const AsProvided = nBars * areaPhi;
-
-    // Barre per l'armatura compressa (se doppia armatura)
     let nBarsPrime = 0;
     let AsPrimeProvided = 0;
-    if (doubleReinf && AsPrime > 0) {
+    if (AsPrime > 0) {
         nBarsPrime = Math.max(2, Math.ceil(AsPrime / areaPhi));
         AsPrimeProvided = nBarsPrime * areaPhi;
     }
 
-    Object.assign(result, {
-        x,
+    const gap = Math.max(phi, 20);
+    const reqWidth = nBars * phi + (nBars - 1) * gap + 2 * phiStirrup + 2 * cLat;
+    const widthOk = reqWidth <= B;
+
+    return {
+        ok: true,
+        errors: [],
+        mode,
+        fcd,
+        fyd,
+        epsYd,
+        fctm: fctm(fck),
+        xi,
+        xiLim,
+        psi,
+        kG,
+        concreteModel,
+        coeff1,
+        coeff2,
+        AsDesignRaw,
+        M1,
+        M2,
+        gap,
+        dReq,
+        Breq,
+        B,
+        d,
+        h,
+        X,
         z,
-        doubleReinf,
+        beta: betaEff,
+        doubleReinf: !!doubleReinf,
         As,
         AsPrime,
-        AsRequired,
-        AsDesign,
+        AsAdopt,
         AsMin,
         AsMax,
-        exceedsMax: AsDesign > AsMax,
         belowMin: As < AsMin,
-        // barre
+        exceedsMax: AsAdopt > AsMax,
+        epsSc,
+        sigmaSc,
+        comprYield,
         phi,
         areaPhi,
         nBars,
         AsProvided,
         nBarsPrime,
         AsPrimeProvided,
-        utilization: AsProvided > 0 ? AsDesign / AsProvided : 0,
-    });
-
-    return result;
+        reqWidth,
+        widthOk,
+        utilization: AsProvided > 0 ? AsAdopt / AsProvided : 0,
+    };
 }

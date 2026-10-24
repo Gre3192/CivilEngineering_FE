@@ -10,6 +10,7 @@ import {
     DEFAULT_VERIFY_INPUT,
     FAILURE_FIELDS,
     CONCRETE_MODELS,
+    STEEL_MODELS,
 } from "../../lib/concrete/verifySection";
 import { CONCRETE_CLASSES, STEEL_GRADES } from "../../lib/concrete/sectionDesign";
 
@@ -108,6 +109,21 @@ export default function VerifySectionTool() {
                 </Card>
 
                 <Card>
+                    <CardTitle>Diagramma acciaio</CardTitle>
+                    <SelectField
+                        label="Modello costitutivo"
+                        value={input.steelModel}
+                        onChange={(v) => setField("steelModel", v)}
+                        options={STEEL_MODELS.map((m) => ({ value: m.id, label: m.label }))}
+                    />
+                    {input.steelModel === "hardening" && (
+                        <div className="mt-3">
+                            <NumberField label="k_s = f_t/f_y" value={input.ks} onChange={(v) => setNumber("ks", v)} />
+                        </div>
+                    )}
+                </Card>
+
+                <Card>
                     <button
                         type="button"
                         onClick={() => setShowAdvanced((p) => !p)}
@@ -196,7 +212,19 @@ export default function VerifySectionTool() {
                                         <ResultRow label="f_cd" value={fmt(result.fcd, 2)} unit="MPa" />
                                         <ResultRow label="f_yd" value={fmt(result.fyd, 2)} unit="MPa" />
                                         <ResultRow label="d" value={fmt(result.d, 0)} unit="mm" />
+                                        {result.psiDesign !== null && (
+                                            <>
+                                                <ResultRow label="ψ (riempimento)" value={fmt(result.psiDesign, 3)} />
+                                                <ResultRow label="λ (baricentro/x)" value={fmt(result.lamDesign, 3)} />
+                                            </>
+                                        )}
                                     </ResultGrid>
+                                    {result.psiDesign !== null && (
+                                        <p className="mt-2 text-[11px] leading-tight text-slate-400">
+                                            Risultante cls parabola-rettangolo: N_c = ψ·f_cd·b·x,
+                                            baricentro a λ·x dal lembo compresso (forma chiusa).
+                                        </p>
+                                    )}
                                 </Card>
                             </div>
                         </div>
