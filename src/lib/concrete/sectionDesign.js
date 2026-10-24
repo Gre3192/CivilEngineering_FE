@@ -52,12 +52,19 @@ export const DEFAULT_INPUT = {
     cLat: 30, // copriferro laterale netto [mm]
     dRound: 10, // arrotondamento della dimensione progettata [mm]
     concreteModel: "rectangular", // diagramma costitutivo del cls
+    steelModel: "ep", // "ep" elasto-plastico | "hardening" incrudente
+    ks: 1.15, // ft/fy (incrudimento)
 };
 
 export const DESIGN_MODES = [
     { id: "fixB", label: "Fissa base B (progetta h)" },
     { id: "fixH", label: "Fissa altezza h (progetta B)" },
     { id: "fixBH", label: "Fissa base e altezza (progetta A_s)" },
+];
+
+export const STEEL_MODELS = [
+    { id: "ep", label: "Elasto-plastico" },
+    { id: "hardening", label: "Elasto-plastico incrudente" },
 ];
 
 export const CONCRETE_MODELS = [
@@ -79,6 +86,7 @@ const EPS_CU = 0.0035; // deformazione ultima cls
 const EPS_C2 = 0.002; // ginocchio parabola-rettangolo
 const EPS_C3 = 0.00175; // ginocchio triangolo-rettangolo
 const EPS_S_DESIGN = 0.01; // deformazione di progetto dell'acciaio teso (10 permille)
+const EPS_UD = 0.0675; // deformazione ultima di progetto dell'acciaio
 
 // Coefficienti della risultante di compressione del cls alla fibra estrema
 // (eps_c = eps_cu): psi = riempimento (C = psi*b*X*fcd), kG = posizione del
@@ -124,6 +132,8 @@ export function designSection(input) {
         cLat,
         dRound,
         concreteModel = "rectangular",
+        steelModel = "ep",
+        ks = 1.15,
     } = input;
 
     const errors = [];
@@ -140,6 +150,17 @@ export function designSection(input) {
     const MEd = MEd_kNm * 1e6;
     const step = dRound > 0 ? dRound : 1;
 
+    // Tensione dell'acciaio in funzione della deformazione (modello scelto)
+    const sSteel = (eps) => {
+        const e = Math.abs(eps);
+        if (e <= epsYd) return ES * e;
+        if (steelModel === "hardening")
+            return Math.min(fyd * (1 + ((e - epsYd) / (EPS_UD - epsYd)) * (ks - 1)), ks * fyd);
+        return fyd;
+    };
+    // Tensione di progetto dell'acciaio teso (a eps_s = 10 permille)
+    const fs = sSteel(EPS_S_DESIGN);
+
     const xi = EPS_CU / (EPS_CU + EPS_S_DESIGN); // = 0.2593 (progetto, fixB/fixH)
     const xiLim = EPS_CU / (EPS_CU + epsYd); // limite di snervamento (fixBH)
     const { psi, kG } = getCompressionCoeffs(concreteModel);
@@ -152,32 +173,32 @@ export function designSection(input) {
     if (mode === "fixB") {
         B = Bin;
         const kGxi = kG * xi;
-        const K = fyd / (B * psi * xi * fcd);
-        coeff2 = K * fyd * (1 - beta) * ((1 - kGxi) + kGxi * beta);
-        coeff1 = beta * fyd * cPrime;
+        const K = fs / (B * psi * xi * fcd);
+        coeff2 = K * fs * (1 - beta) * ((1 - kGxi) + kGxi * beta);
+        coeff1 = beta * fs * cPrime;
         AsDesignRaw = (coeff1 + Math.sqrt(coeff1 * coeff1 + 4 * coeff2 * MEd)) / (2 * coeff2);
         dReq = K * AsDesignRaw * (1 - beta);
         d = Math.ceil(dReq / step) * step;
         h = d + c;
         X = xi * d;
         z = d - kG * X;
-        As = MEd / ((d - kG * X + beta * (kG * X - cPrime)) * fyd);
+        As = MEd / ((d - kG * X + beta * (kG * X - cPrime)) * fs);
         AsPrime = beta * As;
         epsSc = EPS_CU * (1 - cPrime / X);
-        sigmaSc = Math.min(Math.max(epsSc, 0) * ES, fyd);
+        sigmaSc = sSteel(Math.max(epsSc, 0));
         comprYield = epsSc >= epsYd;
     } else if (mode === "fixH") {
         h = hIn;
         d = h - c;
         X = xi * d;
         z = d - kG * X;
-        As = MEd / ((d - kG * X + beta * (kG * X - cPrime)) * fyd);
+        As = MEd / ((d - kG * X + beta * (kG * X - cPrime)) * fs);
         AsPrime = beta * As;
         // Larghezza richiesta dall'equilibrio alla traslazione
-        Breq = (As * fyd * (1 - beta)) / (psi * xi * d * fcd);
+        Breq = (As * fs * (1 - beta)) / (psi * xi * d * fcd);
         B = Math.ceil(Breq / step) * step;
         epsSc = EPS_CU * (1 - cPrime / X);
-        sigmaSc = Math.min(Math.max(epsSc, 0) * ES, fyd);
+        sigmaSc = sSteel(Math.max(epsSc, 0));
         comprYield = epsSc >= epsYd;
     } else {
         // fixBH: sezione assegnata, x dall'equilibrio
@@ -193,7 +214,7 @@ export function designSection(input) {
             doubleReinf = false;
             X = xSingle;
             z = d - kG * X;
-            As = (psi * fcd * B * X) / fyd;
+            As = (psi * fcd * B * X) / fs;
             AsPrime = 0;
         } else {
             doubleReinf = true;
@@ -202,10 +223,10 @@ export function designSection(input) {
             M1 = psi * fcd * B * X * (d - kG * X);
             M2 = MEd - M1;
             epsSc = EPS_CU * (1 - cPrime / X);
-            sigmaSc = Math.min(Math.max(epsSc, 0) * ES, fyd);
+            sigmaSc = sSteel(Math.max(epsSc, 0));
             comprYield = epsSc >= epsYd;
             AsPrime = sigmaSc > 0 ? M2 / (sigmaSc * (d - cPrime)) : 0;
-            As = (psi * fcd * B * X) / fyd + M2 / (fyd * (d - cPrime));
+            As = (psi * fcd * B * X) / fs + M2 / (fs * (d - cPrime));
         }
     }
 
@@ -235,6 +256,9 @@ export function designSection(input) {
         mode,
         fcd,
         fyd,
+        fs,
+        steelModel,
+        ks,
         epsYd,
         fctm: fctm(fck),
         xi,

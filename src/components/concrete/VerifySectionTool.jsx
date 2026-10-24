@@ -13,6 +13,8 @@ import {
     STEEL_MODELS,
 } from "../../lib/concrete/verifySection";
 import { CONCRETE_CLASSES, STEEL_GRADES } from "../../lib/concrete/sectionDesign";
+import ConcreteDiagram from "./ConcreteDiagram";
+import SteelDiagram from "./SteelDiagram";
 
 // Colori dei campi di rottura (dal violetto=trazione al rosso=compressione).
 const FIELD_COLORS = {
@@ -105,7 +107,7 @@ export default function VerifySectionTool() {
                         onChange={(v) => setField("concreteModel", v)}
                         options={CONCRETE_MODELS.map((m) => ({ value: m.id, label: m.label }))}
                     />
-                    {result.ok && <ConstitutiveDiagram result={result} />}
+                    {result.ok && <ConcreteDiagram fcd={result.fcd} model={result.concreteModel} />}
                 </Card>
 
                 <Card>
@@ -121,6 +123,7 @@ export default function VerifySectionTool() {
                             <NumberField label="k_s = f_t/f_y" value={input.ks} onChange={(v) => setNumber("ks", v)} />
                         </div>
                     )}
+                    {result.ok && <SteelDiagram fyd={result.fyd} model={input.steelModel} ks={input.ks} />}
                 </Card>
 
                 <Card>
@@ -251,78 +254,6 @@ export default function VerifySectionTool() {
 }
 
 // -------- Grafico del legame costitutivo del calcestruzzo (sigma-eps) --------
-function ConstitutiveDiagram({ result }) {
-    const { fcd, epsCu, epsC2, epsC3, concreteModel } = result;
-
-    const W = 300;
-    const H = 150;
-    const m = { l: 46, r: 14, t: 12, b: 30 };
-    const iw = W - m.l - m.r;
-    const ih = H - m.t - m.b;
-    const epsMax = epsCu;
-
-    const sx = (e) => m.l + (e / epsMax) * iw;
-    const sy = (s) => m.t + (1 - s / fcd) * ih;
-
-    const sigma = (e) => {
-        if (concreteModel === "parabola")
-            return e >= epsC2 ? fcd : fcd * (1 - Math.pow(1 - e / epsC2, 2));
-        if (concreteModel === "bilinear")
-            return e >= epsC3 ? fcd : (fcd * e) / epsC3;
-        return fcd; // rettangolo: tensione costante (blocco equivalente)
-    };
-
-    const N = 40;
-    const pts = [];
-    for (let i = 0; i <= N; i++) {
-        const e = (epsMax * i) / N;
-        pts.push([sx(e), sy(sigma(e))]);
-    }
-    const line = pts.map((p, i) => `${i === 0 ? "M" : "L"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ");
-    const area = `M${sx(0)},${sy(0)} ${line.slice(1)} L${sx(epsMax)},${sy(0)} Z`;
-
-    const knee = concreteModel === "bilinear" ? epsC3 : concreteModel === "parabola" ? epsC2 : null;
-
-    return (
-        <div className="mt-3">
-            <svg width="100%" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Legame costitutivo calcestruzzo">
-                {/* assi */}
-                <line x1={m.l} y1={m.t} x2={m.l} y2={m.t + ih} stroke="#cbd5e1" strokeWidth="1" />
-                <line x1={m.l} y1={m.t + ih} x2={m.l + iw} y2={m.t + ih} stroke="#cbd5e1" strokeWidth="1" />
-
-                {/* area e curva */}
-                <path d={area} fill="#bae6fd" fillOpacity="0.5" />
-                <path d={line} fill="none" stroke="#0284c7" strokeWidth="2" />
-
-                {/* linea f_cd */}
-                <line x1={m.l} y1={sy(fcd)} x2={m.l + iw} y2={sy(fcd)} stroke="#94a3b8" strokeWidth="0.75" strokeDasharray="3 3" />
-                <text x={m.l - 4} y={sy(fcd) + 3} textAnchor="end" fontSize="9" fill="#64748b">f_cd</text>
-                <text x={m.l - 4} y={sy(0) + 3} textAnchor="end" fontSize="9" fill="#94a3b8">0</text>
-
-                {/* knee */}
-                {knee && (
-                    <>
-                        <line x1={sx(knee)} y1={sy(fcd)} x2={sx(knee)} y2={m.t + ih} stroke="#cbd5e1" strokeWidth="0.75" strokeDasharray="2 2" />
-                        <text x={sx(knee)} y={m.t + ih + 12} textAnchor="middle" fontSize="8" fill="#94a3b8">
-                            {(knee * 1000).toFixed(2)}‰
-                        </text>
-                    </>
-                )}
-                <text x={sx(epsMax)} y={m.t + ih + 12} textAnchor="middle" fontSize="8" fill="#94a3b8">
-                    {(epsMax * 1000).toFixed(1)}‰
-                </text>
-                <text x={m.l + iw / 2} y={H - 2} textAnchor="middle" fontSize="9" fill="#64748b">ε_c</text>
-            </svg>
-            {concreteModel === "rectangular" && (
-                <p className="mt-1 text-[11px] leading-tight text-slate-400">
-                    Blocco equivalente: tensione η·f_cd costante su profondità λ·x
-                    (λ=0,8; η=1,0).
-                </p>
-            )}
-        </div>
-    );
-}
-
 // -------- Diagramma dei piani di rottura (campi come regioni piene) --------
 function RuptureFieldsDiagram({ result }) {
     const { d, dPrime, h, yC, xAB, epsCu, epsC0, epsSu, epsYd, xDesign, failureField } = result;

@@ -11,10 +11,12 @@ import {
     STEEL_GRADES,
     CONCRETE_MODELS,
     DESIGN_MODES,
+    STEEL_MODELS,
     DEFAULT_INPUT,
 } from "../../lib/concrete/sectionDesign";
 import Tex, { Eq, texNum as T } from "../Tex";
 import ConcreteDiagram from "./ConcreteDiagram";
+import SteelDiagram from "./SteelDiagram";
 
 const BAR_DIAMETERS = [10, 12, 14, 16, 18, 20, 24, 26];
 const STIRRUP_DIAMETERS = [6, 8, 10, 12];
@@ -77,6 +79,15 @@ export default function SectionDesignTool() {
                     <div className="mt-3">
                         <SelectField label="Diagramma calcestruzzo" value={input.concreteModel} onChange={setField("concreteModel")} options={CONCRETE_MODELS.map((m) => ({ value: m.id, label: m.label }))} />
                         {result.ok && <ConcreteDiagram fcd={result.fcd} model={input.concreteModel} />}
+                    </div>
+                    <div className="mt-3 border-t border-slate-100 pt-3">
+                        <SelectField label="Diagramma acciaio" value={input.steelModel} onChange={setField("steelModel")} options={STEEL_MODELS.map((m) => ({ value: m.id, label: m.label }))} />
+                        {input.steelModel === "hardening" && (
+                            <div className="mt-3">
+                                <NumberField label="k_s = f_t/f_y" value={input.ks} step="0.01" onChange={setNumber("ks")} />
+                            </div>
+                        )}
+                        {result.ok && <SteelDiagram fyd={result.fyd} model={input.steelModel} ks={input.ks} />}
                     </div>
                 </Card>
 
