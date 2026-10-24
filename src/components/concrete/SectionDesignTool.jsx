@@ -379,7 +379,7 @@ function ModeToggle({ value, onChange }) {
                         type="button"
                         onClick={() => onChange(m.id)}
                         title={m.label}
-                        className={`flex-1 rounded-lg px-2 py-1.5 text-xs font-semibold transition ${
+                        className={`flex-1 rounded-lg px-2 py-1.5 text-xs font-semibold transition-colors duration-500 ease-in-out ${
                             active ? "bg-sky-600 text-white shadow-sm" : "text-slate-600 hover:bg-white"
                         }`}
                     >
@@ -656,7 +656,7 @@ function CollapsibleCard({ title, children }) {
     return (
         <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <button type="button" aria-expanded={isOpen} onClick={toggle}
-                className="flex w-full items-center justify-between text-left text-sm font-bold text-slate-800">
+                className={`flex w-full items-center justify-between text-left text-sm font-bold text-slate-800 ${isOpen ? "" : "cursor-pointer"}`}>
                 {title}
                 <ChevronDown size={16} aria-hidden="true" className={`text-slate-400 transition-transform ${isOpen ? "" : "-rotate-90"}`} />
             </button>
