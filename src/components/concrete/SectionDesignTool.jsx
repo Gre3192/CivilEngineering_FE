@@ -114,7 +114,9 @@ export default function SectionDesignTool() {
     const selectedCompressionBars = Number(adoptedReinforcement.compressionBars);
     const selectedCompressionPhi = Number(adoptedReinforcement.compressionPhi || result.phi);
     const adoptedTensionBars = selectedTensionBars >= 2 ? selectedTensionBars : result.ok ? result.nBars : 0;
-    const adoptedCompressionBars = selectedCompressionBars >= 2 ? selectedCompressionBars : result.ok ? result.nBarsPrime : 0;
+    const adoptedCompressionBars = result.ok && result.AsPrime > 0
+        ? selectedCompressionBars >= 2 ? selectedCompressionBars : result.nBarsPrime
+        : 0;
     const adoptedTensionPhi = selectedTensionPhi > 0 ? selectedTensionPhi : result.ok ? result.phi : input.phi;
     const adoptedCompressionPhi = selectedCompressionPhi > 0 ? selectedCompressionPhi : result.ok ? result.phi : input.phi;
     const adoptedTensionArea = selectedTensionBars >= 2 && selectedTensionPhi > 0 ? selectedTensionBars * Math.PI * selectedTensionPhi ** 2 / 4 : null;
@@ -154,7 +156,7 @@ export default function SectionDesignTool() {
             {/* -------- INPUT -------- */}
             <div className="space-y-4">
                 <div className="flex items-center justify-between gap-2">
-                    <button type="button" onClick={() => { setInput(DEFAULT_INPUT); setAdoptedDimensions({}); setAdoptedReinforcement({}); }} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50">
+                    <button type="button" onClick={() => { setInput(DEFAULT_INPUT); setAdoptedDimensions({}); setAdoptedReinforcement({ tensionBars: "2", tensionPhi: String(DEFAULT_INPUT.phi), compressionBars: "2", compressionPhi: String(DEFAULT_INPUT.phi) }); }} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50">
                         <RotateCcw size={14} /> Valori predefiniti
                     </button>
                     <div className="flex gap-2">
@@ -265,31 +267,43 @@ export default function SectionDesignTool() {
                                 <div className="rounded-xl bg-sky-50 p-4">
                                     <div className="flex items-center justify-between gap-2">
                                         <p className="flex items-baseline gap-1.5 text-xs font-semibold uppercase tracking-wide text-sky-700">Armatura tesa <span className="text-[10px] font-medium normal-case tracking-normal text-slate-400">richiesta</span></p>
-                                        <button type="button" onClick={() => setAdoptedReinforcement((p) => ({ ...p, tensionBars: "", tensionPhi: "" }))} title="Ripristina armatura richiesta" aria-label="Ripristina armatura tesa richiesta" className="rounded-md p-1 text-slate-500 transition hover:bg-sky-100 hover:text-sky-700">
+                                        <button type="button" onClick={() => setAdoptedReinforcement((p) => ({ ...p, tensionBars: "2", tensionPhi: String(result.phi) }))} title="Ripristina armatura richiesta" aria-label="Ripristina armatura tesa richiesta" className="rounded-md p-1 text-slate-500 transition hover:bg-sky-100 hover:text-sky-700">
                                             <RotateCcw size={15} />
                                         </button>
                                     </div>
-                                    <p className="mt-1 flex flex-wrap items-baseline gap-x-2 text-2xl font-bold text-slate-900">{result.nBars} φ {result.phi}<span className="text-sm font-medium text-slate-500">{fmt(result.AsAdopt, 0)} mm²</span></p>
+                                    <p className="mt-1 flex items-baseline gap-2 text-2xl font-bold text-slate-900">{fmt(result.AsAdopt, 0)}<span className="text-base font-semibold text-slate-400">mm²</span></p>
                                     <div className="mt-3 grid grid-cols-2 gap-3">
-                                        <NumberField label="Numero adottato" value={adoptedReinforcement.tensionBars ?? ""} onChange={(v) => setAdoptedReinforcement((p) => ({ ...p, tensionBars: v }))} step="1" />
+                                        <NumberField label="Numero adottato" value={adoptedReinforcement.tensionBars ?? ""} onChange={(v) => setAdoptedReinforcement((p) => ({ ...p, tensionBars: v }))} onBlur={(v) => setAdoptedReinforcement((p) => ({ ...p, tensionBars: v === "" ? "" : String(Math.max(2, Math.trunc(Number(v) || 0))) }))} min="2" step="1" />
                                         <SelectField label="Diametro adottato" value={adoptedReinforcement.tensionPhi || String(result.phi)} onChange={(v) => setAdoptedReinforcement((p) => ({ ...p, tensionPhi: v }))} options={[{ value: "", label: "Seleziona" }, ...BAR_DIAMETERS.map((d) => ({ value: d, label: `φ ${d}` }))]} />
                                     </div>
-                                    <p className="mt-2 text-sm font-semibold text-slate-700">A_s adottata = {adoptedTensionArea ? `${fmt(adoptedTensionArea, 0)} mm²` : "—"}</p>
+                                    <p className="mt-2 flex items-center justify-between gap-2 text-sm font-semibold text-slate-700">
+                                        <span>As <span className="text-[10px] font-medium normal-case tracking-normal text-slate-400">adottata</span> = {adoptedTensionArea ? `${fmt(adoptedTensionArea, 0)} mm²` : "—"}</span>
+                                        {adoptedTensionArea !== null && (adoptedTensionArea >= result.AsAdopt
+                                            ? <CheckCircle2 size={16} className="shrink-0 text-emerald-600" aria-label="Armatura adottata verificata" role="img" />
+                                            : <AlertTriangle size={16} className="shrink-0 text-amber-500" aria-label="Armatura adottata inferiore a quella richiesta" role="img" />)}
+                                    </p>
+                                    <AdoptionUtilization adopted={adoptedTensionArea} required={result.AsAdopt} />
                                 </div>
                                 {result.AsPrime > 0 && (
                                     <div className="rounded-xl bg-sky-50 p-4">
                                         <div className="flex items-center justify-between gap-2">
                                             <p className="flex items-baseline gap-1.5 text-xs font-semibold uppercase tracking-wide text-sky-700">Armatura compressa <span className="text-[10px] font-medium normal-case tracking-normal text-slate-400">richiesta</span></p>
-                                            <button type="button" onClick={() => setAdoptedReinforcement((p) => ({ ...p, compressionBars: "", compressionPhi: "" }))} title="Ripristina armatura richiesta" aria-label="Ripristina armatura compressa richiesta" className="rounded-md p-1 text-slate-500 transition hover:bg-sky-100 hover:text-sky-700">
+                                            <button type="button" onClick={() => setAdoptedReinforcement((p) => ({ ...p, compressionBars: "2", compressionPhi: String(result.phi) }))} title="Ripristina armatura richiesta" aria-label="Ripristina armatura compressa richiesta" className="rounded-md p-1 text-slate-500 transition hover:bg-sky-100 hover:text-sky-700">
                                                 <RotateCcw size={15} />
                                             </button>
                                         </div>
-                                        <p className="mt-1 flex flex-wrap items-baseline gap-x-2 text-2xl font-bold text-slate-900">{result.nBarsPrime} φ {result.phi}<span className="text-sm font-medium text-slate-500">{fmt(result.AsPrime, 0)} mm²</span></p>
+                                        <p className="mt-1 flex items-baseline gap-2 text-2xl font-bold text-slate-900">{fmt(result.AsPrime, 0)}<span className="text-base font-semibold text-slate-400">mm²</span></p>
                                         <div className="mt-3 grid grid-cols-2 gap-3">
-                                            <NumberField label="Numero adottato" value={adoptedReinforcement.compressionBars ?? ""} onChange={(v) => setAdoptedReinforcement((p) => ({ ...p, compressionBars: v }))} step="1" />
+                                            <NumberField label="Numero adottato" value={adoptedReinforcement.compressionBars ?? ""} onChange={(v) => setAdoptedReinforcement((p) => ({ ...p, compressionBars: v }))} onBlur={(v) => setAdoptedReinforcement((p) => ({ ...p, compressionBars: v === "" ? "" : String(Math.max(2, Math.trunc(Number(v) || 0))) }))} min="2" step="1" />
                                             <SelectField label="Diametro adottato" value={adoptedReinforcement.compressionPhi || String(result.phi)} onChange={(v) => setAdoptedReinforcement((p) => ({ ...p, compressionPhi: v }))} options={[{ value: "", label: "Seleziona" }, ...BAR_DIAMETERS.map((d) => ({ value: d, label: `φ ${d}` }))]} />
                                         </div>
-                                        <p className="mt-2 text-sm font-semibold text-slate-700">A'_s adottata = {adoptedCompressionArea ? `${fmt(adoptedCompressionArea, 0)} mm²` : "—"}</p>
+                                        <p className="mt-2 flex items-center justify-between gap-2 text-sm font-semibold text-slate-700">
+                                            <span>A's <span className="text-[10px] font-medium normal-case tracking-normal text-slate-400">adottata</span> = {adoptedCompressionArea ? `${fmt(adoptedCompressionArea, 0)} mm²` : "—"}</span>
+                                            {adoptedCompressionArea !== null && (adoptedCompressionArea >= result.AsPrime
+                                                ? <CheckCircle2 size={16} className="shrink-0 text-emerald-600" aria-label="Armatura adottata verificata" role="img" />
+                                                : <AlertTriangle size={16} className="shrink-0 text-amber-500" aria-label="Armatura adottata inferiore a quella richiesta" role="img" />)}
+                                        </p>
+                                        <AdoptionUtilization adopted={adoptedCompressionArea} required={result.AsPrime} />
                                     </div>
                                 )}
                             </div>
@@ -364,7 +378,7 @@ export default function SectionDesignTool() {
                         </Card>
 
                         <Card>
-                            <button type="button" aria-expanded={showSteps} onClick={() => setShowSteps((s) => !s)} className="flex w-full items-center justify-between text-sm font-bold text-slate-800">
+                            <button type="button" aria-expanded={showSteps} onClick={() => setShowSteps((s) => !s)} className="flex w-full cursor-pointer items-center justify-between text-sm font-bold text-slate-800">
                                 Foglio dei passaggi di calcolo
                                 <ChevronDown size={15} aria-hidden="true" className={`text-slate-400 transition-transform duration-300 ${showSteps ? "" : "-rotate-90"}`} />
                             </button>
@@ -610,7 +624,7 @@ function DesignDrawing({ result, B, cPrime, phiStirrup = 8, cLat = 30, mode = "f
     const mL = 72;
     const mR = 64;
     const mT = 24;
-    const mB = 58;
+    const mB = 86;
     const availW = BOX_W - mL - mR;
     const availH = BOX_H - mT - mB;
 
@@ -732,15 +746,9 @@ function DesignDrawing({ result, B, cPrime, phiStirrup = 8, cLat = 30, mode = "f
                 ) : (
                     <text x={secLeft + w / 2} y={secTop + ht + 20} textAnchor="middle" fontSize="11" fill={bColor}>B = {fmtU(B)}</text>
                 )}
-                {(showStirrup || (show.bars && (nBars > 0 || nBarsPrime > 0))) && (
-                    <text x={secLeft + w / 2} y={secTop + ht + 52} textAnchor="middle" fontSize="10">
-                        {showStirrup && <tspan fill="#dc2626">staffa φ{fmt(phiStirrup, 0)} (c = {fmtU(cLat)} {unit})</tspan>}
-                        {showStirrup && show.bars && (nBars > 0 || nBarsPrime > 0) && <tspan fill="#64748b"> · </tspan>}
-                        {show.bars && nBars > 0 && <tspan fill="#0f172a">armatura tesa φ{fmt(phi, 0)}</tspan>}
-                        {show.bars && nBars > 0 && show.bars && nBarsPrime > 0 && <tspan fill="#64748b"> · </tspan>}
-                        {show.bars && nBarsPrime > 0 && <tspan fill="#64748b">armatura compressa φ{fmt(phiPrime, 0)}</tspan>}
-                    </text>
-                )}
+                {showStirrup && <text x={secLeft + w / 2} y={secTop + ht + 45} textAnchor="middle" fontSize="10" fill="#dc2626">staffa φ{fmt(phiStirrup, 0)} (c = {fmtU(cLat)} {unit})</text>}
+                {show.bars && nBars > 0 && <text x={secLeft + w / 2} y={secTop + ht + 56} textAnchor="middle" fontSize="10" fill="#0f172a">armatura tesa φ{fmt(phi, 0)}</text>}
+                {show.bars && nBarsPrime > 0 && <text x={secLeft + w / 2} y={secTop + ht + 67} textAnchor="middle" fontSize="10" fill="#64748b">armatura compressa φ{fmt(phiPrime, 0)}</text>}
             </svg>
             {show.dims && (
                 <p className="mt-1 flex items-center justify-center gap-3 text-[11px] text-slate-400">
@@ -769,6 +777,21 @@ function CheckRow({ ok, label, warn, reference }) {
                     </div>
                 </div>}
             </div>
+        </div>
+    );
+}
+
+function AdoptionUtilization({ adopted, required }) {
+    if (!(adopted > 0) || !(required > 0)) return null;
+    const utilization = (required / adopted) * 100;
+    const meetsRequirement = utilization <= 100;
+    const width = Math.min(100, Math.max(0, utilization));
+    return (
+        <div className="mt-2 flex items-center gap-3" aria-label={`Sfruttamento armatura ${fmt(utilization, 1)} per cento`}>
+            <div className="h-2 min-w-0 flex-1 overflow-hidden rounded-full bg-slate-200" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={width} aria-valuetext={`${fmt(utilization, 1)}%`}>
+                <div className={`h-full rounded-full transition-[width] duration-300 ${meetsRequirement ? "bg-emerald-500" : "bg-amber-500"}`} style={{ width: `${width}%` }} />
+            </div>
+            <span className={`shrink-0 text-xs font-semibold tabular-nums ${meetsRequirement ? "text-emerald-700" : "text-amber-700"}`}>{fmt(utilization, 1)}%</span>
         </div>
     );
 }
@@ -823,7 +846,7 @@ function CollapsibleCard({ title, children, defaultOpen = true, command }) {
     return (
         <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <button type="button" aria-expanded={isOpen} onClick={() => setOpen(!isOpen)}
-                className={`flex w-full items-center justify-between text-left text-sm font-bold text-slate-800 ${isOpen ? "" : "cursor-pointer"}`}>
+                className="flex w-full cursor-pointer items-center justify-between text-left text-sm font-bold text-slate-800">
                 {title}
                 <ChevronDown size={16} aria-hidden="true" className={`text-slate-400 transition-transform ${isOpen ? "" : "-rotate-90"}`} />
             </button>
@@ -894,13 +917,13 @@ function ResultRow({ label, value, unit, strong }) {
         </div>
     );
 }
-function NumberField({ label, unit, value, onChange, step = "1" }) {
+function NumberField({ label, unit, value, onChange, onBlur, min, step = "1" }) {
     return (
         <label className="block">
             <span className="mb-1 block text-xs font-semibold text-slate-500">
                 {label}{unit && <span className="ml-1 text-slate-400">[{unit}]</span>}
             </span>
-            <input type="number" value={value} step={step} onChange={(e) => onChange(e.target.value)}
+            <input type="number" value={value} min={min} step={step} onChange={(e) => onChange(e.target.value)} onBlur={onBlur ? (e) => onBlur(e.target.value) : undefined}
                 className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100" />
         </label>
     );
