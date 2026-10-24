@@ -175,7 +175,7 @@ export default function SectionDesignTool() {
                             : <NumberField label="Larghezza B" unit="mm" value={input.B} onChange={setNumber("B")} />}
                         {input.mode === "fixBH"
                             ? <NumberField label="Altezza h" unit="mm" value={input.h} onChange={setNumber("h")} />
-                            : <NumberField label="β = A's/A_s" value={input.beta} step="0.05" onChange={setNumber("beta")} />}
+                            : <NumberField label="β = A's/As" value={input.beta} step="0.05" onChange={setNumber("beta")} />}
                         <NumberField label="Copriferro c' (compr.)" unit="mm" value={input.cPrime} onChange={setNumber("cPrime")} />
                         <NumberField label="Copriferro c (teso)" unit="mm" value={input.c} onChange={setNumber("c")} />
                         <div className="col-span-2">
@@ -349,7 +349,7 @@ export default function SectionDesignTool() {
                             </div>
                             {exportMessage && <p role="status" className="mb-2 text-right text-xs text-slate-500">{exportMessage}</p>}
                             <div className="mx-auto max-w-[480px]">
-                                <DesignDrawing result={drawingResult} B={adoptedB} cPrime={input.cPrime} phiStirrup={input.phiStirrup} cLat={input.cLat} mode="fixBH" unit={drawUnit} svgRef={drawingSvgRef} />
+                                <DesignDrawing result={drawingResult} B={adoptedB} cPrime={input.cPrime} phiStirrup={input.phiStirrup} cLat={input.cLat} moment={input.MEd} mode="fixBH" unit={drawUnit} svgRef={drawingSvgRef} />
                             </div>
                         </Card>
 
@@ -601,7 +601,7 @@ function VDim({ dimX, yA, yB, edgeX, label, color = "#475569" }) {
 const BOX_W = 440;
 const BOX_H = 360;
 
-function DesignDrawing({ result, B, cPrime, phiStirrup = 8, cLat = 30, mode = "fixB", unit = "mm", svgRef }) {
+function DesignDrawing({ result, B, cPrime, phiStirrup = 8, cLat = 30, moment = 0, mode = "fixB", unit = "mm", svgRef }) {
     const { h, d, X, phi, phiPrime = phi, nBars, nBarsPrime, beta } = result;
     const cP = cPrime ?? 40;
     const c = h - d; // copriferro all'asse arm. tesa (dal lembo teso)
@@ -614,7 +614,7 @@ function DesignDrawing({ result, B, cPrime, phiStirrup = 8, cLat = 30, mode = "f
     const hColor = mode === "fixB" ? CALC_COLOR : INPUT_COLOR;
 
     // Comandi di visibilità (staffa / armature / quote)
-    const [show, setShow] = useState({ stirrup: true, bars: true, dims: true });
+    const [show, setShow] = useState({ stirrup: true, bars: true, moment: true, dims: true });
     const toggle = (k) => setShow((s) => ({ ...s, [k]: !s[k] }));
 
     // Unità di misura delle quote del disegno (valori memorizzati in mm).
@@ -642,6 +642,9 @@ function DesignDrawing({ result, B, cPrime, phiStirrup = 8, cLat = 30, mode = "f
     const secLeft = mL + (availW - w) / 2;
     const secTop = mT + (availH - ht) / 2;
     const secRight = secLeft + w;
+    const momentX = secLeft - 62;
+    const momentRadius = Math.min(55, ht * 0.3);
+    const momentCurveWidth = momentRadius * 0.9;
     const yOf = (depth) => secTop + depth * scale;
 
     // Posizione orizzontale delle barre: l'asse delle barre d'angolo è a
@@ -704,6 +707,7 @@ function DesignDrawing({ result, B, cPrime, phiStirrup = 8, cLat = 30, mode = "f
             <div className="mb-2 flex flex-wrap items-center justify-center gap-2">
                 <Toggle k="stirrup" label="Staffa" color="#dc2626" />
                 <Toggle k="bars" label="Armature" color="#0f172a" />
+                <Toggle k="moment" label="Momento" color="#16a34a" />
                 <Toggle k="dims" label="Quote" color="#64748b" />
             </div>
 
@@ -728,6 +732,22 @@ function DesignDrawing({ result, B, cPrime, phiStirrup = 8, cLat = 30, mode = "f
                 {/* asse neutro */}
                 {show.dims && X > 0 && X * scale < ht && (
                     <line x1={secLeft} y1={yOf(X)} x2={secRight} y2={yOf(X)} stroke="#0284c7" strokeWidth="1.5" strokeDasharray="6 4" />
+                )}
+
+                {/* verso del momento flettente */}
+                {show.moment && (
+                    <g>
+                        <defs>
+                            <marker id="moment-arrowhead" markerWidth="7" markerHeight="7" refX="5.5" refY="3.5" orient="auto" markerUnits="userSpaceOnUse">
+                                <path d="M0,0 L7,3.5 L0,7 Z" fill="#16a34a" />
+                            </marker>
+                        </defs>
+                        <path
+                            d={`M ${momentX} ${secTop + ht / 2 + momentRadius} C ${momentX - momentCurveWidth} ${secTop + ht / 2 + momentRadius * 0.7}, ${momentX - momentCurveWidth} ${secTop + ht / 2 - momentRadius * 0.7}, ${momentX} ${secTop + ht / 2 - momentRadius}`}
+                            fill="none" stroke="#16a34a" strokeWidth="2" markerEnd="url(#moment-arrowhead)"
+                        />
+                        <text x={momentX - momentCurveWidth} y={secTop + ht / 2 + 4} textAnchor="middle" fontSize="12" fontWeight="bold" fill="#16a34a">M</text>
+                    </g>
                 )}
 
                 {/* barre */}
