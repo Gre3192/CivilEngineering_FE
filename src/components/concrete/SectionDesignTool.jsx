@@ -3,8 +3,8 @@
 // Strumento: Progetto (dimensionamento) a flessione (SLU) di una sezione
 // rettangolare in c.a. — metodo degli appunti (X = 0.2593 d).
 
-import { useMemo, useState } from "react";
-import { CheckCircle2, AlertTriangle, Info, RotateCcw } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
+import { CheckCircle2, AlertTriangle, Info, RotateCcw, ChevronDown } from "lucide-react";
 import {
     designSection,
     CONCRETE_CLASSES,
@@ -44,8 +44,7 @@ export default function SectionDesignTool() {
         <div className="grid gap-6 lg:grid-cols-[380px_1fr]">
             {/* -------- INPUT -------- */}
             <div className="space-y-4">
-                <Card>
-                    <CardTitle>Dati di progetto</CardTitle>
+                <CollapsibleCard title="Dati di progetto">
                     <div className="mb-3">
                         <span className="mb-1 block text-xs font-semibold text-slate-500">Fissa</span>
                         <ModeToggle value={input.mode} onChange={setField("mode")} />
@@ -69,10 +68,9 @@ export default function SectionDesignTool() {
                             ? "Sezione assegnata: A's calcolata solo se necessaria (doppia armatura)."
                             : "β = 0 → semplice armatura."}
                     </p>
-                </Card>
+                </CollapsibleCard>
 
-                <Card>
-                    <CardTitle>Materiali</CardTitle>
+                <CollapsibleCard title="Materiali">
                     <div className="grid grid-cols-2 gap-3">
                         <SelectField label="Calcestruzzo" value={input.fck} onChange={setNumber("fck")} options={CONCRETE_CLASSES.map((c) => ({ value: c.fck, label: c.id }))} />
                         <SelectField label="Acciaio" value={input.fyk} onChange={setNumber("fyk")} options={STEEL_GRADES.map((s) => ({ value: s.fyk, label: s.id }))} />
@@ -90,15 +88,14 @@ export default function SectionDesignTool() {
                         )}
                         {result.ok && <SteelDiagram fyd={result.fyd} model={input.steelModel} ks={input.ks} />}
                     </div>
-                </Card>
+                </CollapsibleCard>
 
-                <Card>
-                    <CardTitle>Barre</CardTitle>
+                <CollapsibleCard title="Barre">
                     <div className="grid grid-cols-2 gap-3">
                         <SelectField label="Diametro φ" value={input.phi} onChange={setNumber("phi")} options={BAR_DIAMETERS.map((d) => ({ value: d, label: `φ ${d}` }))} />
                         <SelectField label="Staffa φ" value={input.phiStirrup} onChange={setNumber("phiStirrup")} options={STIRRUP_DIAMETERS.map((d) => ({ value: d, label: `φ ${d}` }))} />
                     </div>
-                </Card>
+                </CollapsibleCard>
 
                 <Card>
                     <button type="button" onClick={() => setShowAdvanced((p) => !p)} className="flex w-full items-center justify-between text-sm font-semibold text-slate-600">
@@ -640,6 +637,37 @@ function AssumptionsBox() {
 // -------- primitivi UI --------
 function Card({ children }) {
     return <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">{children}</div>;
+}
+function CollapsibleCard({ title, children }) {
+    const [isOpen, setIsOpen] = useState(true);
+    const [contentHeight, setContentHeight] = useState("auto");
+    const contentRef = useRef(null);
+    const toggle = () => {
+        const height = contentRef.current?.scrollHeight ?? 0;
+        if (isOpen) {
+            setContentHeight(`${height}px`);
+            requestAnimationFrame(() => setContentHeight("0px"));
+        } else {
+            setContentHeight(`${height}px`);
+            setIsOpen(true);
+        }
+        if (isOpen) setIsOpen(false);
+    };
+    return (
+        <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <button type="button" aria-expanded={isOpen} onClick={toggle}
+                className="flex w-full items-center justify-between text-left text-sm font-bold text-slate-800">
+                {title}
+                <ChevronDown size={16} aria-hidden="true" className={`text-slate-400 transition-transform ${isOpen ? "" : "-rotate-90"}`} />
+            </button>
+            <div aria-hidden={!isOpen} inert={!isOpen} className="overflow-hidden transition-[height] duration-300 ease-in-out"
+                style={{ height: contentHeight }} onTransitionEnd={(event) => {
+                    if (event.propertyName === "height" && isOpen) setContentHeight("auto");
+                }}>
+                <div ref={contentRef} className="pt-3">{children}</div>
+            </div>
+        </section>
+    );
 }
 function CardTitle({ children }) {
     return <h3 className="mb-3 text-sm font-bold text-slate-800">{children}</h3>;
