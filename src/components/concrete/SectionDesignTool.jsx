@@ -161,7 +161,7 @@ export default function SectionDesignTool() {
                         <Card>
                             <CardTitle>Sezione progettata</CardTitle>
                             <div className="mx-auto max-w-[480px]">
-                                <DesignDrawing result={result} B={result.B} cPrime={input.cPrime} />
+                                <DesignDrawing result={result} B={result.B} cPrime={input.cPrime} phiStirrup={input.phiStirrup} cLat={input.cLat} mode={input.mode} />
                             </div>
                         </Card>
 
@@ -382,6 +382,24 @@ function ModeToggle({ value, onChange }) {
 }
 
 // Quota verticale con frecce alle due estremita' e linee di estensione.
+function HDim({ dimY, xA, xB, edgeY, label, color = "#64748b" }) {
+    const mid = (xA + xB) / 2;
+    return (
+        <g stroke={color} fill={color}>
+            {/* linee di estensione dal bordo della sezione alla linea di quota */}
+            <line x1={xA} y1={edgeY} x2={xA} y2={dimY} strokeWidth="0.5" strokeDasharray="2 2" />
+            <line x1={xB} y1={edgeY} x2={xB} y2={dimY} strokeWidth="0.5" strokeDasharray="2 2" />
+            {/* linea di quota */}
+            <line x1={xA} y1={dimY} x2={xB} y2={dimY} strokeWidth="1" />
+            {/* frecce */}
+            <polygon points={`${xA},${dimY} ${xA + 6},${dimY - 2.5} ${xA + 6},${dimY + 2.5}`} stroke="none" />
+            <polygon points={`${xB},${dimY} ${xB - 6},${dimY - 2.5} ${xB - 6},${dimY + 2.5}`} stroke="none" />
+            {/* etichetta */}
+            <text x={mid} y={dimY + 12} fontSize="11" fontWeight="bold" textAnchor="middle" stroke="none">{label}</text>
+        </g>
+    );
+}
+
 function VDim({ dimX, yA, yB, edgeX, label, color = "#475569" }) {
     const mid = (yA + yB) / 2;
     const tooShort = Math.abs(yB - yA) < 16;
@@ -411,16 +429,27 @@ function VDim({ dimX, yA, yB, edgeX, label, color = "#475569" }) {
 const BOX_W = 440;
 const BOX_H = 360;
 
-function DesignDrawing({ result, B, cPrime }) {
+function DesignDrawing({ result, B, cPrime, phiStirrup = 8, cLat = 30, mode = "fixB" }) {
     const { h, d, X, phi, nBars, nBarsPrime, beta } = result;
     const cP = cPrime ?? 40;
     const c = h - d; // copriferro all'asse arm. tesa (dal lembo teso)
+
+    // Colore delle quote B/h: grigio = dato di input, nero = valore calcolato.
+    // fixB → B input, h calcolata; fixH → h input, B calcolata; fixBH → entrambe input.
+    const INPUT_COLOR = "#0f172a"; // nero
+    const CALC_COLOR = "#94a3b8"; // grigino
+    const bColor = mode === "fixH" ? CALC_COLOR : INPUT_COLOR;
+    const hColor = mode === "fixB" ? CALC_COLOR : INPUT_COLOR;
+
+    // Comandi di visibilità (staffa / armature / quote)
+    const [show, setShow] = useState({ stirrup: true, bars: true, dims: true });
+    const toggle = (k) => setShow((s) => ({ ...s, [k]: !s[k] }));
 
     // Margini per le quote (fissi) e area utile di disegno
     const mL = 72;
     const mR = 64;
     const mT = 24;
-    const mB = 34;
+    const mB = 58;
     const availW = BOX_W - mL - mR;
     const availH = BOX_H - mT - mB;
 
@@ -433,7 +462,9 @@ function DesignDrawing({ result, B, cPrime }) {
     const secRight = secLeft + w;
     const yOf = (depth) => secTop + depth * scale;
 
-    const lat = 30;
+    // Posizione orizzontale delle barre: l'asse delle barre d'angolo è a
+    // (cLat + phi_st + phi/2) dal bordo, così poggiano dentro la staffa.
+    const lat = Math.min(cLat + phiStirrup + phi / 2, B / 2 - phi / 2); // asse barra d'angolo dal bordo [mm]
     const barsAt = (n, depthY) => {
         const arr = [];
         for (let i = 0; i < n; i++) {
@@ -446,33 +477,110 @@ function DesignDrawing({ result, B, cPrime }) {
     const tensionBars = barsAt(nBars, d);
     const comprBars = beta > 0 ? barsAt(nBarsPrime, cP) : [];
 
+    // Staffa TANGENTE alle armature: l'asse della staffa è distante
+    // (phi/2 + phi_st/2) dall'asse delle barre, così la faccia interna tocca
+    // le barre. Lati sx/dx tangenti alle barre d'angolo; lato inferiore
+    // tangente alle barre tese; lato superiore tangente alle barre compresse
+    // (se presenti), altrimenti al copriferro laterale.
+    const off = phi / 2 + phiStirrup / 2; // distanza asse staffa - asse barra [mm]
+    const xLeftA = lat - off; // = cLat + phi_st/2 (asse staffa dal bordo sx)
+    const xRightA = B - lat + off;
+    const yBotA = Math.min(d + off, h - (cLat + phiStirrup / 2)); // depth asse inferiore
+    const yTopA = beta > 0 ? Math.max(cP - off, cLat + phiStirrup / 2) : cLat + phiStirrup / 2;
+    const stX = secLeft + xLeftA * scale;
+    const stY = secTop + yTopA * scale;
+    const stW = (xRightA - xLeftA) * scale;
+    const stH = (yBotA - yTopA) * scale;
+    const stR = Math.max(2, 6 * scale);
+    const stWidth = Math.max(1.4, phiStirrup * scale * 0.8); // spessore visivo staffa
+    const stirrupFits = stW > 8 && stH > 8;
+    const showStirrup = show.stirrup && stirrupFits;
+
+    const Toggle = ({ k, label, color }) => {
+        const on = show[k];
+        return (
+            <button
+                type="button"
+                onClick={() => toggle(k)}
+                className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition ${
+                    on ? "border-slate-300 bg-white text-slate-700 shadow-sm" : "border-slate-200 bg-slate-50 text-slate-400"
+                }`}
+                aria-pressed={on}
+            >
+                <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: on ? color : "#cbd5e1" }} />
+                {label}
+            </button>
+        );
+    };
+
     return (
-        <svg width="100%" viewBox={`0 0 ${BOX_W} ${BOX_H}`} role="img" aria-label="Sezione progettata quotata">
-            {/* zona compressa + contorno */}
-            <rect x={secLeft} y={secTop} width={w} height={Math.min(X * scale, ht)} fill="#e0f2fe" />
-            <rect x={secLeft} y={secTop} width={w} height={ht} fill="none" stroke="#334155" strokeWidth="2" />
+        <div>
+            {/* comandi di visibilità dentro il box */}
+            <div className="mb-2 flex flex-wrap items-center justify-center gap-2">
+                <Toggle k="stirrup" label="Staffa" color="#dc2626" />
+                <Toggle k="bars" label="Armature" color="#0f172a" />
+                <Toggle k="dims" label="Quote" color="#64748b" />
+            </div>
 
-            {/* asse neutro */}
-            {X > 0 && X * scale < ht && (
-                <line x1={secLeft} y1={yOf(X)} x2={secRight} y2={yOf(X)} stroke="#0284c7" strokeWidth="1.5" strokeDasharray="6 4" />
+            <svg width="100%" viewBox={`0 0 ${BOX_W} ${BOX_H}`} role="img" aria-label="Sezione progettata quotata">
+                {/* zona compressa + contorno */}
+                <rect x={secLeft} y={secTop} width={w} height={Math.min(X * scale, ht)} fill="#e0f2fe" />
+                <rect x={secLeft} y={secTop} width={w} height={ht} fill="none" stroke="#334155" strokeWidth="2" />
+
+                {/* staffa (tangente alle armature) */}
+                {showStirrup && (
+                    <>
+                        <rect
+                            x={stX} y={stY} width={stW} height={stH} rx={stR} ry={stR}
+                            fill="none" stroke="#dc2626" strokeWidth={stWidth} strokeLinejoin="round"
+                        />
+                        {/* ganci di chiusura 135° (angolo in alto a sinistra) */}
+                        <line x1={stX + stR} y1={stY} x2={stX + stR + 7} y2={stY + 7} stroke="#dc2626" strokeWidth={stWidth} strokeLinecap="round" />
+                        <line x1={stX} y1={stY + stR} x2={stX + 7} y2={stY + stR + 7} stroke="#dc2626" strokeWidth={stWidth} strokeLinecap="round" />
+                    </>
+                )}
+
+                {/* asse neutro */}
+                {show.dims && X > 0 && X * scale < ht && (
+                    <line x1={secLeft} y1={yOf(X)} x2={secRight} y2={yOf(X)} stroke="#0284c7" strokeWidth="1.5" strokeDasharray="6 4" />
+                )}
+
+                {/* barre */}
+                {show.bars && tensionBars.map((b, i) => <circle key={`t${i}`} cx={b.x} cy={b.y} r={barR} fill="#0f172a" />)}
+                {show.bars && comprBars.map((b, i) => <circle key={`c${i}`} cx={b.x} cy={b.y} r={barR} fill="#64748b" />)}
+
+                {/* quote */}
+                {show.dims && (
+                    <>
+                        {/* a sinistra: x (asse neutro) e la colonna d + c (= h) */}
+                        <VDim dimX={secLeft - 16} yA={yOf(0)} yB={yOf(X)} edgeX={secLeft} label={`x=${fmt(X, 0)}`} color="#0284c7" />
+                        <VDim dimX={secLeft - 38} yA={yOf(0)} yB={yOf(d)} edgeX={secLeft} label={`d=${fmt(d, 0)}`} color="#334155" />
+                        <VDim dimX={secLeft - 38} yA={yOf(d)} yB={yOf(h)} edgeX={secLeft} label={`c=${fmt(c, 0)}`} color="#64748b" />
+                        {/* a destra: c' (lembo compresso -> As') e h */}
+                        <VDim dimX={secRight + 16} yA={yOf(0)} yB={yOf(cP)} edgeX={secRight} label={`c'=${fmt(cP, 0)}`} color="#64748b" />
+                        <VDim dimX={secRight + 38} yA={yOf(0)} yB={yOf(h)} edgeX={secRight} label={`h=${fmt(h, 0)}`} color={hColor} />
+                    </>
+                )}
+
+                {/* base: quota con frecce (se le quote sono attive) altrimenti etichetta */}
+                {show.dims ? (
+                    <HDim dimY={secTop + ht + 16} xA={secLeft} xB={secRight} edgeY={secTop + ht} label={`B = ${fmt(B, 0)}`} color={bColor} />
+                ) : (
+                    <text x={secLeft + w / 2} y={secTop + ht + 20} textAnchor="middle" fontSize="11" fill={bColor}>B = {fmt(B, 0)}</text>
+                )}
+                {showStirrup && (
+                    <text x={secLeft + w / 2} y={secTop + ht + 52} textAnchor="middle" fontSize="10" fill="#dc2626">
+                        staffa φ{fmt(phiStirrup, 0)} (c = {fmt(cLat, 0)} mm)
+                    </text>
+                )}
+            </svg>
+            {show.dims && (
+                <p className="mt-1 flex items-center justify-center gap-3 text-[11px] text-slate-400">
+                    <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: INPUT_COLOR }} />input</span>
+                    <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: CALC_COLOR }} />calcolato</span>
+                </p>
             )}
-
-            {/* barre */}
-            {tensionBars.map((b, i) => <circle key={`t${i}`} cx={b.x} cy={b.y} r={barR} fill="#0f172a" />)}
-            {comprBars.map((b, i) => <circle key={`c${i}`} cx={b.x} cy={b.y} r={barR} fill="#64748b" />)}
-
-            {/* quote a sinistra: x (asse neutro) e la colonna d + c (= h) */}
-            <VDim dimX={secLeft - 16} yA={yOf(0)} yB={yOf(X)} edgeX={secLeft} label={`x=${fmt(X, 0)}`} color="#0284c7" />
-            <VDim dimX={secLeft - 38} yA={yOf(0)} yB={yOf(d)} edgeX={secLeft} label={`d=${fmt(d, 0)}`} color="#334155" />
-            <VDim dimX={secLeft - 38} yA={yOf(d)} yB={yOf(h)} edgeX={secLeft} label={`c=${fmt(c, 0)}`} color="#64748b" />
-
-            {/* quote a destra: c' (lembo compresso -> As') e h */}
-            <VDim dimX={secRight + 16} yA={yOf(0)} yB={yOf(cP)} edgeX={secRight} label={`c'=${fmt(cP, 0)}`} color="#64748b" />
-            <VDim dimX={secRight + 38} yA={yOf(0)} yB={yOf(h)} edgeX={secRight} label={`h=${fmt(h, 0)}`} color="#94a3b8" />
-
-            {/* base */}
-            <text x={secLeft + w / 2} y={secTop + ht + 22} textAnchor="middle" fontSize="11" fill="#64748b">B = {fmt(B, 0)} mm</text>
-        </svg>
+        </div>
     );
 }
 
