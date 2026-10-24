@@ -33,6 +33,7 @@ export default function SectionDesignTool() {
     const [input, setInput] = useState(DEFAULT_INPUT);
     const [showAdvanced, setShowAdvanced] = useState(false);
     const [showSteps, setShowSteps] = useState(false);
+    const [drawUnit, setDrawUnit] = useState("mm"); // unità delle quote del disegno
 
     const result = useMemo(() => designSection(input), [input]);
 
@@ -159,9 +160,21 @@ export default function SectionDesignTool() {
                         </div>
 
                         <Card>
-                            <CardTitle>Sezione progettata</CardTitle>
+                            <div className="mb-3 flex items-center justify-between gap-3">
+                                <h3 className="text-sm font-bold text-slate-800">Sezione progettata</h3>
+                                <select
+                                    value={drawUnit}
+                                    onChange={(e) => setDrawUnit(e.target.value)}
+                                    aria-label="Unità di misura delle quote"
+                                    className="rounded-full border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-sky-200"
+                                >
+                                    <option value="mm">mm</option>
+                                    <option value="cm">cm</option>
+                                    <option value="m">m</option>
+                                </select>
+                            </div>
                             <div className="mx-auto max-w-[480px]">
-                                <DesignDrawing result={result} B={result.B} cPrime={input.cPrime} phiStirrup={input.phiStirrup} cLat={input.cLat} mode={input.mode} />
+                                <DesignDrawing result={result} B={result.B} cPrime={input.cPrime} phiStirrup={input.phiStirrup} cLat={input.cLat} mode={input.mode} unit={drawUnit} />
                             </div>
                         </Card>
 
@@ -429,7 +442,7 @@ function VDim({ dimX, yA, yB, edgeX, label, color = "#475569" }) {
 const BOX_W = 440;
 const BOX_H = 360;
 
-function DesignDrawing({ result, B, cPrime, phiStirrup = 8, cLat = 30, mode = "fixB" }) {
+function DesignDrawing({ result, B, cPrime, phiStirrup = 8, cLat = 30, mode = "fixB", unit = "mm" }) {
     const { h, d, X, phi, nBars, nBarsPrime, beta } = result;
     const cP = cPrime ?? 40;
     const c = h - d; // copriferro all'asse arm. tesa (dal lembo teso)
@@ -444,6 +457,16 @@ function DesignDrawing({ result, B, cPrime, phiStirrup = 8, cLat = 30, mode = "f
     // Comandi di visibilità (staffa / armature / quote)
     const [show, setShow] = useState({ stirrup: true, bars: true, dims: true });
     const toggle = (k) => setShow((s) => ({ ...s, [k]: !s[k] }));
+
+    // Unità di misura delle quote del disegno (valori memorizzati in mm).
+    // Gli zeri finali dopo la virgola vengono eliminati (es. 50,0 → 50; 0,300 → 0,3).
+    const U_FACTOR = { mm: 1, cm: 0.1, m: 0.001 };
+    const U_DEC = { mm: 0, cm: 1, m: 3 };
+    const fmtU = (mm) => {
+        const v = mm * U_FACTOR[unit];
+        if (!Number.isFinite(v)) return "-";
+        return v.toLocaleString("it-IT", { minimumFractionDigits: 0, maximumFractionDigits: U_DEC[unit] });
+    };
 
     // Margini per le quote (fissi) e area utile di disegno
     const mL = 72;
@@ -553,24 +576,24 @@ function DesignDrawing({ result, B, cPrime, phiStirrup = 8, cLat = 30, mode = "f
                 {show.dims && (
                     <>
                         {/* a sinistra: x (asse neutro) e la colonna d + c (= h) */}
-                        <VDim dimX={secLeft - 16} yA={yOf(0)} yB={yOf(X)} edgeX={secLeft} label={`x=${fmt(X, 0)}`} color="#0284c7" />
-                        <VDim dimX={secLeft - 38} yA={yOf(0)} yB={yOf(d)} edgeX={secLeft} label={`d=${fmt(d, 0)}`} color="#334155" />
-                        <VDim dimX={secLeft - 38} yA={yOf(d)} yB={yOf(h)} edgeX={secLeft} label={`c=${fmt(c, 0)}`} color="#64748b" />
+                        <VDim dimX={secLeft - 16} yA={yOf(0)} yB={yOf(X)} edgeX={secLeft} label={`x=${fmtU(X)}`} color="#0284c7" />
+                        <VDim dimX={secLeft - 38} yA={yOf(0)} yB={yOf(d)} edgeX={secLeft} label={`d=${fmtU(d)}`} color="#334155" />
+                        <VDim dimX={secLeft - 38} yA={yOf(d)} yB={yOf(h)} edgeX={secLeft} label={`c=${fmtU(c)}`} color="#64748b" />
                         {/* a destra: c' (lembo compresso -> As') e h */}
-                        <VDim dimX={secRight + 16} yA={yOf(0)} yB={yOf(cP)} edgeX={secRight} label={`c'=${fmt(cP, 0)}`} color="#64748b" />
-                        <VDim dimX={secRight + 38} yA={yOf(0)} yB={yOf(h)} edgeX={secRight} label={`h=${fmt(h, 0)}`} color={hColor} />
+                        <VDim dimX={secRight + 16} yA={yOf(0)} yB={yOf(cP)} edgeX={secRight} label={`c'=${fmtU(cP)}`} color="#64748b" />
+                        <VDim dimX={secRight + 38} yA={yOf(0)} yB={yOf(h)} edgeX={secRight} label={`h=${fmtU(h)}`} color={hColor} />
                     </>
                 )}
 
                 {/* base: quota con frecce (se le quote sono attive) altrimenti etichetta */}
                 {show.dims ? (
-                    <HDim dimY={secTop + ht + 16} xA={secLeft} xB={secRight} edgeY={secTop + ht} label={`B = ${fmt(B, 0)}`} color={bColor} />
+                    <HDim dimY={secTop + ht + 16} xA={secLeft} xB={secRight} edgeY={secTop + ht} label={`B = ${fmtU(B)}`} color={bColor} />
                 ) : (
-                    <text x={secLeft + w / 2} y={secTop + ht + 20} textAnchor="middle" fontSize="11" fill={bColor}>B = {fmt(B, 0)}</text>
+                    <text x={secLeft + w / 2} y={secTop + ht + 20} textAnchor="middle" fontSize="11" fill={bColor}>B = {fmtU(B)}</text>
                 )}
                 {showStirrup && (
                     <text x={secLeft + w / 2} y={secTop + ht + 52} textAnchor="middle" fontSize="10" fill="#dc2626">
-                        staffa φ{fmt(phiStirrup, 0)} (c = {fmt(cLat, 0)} mm)
+                        staffa φ{fmt(phiStirrup, 0)} (c = {fmtU(cLat)} {unit})
                     </text>
                 )}
             </svg>
