@@ -294,13 +294,14 @@ export default function SectionDesignTool() {
                                 )}
                             </div>
                             <div className="mt-3 space-y-2">
-                                <CheckRow ok={checkedWidthOk} label={`Ingombro barre${selectedTensionBars >= 2 || selectedTensionPhi > 0 ? " adottate" : ""}: ${fmt(checkedWidth, 0)} mm ≤ B = ${fmt(checkedWidthLimit, 0)} mm`} />
-                                <CheckRow ok={checkedTensionArea >= result.AsMin} warn label={`${checkedTensionAreaIsAdopted ? "A_s adottata" : "A_s calcolata"} ${checkedTensionArea >= result.AsMin ? "≥" : "<"} A_s,min (${fmt(checkedTensionArea, 0)} / ${fmt(result.AsMin, 0)} mm²)`} />
-                                <CheckRow ok={checkedTensionArea <= result.AsMax} label={`${checkedTensionAreaIsAdopted ? "A_s adottata" : "A_s calcolata"} ${checkedTensionArea <= result.AsMax ? "≤" : ">"} A_s,max (${fmt(checkedTensionArea, 0)} / ${fmt(result.AsMax, 0)} mm²)`} />
+                                <CheckRow ok={checkedWidthOk} label={`Ingombro barre${selectedTensionBars >= 2 || selectedTensionPhi > 0 ? " adottate" : ""}: ${fmt(checkedWidth, 0)} mm ≤ B = ${fmt(checkedWidthLimit, 0)} mm`} reference={{ ntc: "§4.1.6.1.3", ec2: "§8.2" }} />
+                                <CheckRow ok={checkedTensionArea >= result.AsMin} warn label={`${checkedTensionAreaIsAdopted ? "A_s adottata" : "A_s calcolata"} ${checkedTensionArea >= result.AsMin ? "≥" : "<"} A_s,min (${fmt(checkedTensionArea, 0)} / ${fmt(result.AsMin, 0)} mm²)`} reference={{ ntc: "§4.1.6.1.1", ec2: "§9.2.1.1(1)" }} />
+                                <CheckRow ok={checkedTensionArea <= result.AsMax} label={`${checkedTensionAreaIsAdopted ? "A_s adottata" : "A_s calcolata"} ${checkedTensionArea <= result.AsMax ? "≤" : ">"} A_s,max (${fmt(checkedTensionArea, 0)} / ${fmt(result.AsMax, 0)} mm²)`} reference={{ ntc: "§4.1.6.1.1", ec2: "§9.2.1.1(3)" }} />
                                 {result.beta > 0 && (
                                     <CheckRow ok={checkedCompressionAreaIsAdopted ? checkedCompressionArea >= result.AsPrime : result.comprYield} warn label={checkedCompressionAreaIsAdopted
                                         ? `A'_s adottata ${checkedCompressionArea >= result.AsPrime ? "≥" : "<"} A'_s richiesta (${fmt(checkedCompressionArea, 0)} / ${fmt(result.AsPrime, 0)} mm²)`
-                                        : result.comprYield ? "Acciaio compresso snervato (σ'_s = f_yd)" : "Acciaio compresso NON snervato: risultato approssimato"} />
+                                        : result.comprYield ? "Acciaio compresso snervato (σ'_s = f_yd)" : "Acciaio compresso NON snervato: risultato approssimato"}
+                                    reference={checkedCompressionAreaIsAdopted ? { ntc: "§4.1.2.3.4", ec2: "§6.1" } : { ntc: "§4.1.2.1.2.2", ec2: "§3.2.7" }} />
                                 )}
                             </div>
                         </Card>
@@ -747,11 +748,23 @@ function DesignDrawing({ result, B, cPrime, phiStirrup = 8, cLat = 30, mode = "f
     );
 }
 
-function CheckRow({ ok, label, warn }) {
+function CheckRow({ ok, label, warn, reference }) {
     return (
-        <div className="flex items-start gap-2 text-sm">
+        <div className="relative flex items-start gap-2 text-sm">
             {ok ? <CheckCircle2 size={16} className="mt-0.5 shrink-0 text-emerald-600" /> : <AlertTriangle size={16} className={`mt-0.5 shrink-0 ${warn ? "text-amber-500" : "text-red-500"}`} />}
-            <span className="text-slate-600">{label}</span>
+            <div className="flex min-w-0 flex-1 items-start justify-between gap-3">
+                <span className="text-slate-600">{label}</span>
+                {reference && <div className="group relative shrink-0">
+                    <button type="button" aria-label="Mostra riferimenti normativi" aria-haspopup="true" title="Riferimenti normativi" className="rounded-full p-0.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600 focus:outline-none focus:ring-2 focus:ring-sky-200">
+                        <Info size={15} />
+                    </button>
+                    <div role="tooltip" className="invisible absolute right-0 top-full z-20 w-56 rounded-xl border border-slate-200 bg-white p-3 text-xs opacity-0 shadow-lg transition-opacity duration-150 group-hover:visible group-hover:opacity-100">
+                        <p className="font-semibold text-slate-600">Riferimenti normativi</p>
+                        <p className="mt-2 text-slate-500"><span className="font-semibold text-slate-600">NTC18</span> {reference.ntc}</p>
+                        <p className="mt-1 text-slate-500"><span className="font-semibold text-slate-600">EC2</span> {reference.ec2}</p>
+                    </div>
+                </div>}
+            </div>
         </div>
     );
 }
