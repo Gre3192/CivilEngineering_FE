@@ -444,7 +444,7 @@ function CalcReport({ result, input, adoptedDimensions }) {
             {/* ---- core, dipendente dalla modalità ---- */}
             {r.mode === "fixB" && (
                 <>
-                    <Step n="4" title="Equazione di equilibrio in A_s">
+                    <Step n="4" title="Equazione di equilibrio in As">
                         <Eq lhs="a_2" sym="\dfrac{(1-\beta)\,[(1-k_G\xi)+k_G\xi\beta]\,f_{yd}^2}{B\,\psi\,\xi\,f_{cd}}" val={`${T(r.coeff2, 2)}`} />
                         <Eq lhs="a_1" sym="\beta\,f_{yd}\,c'" num={`${T(beta, 2)}\\cdot ${T(r.fyd, 1)}\\cdot ${T(cPrime, 0)}`} val={`${T(r.coeff1, 0)}`} />
                         <Eq lhs="A_s" sym="\dfrac{a_1+\sqrt{a_1^2+4\,a_2 M_{Ed}}}{2\,a_2}" val={`${T(r.AsDesignRaw, 0)}${mm2}`} />
