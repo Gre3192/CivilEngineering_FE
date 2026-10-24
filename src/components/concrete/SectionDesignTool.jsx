@@ -732,9 +732,13 @@ function DesignDrawing({ result, B, cPrime, phiStirrup = 8, cLat = 30, mode = "f
                 ) : (
                     <text x={secLeft + w / 2} y={secTop + ht + 20} textAnchor="middle" fontSize="11" fill={bColor}>B = {fmtU(B)}</text>
                 )}
-                {showStirrup && (
-                    <text x={secLeft + w / 2} y={secTop + ht + 52} textAnchor="middle" fontSize="10" fill="#dc2626">
-                        staffa φ{fmt(phiStirrup, 0)} (c = {fmtU(cLat)} {unit})
+                {(showStirrup || (show.bars && (nBars > 0 || nBarsPrime > 0))) && (
+                    <text x={secLeft + w / 2} y={secTop + ht + 52} textAnchor="middle" fontSize="10">
+                        {showStirrup && <tspan fill="#dc2626">staffa φ{fmt(phiStirrup, 0)} (c = {fmtU(cLat)} {unit})</tspan>}
+                        {showStirrup && show.bars && (nBars > 0 || nBarsPrime > 0) && <tspan fill="#64748b"> · </tspan>}
+                        {show.bars && nBars > 0 && <tspan fill="#0f172a">armatura tesa φ{fmt(phi, 0)}</tspan>}
+                        {show.bars && nBars > 0 && show.bars && nBarsPrime > 0 && <tspan fill="#64748b"> · </tspan>}
+                        {show.bars && nBarsPrime > 0 && <tspan fill="#64748b">armatura compressa φ{fmt(phiPrime, 0)}</tspan>}
                     </text>
                 )}
             </svg>
