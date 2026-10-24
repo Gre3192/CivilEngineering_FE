@@ -109,9 +109,9 @@ export default function SectionDesignTool() {
     const calculatedH = result.ok && result.mode === "fixB" ? result.dReq + input.c : result.ok ? result.h : 0;
     const adoptedB = Number(adoptedDimensions.B) > 0 ? Number(adoptedDimensions.B) : calculatedB;
     const adoptedH = Number(adoptedDimensions.h) > 0 ? Number(adoptedDimensions.h) : calculatedH;
-    const selectedTensionBars = Number(adoptedReinforcement.tensionBars);
+    const selectedTensionBars = Number(adoptedReinforcement.tensionBars ?? result.nBars);
     const selectedTensionPhi = Number(adoptedReinforcement.tensionPhi || result.phi);
-    const selectedCompressionBars = Number(adoptedReinforcement.compressionBars);
+    const selectedCompressionBars = Number(adoptedReinforcement.compressionBars ?? result.nBarsPrime);
     const selectedCompressionPhi = Number(adoptedReinforcement.compressionPhi || result.phi);
     const adoptedTensionBars = selectedTensionBars >= 2 ? selectedTensionBars : result.ok ? result.nBars : 0;
     const adoptedCompressionBars = result.ok && result.AsPrime > 0
@@ -156,7 +156,7 @@ export default function SectionDesignTool() {
             {/* -------- INPUT -------- */}
             <div className="space-y-4">
                 <div className="flex items-center justify-between gap-2">
-                    <button type="button" onClick={() => { setInput(DEFAULT_INPUT); setAdoptedDimensions({}); setAdoptedReinforcement({ tensionBars: "2", tensionPhi: String(DEFAULT_INPUT.phi), compressionBars: "2", compressionPhi: String(DEFAULT_INPUT.phi) }); }} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50">
+                    <button type="button" onClick={() => { setInput(DEFAULT_INPUT); setAdoptedDimensions({}); setAdoptedReinforcement({}); }} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50">
                         <RotateCcw size={14} /> Valori predefiniti
                     </button>
                     <div className="flex gap-2">
@@ -170,18 +170,17 @@ export default function SectionDesignTool() {
                         <ModeToggle value={input.mode} onChange={setField("mode")} />
                     </div>
                     <div className="grid grid-cols-2 gap-3">
-                        {input.mode !== "fixH" && (
-                            <NumberField label="Larghezza B" unit="mm" value={input.B} onChange={setNumber("B")} />
-                        )}
-                        {input.mode !== "fixB" && (
-                            <NumberField label="Altezza h" unit="mm" value={input.h} onChange={setNumber("h")} />
-                        )}
-                        <NumberField label="Momento M_Ed" unit="kNm" value={input.MEd} onChange={setNumber("MEd")} />
-                        {input.mode !== "fixBH" && (
-                            <NumberField label="β = A's/A_s" value={input.beta} step="0.05" onChange={setNumber("beta")} />
-                        )}
-                        <NumberField label="Copriferro c (teso)" unit="mm" value={input.c} onChange={setNumber("c")} />
+                        {input.mode === "fixH"
+                            ? <NumberField label="Altezza h" unit="mm" value={input.h} onChange={setNumber("h")} />
+                            : <NumberField label="Larghezza B" unit="mm" value={input.B} onChange={setNumber("B")} />}
+                        {input.mode === "fixBH"
+                            ? <NumberField label="Altezza h" unit="mm" value={input.h} onChange={setNumber("h")} />
+                            : <NumberField label="β = A's/A_s" value={input.beta} step="0.05" onChange={setNumber("beta")} />}
                         <NumberField label="Copriferro c' (compr.)" unit="mm" value={input.cPrime} onChange={setNumber("cPrime")} />
+                        <NumberField label="Copriferro c (teso)" unit="mm" value={input.c} onChange={setNumber("c")} />
+                        <div className="col-span-2">
+                            <NumberField label="Momento M_Ed" unit="kNm" value={input.MEd} onChange={setNumber("MEd")} />
+                        </div>
                     </div>
                     <p className="mt-2 text-[11px] text-slate-400">
                         {input.mode === "fixBH"
@@ -266,44 +265,44 @@ export default function SectionDesignTool() {
                             <div className="grid gap-4 sm:grid-cols-2">
                                 <div className="rounded-xl bg-sky-50 p-4">
                                     <div className="flex items-center justify-between gap-2">
-                                        <p className="flex items-baseline gap-1.5 text-xs font-semibold uppercase tracking-wide text-sky-700">Armatura tesa <span className="text-[10px] font-medium normal-case tracking-normal text-slate-400">richiesta</span></p>
-                                        <button type="button" onClick={() => setAdoptedReinforcement((p) => ({ ...p, tensionBars: "2", tensionPhi: String(result.phi) }))} title="Ripristina armatura richiesta" aria-label="Ripristina armatura tesa richiesta" className="rounded-md p-1 text-slate-500 transition hover:bg-sky-100 hover:text-sky-700">
+                                        <p className="flex items-baseline gap-1.5 text-xs font-semibold uppercase tracking-wide text-sky-700">Armatura tesa <span className="normal-case">As</span> <span className="text-[10px] font-medium normal-case tracking-normal text-slate-400">richiesta</span></p>
+                                        <button type="button" onClick={() => setAdoptedReinforcement((p) => ({ ...p, tensionBars: String(result.nBars), tensionPhi: String(result.phi) }))} title="Ripristina armatura richiesta" aria-label="Ripristina armatura tesa richiesta" className="rounded-md p-1 text-slate-500 transition hover:bg-sky-100 hover:text-sky-700">
                                             <RotateCcw size={15} />
                                         </button>
                                     </div>
-                                    <p className="mt-1 flex items-baseline gap-2 text-2xl font-bold text-slate-900">{fmt(result.AsAdopt, 0)}<span className="text-base font-semibold text-slate-400">mm²</span></p>
+                                    <p className="mt-1 flex flex-wrap items-baseline gap-x-2 text-2xl font-bold text-slate-900">{result.nBars} φ {result.phi}<span className="text-sm font-medium text-slate-500">{fmt(result.AsProvided, 0)} mm²</span></p>
                                     <div className="mt-3 grid grid-cols-2 gap-3">
-                                        <NumberField label="Numero adottato" value={adoptedReinforcement.tensionBars ?? ""} onChange={(v) => setAdoptedReinforcement((p) => ({ ...p, tensionBars: v }))} onBlur={(v) => setAdoptedReinforcement((p) => ({ ...p, tensionBars: v === "" ? "" : String(Math.max(2, Math.trunc(Number(v) || 0))) }))} min="2" step="1" />
+                                        <NumberField label="Numero adottato" value={adoptedReinforcement.tensionBars ?? String(result.nBars)} onChange={(v) => setAdoptedReinforcement((p) => ({ ...p, tensionBars: v }))} onBlur={(v) => setAdoptedReinforcement((p) => ({ ...p, tensionBars: v === "" ? "" : String(Math.max(2, Math.trunc(Number(v) || 0))) }))} min="2" step="1" />
                                         <SelectField label="Diametro adottato" value={adoptedReinforcement.tensionPhi || String(result.phi)} onChange={(v) => setAdoptedReinforcement((p) => ({ ...p, tensionPhi: v }))} options={[{ value: "", label: "Seleziona" }, ...BAR_DIAMETERS.map((d) => ({ value: d, label: `φ ${d}` }))]} />
                                     </div>
                                     <p className="mt-2 flex items-center justify-between gap-2 text-sm font-semibold text-slate-700">
                                         <span>As <span className="text-[10px] font-medium normal-case tracking-normal text-slate-400">adottata</span> = {adoptedTensionArea ? `${fmt(adoptedTensionArea, 0)} mm²` : "—"}</span>
-                                        {adoptedTensionArea !== null && (adoptedTensionArea >= result.AsAdopt
+                                        {adoptedTensionArea !== null && (adoptedTensionArea >= result.AsProvided
                                             ? <CheckCircle2 size={16} className="shrink-0 text-emerald-600" aria-label="Armatura adottata verificata" role="img" />
                                             : <AlertTriangle size={16} className="shrink-0 text-amber-500" aria-label="Armatura adottata inferiore a quella richiesta" role="img" />)}
                                     </p>
-                                    <AdoptionUtilization adopted={adoptedTensionArea} required={result.AsAdopt} />
+                                    <AdoptionUtilization adopted={adoptedTensionArea} required={result.AsProvided} />
                                 </div>
                                 {result.AsPrime > 0 && (
                                     <div className="rounded-xl bg-sky-50 p-4">
                                         <div className="flex items-center justify-between gap-2">
-                                            <p className="flex items-baseline gap-1.5 text-xs font-semibold uppercase tracking-wide text-sky-700">Armatura compressa <span className="text-[10px] font-medium normal-case tracking-normal text-slate-400">richiesta</span></p>
-                                            <button type="button" onClick={() => setAdoptedReinforcement((p) => ({ ...p, compressionBars: "2", compressionPhi: String(result.phi) }))} title="Ripristina armatura richiesta" aria-label="Ripristina armatura compressa richiesta" className="rounded-md p-1 text-slate-500 transition hover:bg-sky-100 hover:text-sky-700">
+                                            <p className="flex items-baseline gap-1.5 text-xs font-semibold uppercase tracking-wide text-sky-700">Armatura compressa <span className="normal-case">A's</span> <span className="text-[10px] font-medium normal-case tracking-normal text-slate-400">richiesta</span></p>
+                                            <button type="button" onClick={() => setAdoptedReinforcement((p) => ({ ...p, compressionBars: String(result.nBarsPrime), compressionPhi: String(result.phi) }))} title="Ripristina armatura richiesta" aria-label="Ripristina armatura compressa richiesta" className="rounded-md p-1 text-slate-500 transition hover:bg-sky-100 hover:text-sky-700">
                                                 <RotateCcw size={15} />
                                             </button>
                                         </div>
-                                        <p className="mt-1 flex items-baseline gap-2 text-2xl font-bold text-slate-900">{fmt(result.AsPrime, 0)}<span className="text-base font-semibold text-slate-400">mm²</span></p>
+                                        <p className="mt-1 flex flex-wrap items-baseline gap-x-2 text-2xl font-bold text-slate-900">{result.nBarsPrime} φ {result.phi}<span className="text-sm font-medium text-slate-500">{fmt(result.AsPrimeProvided, 0)} mm²</span></p>
                                         <div className="mt-3 grid grid-cols-2 gap-3">
-                                            <NumberField label="Numero adottato" value={adoptedReinforcement.compressionBars ?? ""} onChange={(v) => setAdoptedReinforcement((p) => ({ ...p, compressionBars: v }))} onBlur={(v) => setAdoptedReinforcement((p) => ({ ...p, compressionBars: v === "" ? "" : String(Math.max(2, Math.trunc(Number(v) || 0))) }))} min="2" step="1" />
+                                            <NumberField label="Numero adottato" value={adoptedReinforcement.compressionBars ?? String(result.nBarsPrime)} onChange={(v) => setAdoptedReinforcement((p) => ({ ...p, compressionBars: v }))} onBlur={(v) => setAdoptedReinforcement((p) => ({ ...p, compressionBars: v === "" ? "" : String(Math.max(2, Math.trunc(Number(v) || 0))) }))} min="2" step="1" />
                                             <SelectField label="Diametro adottato" value={adoptedReinforcement.compressionPhi || String(result.phi)} onChange={(v) => setAdoptedReinforcement((p) => ({ ...p, compressionPhi: v }))} options={[{ value: "", label: "Seleziona" }, ...BAR_DIAMETERS.map((d) => ({ value: d, label: `φ ${d}` }))]} />
                                         </div>
                                         <p className="mt-2 flex items-center justify-between gap-2 text-sm font-semibold text-slate-700">
                                             <span>A's <span className="text-[10px] font-medium normal-case tracking-normal text-slate-400">adottata</span> = {adoptedCompressionArea ? `${fmt(adoptedCompressionArea, 0)} mm²` : "—"}</span>
-                                            {adoptedCompressionArea !== null && (adoptedCompressionArea >= result.AsPrime
+                                            {adoptedCompressionArea !== null && (adoptedCompressionArea >= result.AsPrimeProvided
                                                 ? <CheckCircle2 size={16} className="shrink-0 text-emerald-600" aria-label="Armatura adottata verificata" role="img" />
                                                 : <AlertTriangle size={16} className="shrink-0 text-amber-500" aria-label="Armatura adottata inferiore a quella richiesta" role="img" />)}
                                         </p>
-                                        <AdoptionUtilization adopted={adoptedCompressionArea} required={result.AsPrime} />
+                                        <AdoptionUtilization adopted={adoptedCompressionArea} required={result.AsPrimeProvided} />
                                     </div>
                                 )}
                             </div>
@@ -383,7 +382,7 @@ export default function SectionDesignTool() {
                                 <ChevronDown size={15} aria-hidden="true" className={`text-slate-400 transition-transform duration-300 ${showSteps ? "" : "-rotate-90"}`} />
                             </button>
                             <AnimatedPanel isOpen={showSteps}>
-                                <CalcReport result={result} input={input} />
+                                <CalcReport result={result} input={input} adoptedDimensions={adoptedDimensions} />
                             </AnimatedPanel>
                         </Card>
 
@@ -396,7 +395,7 @@ export default function SectionDesignTool() {
 }
 
 // -------- Foglio dei passaggi di calcolo (formule in LaTeX) --------
-function CalcReport({ result, input }) {
+function CalcReport({ result, input, adoptedDimensions }) {
     const r = result;
     const { beta, cPrime, c, fck, fyk, alphaCc, gammaC, gammaS, phi, phiStirrup, cLat } = input;
     const B = r.B; // larghezza effettiva (progettata o assegnata)
@@ -407,6 +406,12 @@ function CalcReport({ result, input }) {
     const kGX = r.kG * r.X;
     const leverAs = r.d - kGX + r.beta * (kGX - cPrime);
     const Mx = `${T(input.MEd, 0)}\\cdot 10^6`; // M_Ed in N·mm
+    const dimensionValue = (required, adopted, dec = 1) => {
+        const requestedValue = `${T(required, dec)}${mm}`;
+        return adopted !== undefined && adopted !== "" && Number(adopted) > 0
+            ? `${requestedValue}\\to ${T(Number(adopted), dec)}${mm}`
+            : requestedValue;
+    };
 
     return (
         <div className="mt-4 space-y-5 text-sm text-slate-700">
@@ -445,8 +450,8 @@ function CalcReport({ result, input }) {
                         <Eq lhs="A_s" sym="\dfrac{a_1+\sqrt{a_1^2+4\,a_2 M_{Ed}}}{2\,a_2}" val={`${T(r.AsDesignRaw, 0)}${mm2}`} />
                     </Step>
                     <Step n="5" title="Altezza utile progettata">
-                        <Eq lhs="d" sym="\dfrac{f_{yd}(1-\beta)}{B\,\psi\,\xi\,f_{cd}}\,A_s" num={`\\dfrac{${T(r.fyd, 1)}(1-${T(beta, 2)})}{${T(B, 0)}\\cdot ${T(r.psi, 3)}\\cdot ${T(r.xi, 4)}\\cdot ${T(r.fcd, 2)}}\\cdot ${T(r.AsDesignRaw, 0)}`} val={`${T(r.dReq, 1)}${mm}\\to ${T(r.d, 0)}${mm}`} />
-                        <Eq lhs="h" sym="d+c" num={`${T(r.d, 0)}+${T(c, 0)}`} val={`${T(r.h, 0)}${mm}`} />
+                        <Eq lhs="d" sym="\dfrac{f_{yd}(1-\beta)}{B\,\psi\,\xi\,f_{cd}}\,A_s" num={`\\dfrac{${T(r.fyd, 1)}(1-${T(beta, 2)})}{${T(B, 0)}\\cdot ${T(r.psi, 3)}\\cdot ${T(r.xi, 4)}\\cdot ${T(r.fcd, 2)}}\\cdot ${T(r.AsDesignRaw, 0)}`} val={`${T(r.dReq, 1)}${mm}\\to ${T(r.d, 0)}${mm}${adoptedDimensions.d ? `\\to ${T(Number(adoptedDimensions.d), 1)}${mm}` : ""}`} />
+                        <Eq lhs="h" sym="d+c" num={`${T(r.d, 0)}+${T(c, 0)}`} val={dimensionValue(r.h, adoptedDimensions.h, 0)} />
                         <Eq lhs="X" sym="\xi\,d" num={`${T(r.xi, 4)}\\cdot ${T(r.d, 0)}`} val={`${T(r.X, 1)}${mm}`} />
                         <Eq lhs="z" sym="d-k_G X" num={`${T(r.d, 0)}-${T(r.kG, 3)}\\cdot ${T(r.X, 1)}`} val={`${T(r.z, 1)}${mm}`} />
                     </Step>
@@ -466,7 +471,7 @@ function CalcReport({ result, input }) {
                     </Step>
                     <Step n="5" title="Armatura e larghezza progettata">
                         <Eq lhs="A_s" sym="\dfrac{M_{Ed}}{[(d-k_G X)+\beta(k_G X-c')]\,f_{yd}}" num={`\\dfrac{${Mx}}{${T(leverAs, 1)}\\cdot ${T(r.fyd, 1)}}`} val={`${T(r.As, 0)}${mm2}`} />
-                        <Eq lhs="B" sym="\dfrac{A_s f_{yd}(1-\beta)}{\psi\,\xi\,d\,f_{cd}}" num={`\\dfrac{${T(r.As, 0)}\\cdot ${T(r.fyd, 1)}(1-${T(beta, 2)})}{${T(r.psi, 3)}\\cdot ${T(r.xi, 4)}\\cdot ${T(r.d, 0)}\\cdot ${T(r.fcd, 2)}}`} val={`${T(r.Breq, 1)}${mm}\\to ${T(r.B, 0)}${mm}`} />
+                        <Eq lhs="B" sym="\dfrac{A_s f_{yd}(1-\beta)}{\psi\,\xi\,d\,f_{cd}}" num={`\\dfrac{${T(r.As, 0)}\\cdot ${T(r.fyd, 1)}(1-${T(beta, 2)})}{${T(r.psi, 3)}\\cdot ${T(r.xi, 4)}\\cdot ${T(r.d, 0)}\\cdot ${T(r.fcd, 2)}}`} val={`${T(r.Breq, 1)}${mm}\\to ${T(r.B, 0)}${mm}${adoptedDimensions.B ? `\\to ${T(Number(adoptedDimensions.B), 1)}${mm}` : ""}`} />
                         {beta > 0 && <Eq lhs="A_s'" sym="\beta\,A_s" num={`${T(beta, 2)}\\cdot ${T(r.As, 0)}`} val={`${T(r.AsPrime, 0)}${mm2}`} />}
                     </Step>
                 </>
@@ -475,7 +480,9 @@ function CalcReport({ result, input }) {
             {r.mode === "fixBH" && (
                 <>
                     <Step n="4" title="Geometria (sezione assegnata)">
-                        <Eq lhs="d" sym="h-c" num={`${T(r.h, 0)}-${T(c, 0)}`} val={`${T(r.d, 0)}${mm}`} />
+                        <Eq lhs="B" sym="sezione assegnata" val={dimensionValue(r.B, adoptedDimensions.B, 0)} />
+                        <Eq lhs="h" sym="sezione assegnata" val={dimensionValue(r.h, adoptedDimensions.h, 0)} />
+                        <Eq lhs="d" sym="h-c" num={`${T(r.h, 0)}-${T(c, 0)}`} val={dimensionValue(r.d, adoptedDimensions.d, 0)} />
                         <Eq lhs="z" sym="d-k_G x" num={`${T(r.d, 0)}-${T(r.kG, 3)}\\cdot ${T(r.X, 1)}`} val={`${T(r.z, 1)}${mm}`} />
                     </Step>
                     <Step n="5" title={r.doubleReinf ? "Armatura (doppia)" : "Armatura (semplice)"}>
