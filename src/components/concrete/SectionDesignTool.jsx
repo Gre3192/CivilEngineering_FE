@@ -37,21 +37,26 @@ export default function SectionDesignTool() {
     const [showSteps, setShowSteps] = useState(false);
     const [drawUnit, setDrawUnit] = useState("mm"); // unità delle quote del disegno
     const drawingSvgRef = useRef(null);
+    const forcesSvgRef = useRef(null);
     const copiedTimer = useRef(null);
     const savedTimer = useRef(null);
+    const copiedTimerF = useRef(null);
+    const savedTimerF = useRef(null);
     const [exportMessage, setExportMessage] = useState("");
     const [isCopied, setIsCopied] = useState(false);
     const [isSaved, setIsSaved] = useState(false);
+    const [isCopiedF, setIsCopiedF] = useState(false);
+    const [isSavedF, setIsSavedF] = useState(false);
 
     const result = useMemo(() => designSection(input), [input]);
 
-    const createPng = async () => {
-        const svg = drawingSvgRef.current;
+    const createPng = async (ref, w, h) => {
+        const svg = ref.current;
         if (!svg) throw new Error("Disegno non disponibile");
         const clone = svg.cloneNode(true);
         clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-        clone.setAttribute("width", String(BOX_W * 2));
-        clone.setAttribute("height", String(BOX_H * 2));
+        clone.setAttribute("width", String(w * 2));
+        clone.setAttribute("height", String(h * 2));
         const svgBlob = new Blob([new XMLSerializer().serializeToString(clone)], { type: "image/svg+xml;charset=utf-8" });
         const url = URL.createObjectURL(svgBlob);
         try {
@@ -63,8 +68,8 @@ export default function SectionDesignTool() {
             image.src = url;
             await imageReady;
             const canvas = document.createElement("canvas");
-            canvas.width = BOX_W * 2;
-            canvas.height = BOX_H * 2;
+            canvas.width = w * 2;
+            canvas.height = h * 2;
             const context = canvas.getContext("2d");
             context.fillStyle = "#ffffff";
             context.fillRect(0, 0, canvas.width, canvas.height);
@@ -74,36 +79,40 @@ export default function SectionDesignTool() {
             URL.revokeObjectURL(url);
         }
     };
-    const copyImage = async () => {
+    const runCopy = async (ref, w, h, setFlag, timer) => {
         try {
             if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") throw new Error("Copia immagine non supportata dal browser");
-            const png = await createPng();
+            const png = await createPng(ref, w, h);
             await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
             setExportMessage("");
-            setIsCopied(true);
-            window.clearTimeout(copiedTimer.current);
-            copiedTimer.current = window.setTimeout(() => setIsCopied(false), 1600);
+            setFlag(true);
+            window.clearTimeout(timer.current);
+            timer.current = window.setTimeout(() => setFlag(false), 1600);
         } catch {
             setExportMessage("Copia non riuscita: verifica i permessi del browser");
         }
     };
-    const saveImage = async () => {
+    const runSave = async (ref, w, h, filename, setFlag, timer) => {
         try {
-            const png = await createPng();
+            const png = await createPng(ref, w, h);
             const url = URL.createObjectURL(png);
             const link = document.createElement("a");
             link.href = url;
-            link.download = "sezione-progettata.png";
+            link.download = filename;
             link.click();
             window.setTimeout(() => URL.revokeObjectURL(url), 1000);
             setExportMessage("");
-            setIsSaved(true);
-            window.clearTimeout(savedTimer.current);
-            savedTimer.current = window.setTimeout(() => setIsSaved(false), 1600);
+            setFlag(true);
+            window.clearTimeout(timer.current);
+            timer.current = window.setTimeout(() => setFlag(false), 1600);
         } catch {
             setExportMessage("Salvataggio non riuscito");
         }
     };
+    const copyImage = () => runCopy(drawingSvgRef, BOX_W, BOX_H, setIsCopied, copiedTimer);
+    const saveImage = () => runSave(drawingSvgRef, BOX_W, BOX_H, "sezione-progettata.png", setIsSaved, savedTimer);
+    const copyForces = () => runCopy(forcesSvgRef, SIDE_BOX_W, SIDE_BOX_H, setIsCopiedF, copiedTimerF);
+    const saveForces = () => runSave(forcesSvgRef, SIDE_BOX_W, SIDE_BOX_H, "forze-interne.png", setIsSavedF, savedTimerF);
 
     const calculatedB = result.ok && result.mode === "fixH" ? result.Breq : result.ok ? result.B : 0;
     const calculatedH = result.ok && result.mode === "fixB" ? result.dReq + input.c : result.ok ? result.h : 0;
@@ -178,14 +187,14 @@ export default function SectionDesignTool() {
                             : <NumberField label="β = A's/As" value={input.beta} step="0.05" onChange={setNumber("beta")} />}
                         <NumberField label="Copriferro c' (compr.)" unit="mm" value={input.cPrime} onChange={setNumber("cPrime")} />
                         <NumberField label="Copriferro c (teso)" unit="mm" value={input.c} onChange={setNumber("c")} />
-                        <div className="col-span-2">
-                            <NumberField label="Momento M_Ed" unit="kNm" value={input.MEd} onChange={setNumber("MEd")} />
-                        </div>
+                        <NumberField label="Momento M_Ed" unit="kNm" value={input.MEd} onChange={setNumber("MEd")} />
+                        <NumberField label="Sforzo normale N_Ed" unit="kN" value={input.NEd} onChange={setNumber("NEd")} />
                     </div>
                     <p className="mt-2 text-[11px] text-slate-400">
+                        Convenzioni: N_Ed &gt; 0 compressione; M_Ed &gt; 0 tende le fibre inferiori.
                         {input.mode === "fixBH"
-                            ? "Sezione assegnata: A's calcolata solo se necessaria (doppia armatura)."
-                            : "β = 0 → semplice armatura."}
+                            ? " Sezione assegnata: A's calcolata solo se necessaria."
+                            : " β = 0 → semplice armatura (dimensiona la geometria)."}
                     </p>
                 </CollapsibleCard>
 
@@ -354,6 +363,39 @@ export default function SectionDesignTool() {
                         </Card>
 
                         <Card>
+                            <div className="mb-3 flex items-center justify-between gap-3">
+                                <h3 className="text-sm font-bold text-slate-800">Forze interne (sezione di lato)</h3>
+                                <div className="flex items-center gap-2">
+                                    <select
+                                        value={drawUnit}
+                                        onChange={(e) => setDrawUnit(e.target.value)}
+                                        aria-label="Unità di misura delle quote"
+                                        className="rounded-full border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-sky-200"
+                                    >
+                                        <option value="mm">mm</option>
+                                        <option value="cm">cm</option>
+                                        <option value="m">m</option>
+                                    </select>
+                                    <button type="button" onClick={copyForces} title="Copia immagine" aria-label={isCopiedF ? "Immagine copiata" : "Copia immagine negli appunti"} className="rounded-full border border-slate-300 bg-white p-2 text-slate-700 shadow-sm transition hover:bg-slate-50">
+                                        <span className="relative block h-[15px] w-[15px]">
+                                            <Copy size={15} className={`absolute inset-0 transition-all duration-300 ease-in-out ${isCopiedF ? "rotate-90 scale-50 opacity-0" : "rotate-0 scale-100 opacity-100"}`} />
+                                            <Check size={15} className={`absolute inset-0 transition-all duration-300 ease-in-out ${isCopiedF ? "rotate-0 scale-100 opacity-100" : "-rotate-90 scale-50 opacity-0"}`} />
+                                        </span>
+                                    </button>
+                                    <button type="button" onClick={saveForces} title="Salva immagine PNG" aria-label={isSavedF ? "Immagine salvata" : "Salva immagine PNG"} className="rounded-full border border-slate-300 bg-white p-2 text-slate-700 shadow-sm transition hover:bg-slate-50">
+                                        <span className="relative block h-[15px] w-[15px]">
+                                            <Download size={15} className={`absolute inset-0 transition-all duration-300 ease-in-out ${isSavedF ? "rotate-90 scale-50 opacity-0" : "rotate-0 scale-100 opacity-100"}`} />
+                                            <Check size={15} className={`absolute inset-0 transition-all duration-300 ease-in-out ${isSavedF ? "rotate-0 scale-100 opacity-100" : "-rotate-90 scale-50 opacity-0"}`} />
+                                        </span>
+                                    </button>
+                                </div>
+                            </div>
+                            <div className="mx-auto max-w-[480px]">
+                                <SideForcesDiagram result={result} unit={drawUnit} svgRef={forcesSvgRef} />
+                            </div>
+                        </Card>
+
+                        <Card>
                             <CardTitle>Dimensionamento</CardTitle>
                             <div className="grid gap-x-6 sm:grid-cols-2">
                                 {result.mode === "fixBH" ? (
@@ -364,7 +406,7 @@ export default function SectionDesignTool() {
                                 ) : (
                                     <ResultRow label="ξ = X/d" value={fmt(result.xi, 4)} />
                                 )}
-                                <ResultRow label="ψ / k_G (cls)" value={`${fmt(result.psi, 3)} / ${fmt(result.kG, 3)}`} />
+                                <ResultRow label="ψ / λ (cls)" value={`${fmt(result.psi, 3)} / ${fmt(result.kG, 3)}`} />
                                 <ResultRow label="X (asse neutro)" value={fmt(result.X, 1)} unit="mm" />
                                 <ResultRow label="z (braccio)" value={fmt(result.z, 1)} unit="mm" />
                                 {result.mode === "fixH" && <ResultRow label="B richiesta" value={fmt(result.Breq, 0)} unit="mm" />}
@@ -397,15 +439,17 @@ export default function SectionDesignTool() {
 // -------- Foglio dei passaggi di calcolo (formule in LaTeX) --------
 function CalcReport({ result, input, adoptedDimensions }) {
     const r = result;
-    const { beta, cPrime, c, fck, fyk, alphaCc, gammaC, gammaS, phi, phiStirrup, cLat } = input;
+    const { fck, fyk, alphaCc, gammaC, gammaS, phi, phiStirrup, cLat } = input;
     const B = r.B; // larghezza effettiva (progettata o assegnata)
     const mm = "\\ \\text{mm}";
     const mm2 = "\\ \\text{mm}^2";
     const MPa = "\\ \\text{MPa}";
-    const base = r.mode === "fixB" ? 6 : 5; // numero dell'ultimo step "core"
-    const kGX = r.kG * r.X;
-    const leverAs = r.d - kGX + r.beta * (kGX - cPrime);
-    const Mx = `${T(input.MEd, 0)}\\cdot 10^6`; // M_Ed in N·mm
+    const uk = "\\ \\text{kN}";
+    const ukm = "\\ \\text{kNm}";
+    const hasCompr = r.AsPrime > 0;
+    const kN = (N, d = 1) => T(N / 1000, d);      // N -> kN
+    const kNm = (Nmm, d = 1) => T(Nmm / 1e6, d);  // N·mm -> kNm
+    const mToStr = (lenMm) => T(lenMm / 1000, 3); // mm -> m
     const dimensionValue = (required, adopted, dec = 1) => {
         const requestedValue = `${T(required, dec)}${mm}`;
         return adopted !== undefined && adopted !== "" && Number(adopted) > 0
@@ -421,94 +465,91 @@ function CalcReport({ result, input, adoptedDimensions }) {
                 <Eq lhs="\varepsilon_{yd}" sym="\dfrac{f_{yd}}{E_s}" num={`\\dfrac{${T(r.fyd, 1)}}{200000}`} val={`${T(r.epsYd * 1000, 2)}\\text{‰}`} />
             </Step>
 
-            <Step n="2" title="Posizione dell'asse neutro">
-                {r.mode === "fixBH" ? (
+            <Step n="2" title="Azioni e convenzioni di segno">
+                <Tex display>{`N_{Ed}=${kN(r.NEd)}${uk}\\qquad M_{Ed}=${kNm(r.MEdSigned)}${ukm}`}</Tex>
+                <p className="text-xs text-slate-400">
+                    N_Ed &gt; 0 compressione; M_Ed &gt; 0 tende le fibre inferiori.
+                    {r.tensionTop ? " M_Ed < 0 → sezione ribaltata: lato teso in alto, calcolo con |M_Ed|." : ""}
+                </p>
+            </Step>
+
+            <Step n="3" title="Geometria, asse neutro e coefficienti del cls">
+                {r.mode === "fixBH" && (
                     <>
-                        <Eq lhs="x" sym="\dfrac{\psi f_{cd}Bd-\sqrt{(\psi f_{cd}Bd)^2-4\,\psi f_{cd}Bk_G M_{Ed}}}{2\,\psi f_{cd}Bk_G}" val={`${T(r.X, 1)}${mm}`} />
-                        <Eq lhs="\dfrac{x}{d}" sym={`${T(r.X / r.d, 3)}\\;${r.doubleReinf ? ">" : "\\le"}\\;\\dfrac{x_{lim}}{d}=${T(r.xiLim, 3)}`} />
-                        <p className="text-xs text-slate-400">{r.doubleReinf ? "x oltre il limite di duttilità → doppia armatura." : "x entro il limite → semplice armatura."}</p>
-                    </>
-                ) : (
-                    <>
-                        <Eq lhs="\xi" sym="\dfrac{\varepsilon_{cu}}{\varepsilon_{cu}+\varepsilon_s}" num="\dfrac{3{,}5}{3{,}5+10}" val={`${T(r.xi, 4)}`} />
-                        <p className="text-xs text-slate-400">ε_s = 10‰ (duttilità), ε_cu = 3,5‰ → X = ξ·d.</p>
+                        <Eq lhs="B,\ h" sym="\text{assegnate}" val={`${T(r.B, 0)}\\times ${T(r.h, 0)}${mm}`} />
+                        <Eq lhs="d" sym="h-c" num={`${T(r.h, 0)}-${T(r.cT, 0)}`} val={`${T(r.d, 0)}${mm}`} />
                     </>
                 )}
+                {r.mode === "fixH" && (
+                    <>
+                        <Eq lhs="h" sym="\text{assegnata}" val={dimensionValue(r.h, adoptedDimensions.h, 0)} />
+                        <Eq lhs="d" sym="h-c" num={`${T(r.h, 0)}-${T(r.cT, 0)}`} val={`${T(r.d, 0)}${mm}`} />
+                        <p className="text-xs text-slate-400">B dimensionata con ξ = ε_cu/(ε_cu+ε_s) = 0,2593; x e armature dall'equilibrio.</p>
+                    </>
+                )}
+                {r.mode === "fixB" && (
+                    <>
+                        <Eq lhs="B" sym="\text{assegnata}" val={`${T(r.B, 0)}${mm}`} />
+                        <p className="text-xs text-slate-400">d dimensionata con ξ = ε_cu/(ε_cu+ε_s) = 0,2593; x e armature dall'equilibrio.</p>
+                    </>
+                )}
+                <Eq lhs="x" sym="\text{dall'equilibrio}" val={`${T(r.X, 1)}${mm}`} />
+                <Tex display>{`\\psi=${T(r.psi, 3)}\\qquad \\lambda=${T(r.kG, 3)}\\qquad \\tfrac{x}{d}=${T(r.X / r.d, 3)}\\;${r.X / r.d > r.xiLim + 1e-4 ? ">" : "\\le"}\\;\\tfrac{x_{lim}}{d}=${T(r.xiLim, 3)}`}</Tex>
+                <p className="text-xs text-slate-400">
+                    {r.X / r.d > r.xiLim + 1e-4 ? "x oltre il limite di duttilità. " : "x entro il limite di duttilità. "}
+                    {hasCompr ? "Doppia armatura (A's presente)." : "Semplice armatura."}
+                </p>
             </Step>
 
-            <Step n="3" title={`Coefficienti del diagramma cls (${r.concreteModel})`}>
-                <Tex display>{`\\psi=${T(r.psi, 3)}\\qquad k_G=${T(r.kG, 3)}`}</Tex>
-                <p className="text-xs text-slate-400">C = ψ·b·X·f_cd, baricentro a k_G·X dal lembo compresso.</p>
+            <Step n="4" title="Risultanti delle forze interne">
+                <Eq lhs="C_c" sym="\psi\,f_{cd}\,B\,x" num={`${T(r.psi, 3)}\\cdot ${T(r.fcd, 2)}\\cdot ${T(B, 0)}\\cdot ${T(r.X, 1)}`} val={`${kN(r.Cc)}${uk}`} />
+                {hasCompr && (
+                    <>
+                        <Eq lhs="\varepsilon_s'" sym="\varepsilon_{cu}\Big(1-\dfrac{c'}{x}\Big)" num={`3{,}5\\big(1-${T(r.cC, 0)}/${T(r.X, 1)}\\big)`} val={`${T(r.epsSc * 1000, 2)}\\text{‰}\\Rightarrow\\sigma_s'=${T(r.sigmaSc, 1)}${MPa}`} />
+                        <Eq lhs="C_s'" sym="A_s'\,\sigma_s'" num={`${T(r.AsPrime, 0)}\\cdot ${T(r.sigmaSc, 1)}`} val={`${kN(r.Cs)}${uk}`} />
+                    </>
+                )}
+                <Eq lhs="T_s" sym="A_s\,f_{s}" num={`${T(r.As, 0)}\\cdot ${T(r.fs, 1)}`} val={`${kN(r.Ts)}${uk}`} />
+                <p className="text-xs text-slate-400">f_s = tensione dell'acciaio teso a ε_s = 10‰ ({T(r.fs, 1)} MPa).</p>
             </Step>
 
-            {/* ---- core, dipendente dalla modalità ---- */}
-            {r.mode === "fixB" && (
-                <>
-                    <Step n="4" title="Equazione di equilibrio in As">
-                        <Eq lhs="a_2" sym="\dfrac{(1-\beta)\,[(1-k_G\xi)+k_G\xi\beta]\,f_{yd}^2}{B\,\psi\,\xi\,f_{cd}}" val={`${T(r.coeff2, 2)}`} />
-                        <Eq lhs="a_1" sym="\beta\,f_{yd}\,c'" num={`${T(beta, 2)}\\cdot ${T(r.fyd, 1)}\\cdot ${T(cPrime, 0)}`} val={`${T(r.coeff1, 0)}`} />
-                        <Eq lhs="A_s" sym="\dfrac{a_1+\sqrt{a_1^2+4\,a_2 M_{Ed}}}{2\,a_2}" val={`${T(r.AsDesignRaw, 0)}${mm2}`} />
-                    </Step>
-                    <Step n="5" title="Altezza utile progettata">
-                        <Eq lhs="d" sym="\dfrac{f_{yd}(1-\beta)}{B\,\psi\,\xi\,f_{cd}}\,A_s" num={`\\dfrac{${T(r.fyd, 1)}(1-${T(beta, 2)})}{${T(B, 0)}\\cdot ${T(r.psi, 3)}\\cdot ${T(r.xi, 4)}\\cdot ${T(r.fcd, 2)}}\\cdot ${T(r.AsDesignRaw, 0)}`} val={`${T(r.dReq, 1)}${mm}\\to ${T(r.d, 0)}${mm}${adoptedDimensions.d ? `\\to ${T(Number(adoptedDimensions.d), 1)}${mm}` : ""}`} />
-                        <Eq lhs="h" sym="d+c" num={`${T(r.d, 0)}+${T(c, 0)}`} val={dimensionValue(r.h, adoptedDimensions.h, 0)} />
-                        <Eq lhs="X" sym="\xi\,d" num={`${T(r.xi, 4)}\\cdot ${T(r.d, 0)}`} val={`${T(r.X, 1)}${mm}`} />
-                        <Eq lhs="z" sym="d-k_G X" num={`${T(r.d, 0)}-${T(r.kG, 3)}\\cdot ${T(r.X, 1)}`} val={`${T(r.z, 1)}${mm}`} />
-                    </Step>
-                    <Step n="6" title="Armatura tesa (con d di progetto calcolato)">
-                        <Eq lhs="A_s" sym="\dfrac{M_{Ed}}{[(d-k_G X)+\beta(k_G X-c')]\,f_{yd}}" num={`\\dfrac{${Mx}}{${T(leverAs, 1)}\\cdot ${T(r.fyd, 1)}}`} val={`${T(r.As, 0)}${mm2}`} />
-                        {beta > 0 && <Eq lhs="A_s'" sym="\beta\,A_s" num={`${T(beta, 2)}\\cdot ${T(r.As, 0)}`} val={`${T(r.AsPrime, 0)}${mm2}`} />}
-                    </Step>
-                </>
-            )}
+            <Step n="5" title="Equazioni di equilibrio (rispetto al baricentro, h/2)">
+                <p className="text-xs font-semibold text-slate-500">Traslazione:</p>
+                <Tex display>{`C_c+C_s'-T_s=N_{Ed}`}</Tex>
+                <Tex display>{`${kN(r.Cc)}${hasCompr ? `+${kN(r.Cs)}` : ""}-${kN(r.Ts)}=${kN(r.NEd)}${uk}`}</Tex>
+                <p className="mt-2 text-xs font-semibold text-slate-500">Momento (bracci dal baricentro):</p>
+                <Tex display>{`C_c\\Big(\\tfrac{h}{2}-\\lambda x\\Big)+C_s'\\Big(\\tfrac{h}{2}-c'\\Big)+T_s\\Big(\\tfrac{h}{2}-c\\Big)=M_{Ed}`}</Tex>
+                <Tex display>{`${kN(r.Cc)}\\cdot ${mToStr(r.aCc)}${hasCompr ? `+${kN(r.Cs)}\\cdot ${mToStr(r.aCs)}` : ""}+${kN(r.Ts)}\\cdot ${mToStr(r.aTs)}=${kNm(r.MEd)}${ukm}`}</Tex>
+                <p className="text-xs text-slate-400">Forze in kN, bracci in m. {r.tensionTop ? "Equazioni nel frame ribaltato (|M_Ed|)." : ""}</p>
+            </Step>
 
-            {r.mode === "fixH" && (
-                <>
-                    <Step n="4" title="Geometria (altezza assegnata)">
-                        <Eq lhs="d" sym="h-c" num={`${T(r.h, 0)}-${T(c, 0)}`} val={`${T(r.d, 0)}${mm}`} />
-                        <Eq lhs="X" sym="\xi\,d" num={`${T(r.xi, 4)}\\cdot ${T(r.d, 0)}`} val={`${T(r.X, 1)}${mm}`} />
-                        <Eq lhs="z" sym="d-k_G X" num={`${T(r.d, 0)}-${T(r.kG, 3)}\\cdot ${T(r.X, 1)}`} val={`${T(r.z, 1)}${mm}`} />
-                    </Step>
-                    <Step n="5" title="Armatura e larghezza progettata">
-                        <Eq lhs="A_s" sym="\dfrac{M_{Ed}}{[(d-k_G X)+\beta(k_G X-c')]\,f_{yd}}" num={`\\dfrac{${Mx}}{${T(leverAs, 1)}\\cdot ${T(r.fyd, 1)}}`} val={`${T(r.As, 0)}${mm2}`} />
-                        <Eq lhs="B" sym="\dfrac{A_s f_{yd}(1-\beta)}{\psi\,\xi\,d\,f_{cd}}" num={`\\dfrac{${T(r.As, 0)}\\cdot ${T(r.fyd, 1)}(1-${T(beta, 2)})}{${T(r.psi, 3)}\\cdot ${T(r.xi, 4)}\\cdot ${T(r.d, 0)}\\cdot ${T(r.fcd, 2)}}`} val={`${T(r.Breq, 1)}${mm}\\to ${T(r.B, 0)}${mm}${adoptedDimensions.B ? `\\to ${T(Number(adoptedDimensions.B), 1)}${mm}` : ""}`} />
-                        {beta > 0 && <Eq lhs="A_s'" sym="\beta\,A_s" num={`${T(beta, 2)}\\cdot ${T(r.As, 0)}`} val={`${T(r.AsPrime, 0)}${mm2}`} />}
-                    </Step>
-                </>
-            )}
+            <Step n="6" title="Incognite ricavate dall'equilibrio">
+                {r.mode === "fixH" && <Eq lhs="B" sym="\text{(equilibrio)}" val={dimensionValue(r.Breq, adoptedDimensions.B, 1)} />}
+                {r.mode === "fixB" && (
+                    <>
+                        <Eq lhs="d" sym="\text{(equilibrio)}" val={dimensionValue(r.dReq, adoptedDimensions.d, 1)} />
+                        <Eq lhs="h" sym="d+c" num={`${T(r.dReq, 1)}+${T(r.cT, 0)}`} val={dimensionValue(r.h, adoptedDimensions.h, 1)} />
+                    </>
+                )}
+                <Eq lhs="A_s" sym="\dfrac{T_s}{f_s}" num={`\\dfrac{${kN(r.Ts)}\\cdot 10^3}{${T(r.fs, 1)}}`} val={`${T(r.As, 0)}${mm2}`} />
+                {hasCompr
+                    ? <Eq lhs="A_s'" sym="\dfrac{C_s'}{\sigma_s'}" num={`\\dfrac{${kN(r.Cs)}\\cdot 10^3}{${T(r.sigmaSc, 1)}}`} val={`${T(r.AsPrime, 0)}${mm2}`} />
+                    : <p className="text-xs text-slate-400">Armatura compressa non necessaria (A's = 0).</p>}
+            </Step>
 
-            {r.mode === "fixBH" && (
-                <>
-                    <Step n="4" title="Geometria (sezione assegnata)">
-                        <Eq lhs="B" sym="sezione assegnata" val={dimensionValue(r.B, adoptedDimensions.B, 0)} />
-                        <Eq lhs="h" sym="sezione assegnata" val={dimensionValue(r.h, adoptedDimensions.h, 0)} />
-                        <Eq lhs="d" sym="h-c" num={`${T(r.h, 0)}-${T(c, 0)}`} val={dimensionValue(r.d, adoptedDimensions.d, 0)} />
-                        <Eq lhs="z" sym="d-k_G x" num={`${T(r.d, 0)}-${T(r.kG, 3)}\\cdot ${T(r.X, 1)}`} val={`${T(r.z, 1)}${mm}`} />
-                    </Step>
-                    <Step n="5" title={r.doubleReinf ? "Armatura (doppia)" : "Armatura (semplice)"}>
-                        {!r.doubleReinf && <Eq lhs="A_s" sym="\dfrac{\psi f_{cd} B x}{f_{yd}}" num={`\\dfrac{${T(r.psi, 3)}\\cdot ${T(r.fcd, 2)}\\cdot ${T(B, 0)}\\cdot ${T(r.X, 1)}}{${T(r.fyd, 1)}}`} val={`${T(r.As, 0)}${mm2}`} />}
-                        {r.doubleReinf && <Eq lhs="M_1" sym="\psi f_{cd} B x (d-k_G x)" val={`${T(r.M1 / 1e6, 1)}\\ \\text{kNm}`} />}
-                        {r.doubleReinf && <Eq lhs="M_2" sym="M_{Ed}-M_1" num={`${T(input.MEd, 0)}-${T(r.M1 / 1e6, 1)}`} val={`${T(r.M2 / 1e6, 1)}\\ \\text{kNm}`} />}
-                        {r.doubleReinf && <Eq lhs="\varepsilon_s'" sym="\varepsilon_{cu}\Big(1-\dfrac{c'}{x}\Big)" num={`3{,}5\\big(1-${T(cPrime, 0)}/${T(r.X, 1)}\\big)`} val={`${T(r.epsSc * 1000, 2)}\\text{‰}\\Rightarrow\\sigma_s'=${T(r.sigmaSc, 1)}${MPa}`} />}
-                        {r.doubleReinf && <Eq lhs="A_s'" sym="\dfrac{M_2}{\sigma_s'(d-c')}" num={`\\dfrac{${T(r.M2 / 1e6, 1)}\\cdot 10^6}{${T(r.sigmaSc, 1)}\\cdot (${T(r.d, 0)}-${T(cPrime, 0)})}`} val={`${T(r.AsPrime, 0)}${mm2}`} />}
-                        {r.doubleReinf && <Eq lhs="A_s" sym="\dfrac{\psi f_{cd} B x}{f_{yd}}+\dfrac{M_2}{f_{yd}(d-c')}" val={`${T(r.As, 0)}${mm2}`} />}
-                    </Step>
-                </>
-            )}
-
-            <Step n={base + 1} title="Armature limite (NTC2018 §4.1.6.1.1)">
+            <Step n="7" title="Armature limite (NTC2018 §4.1.6.1.1)">
                 <Eq lhs="A_{s,min}" sym="\max\!\Big(0{,}26\tfrac{f_{ctm}}{f_{yk}}Bd,\;0{,}0013\,Bd\Big)" num={`\\max\\!\\Big(0{,}26\\tfrac{${T(r.fctm, 2)}}{${T(fyk, 0)}}\\cdot ${T(B, 0)}\\cdot ${T(r.d, 0)},\\;0{,}0013\\cdot ${T(B, 0)}\\cdot ${T(r.d, 0)}\\Big)`} val={`${T(r.AsMin, 0)}${mm2}`} />
                 <Eq lhs="A_{s,max}" sym="0{,}04\,B\,h" num={`0{,}04\\cdot ${T(B, 0)}\\cdot ${T(r.h, 0)}`} val={`${T(r.AsMax, 0)}${mm2}`} />
                 <Eq lhs="A_{s,req}" sym="\max(A_s,\,A_{s,min})" val={`${T(r.AsAdopt, 0)}${mm2}`} />
             </Step>
 
-            <Step n={base + 2} title="Scelta delle barre">
+            <Step n="8" title="Scelta delle barre">
                 <Eq lhs="A_\phi" sym="\dfrac{\pi\phi^2}{4}" num={`\\dfrac{\\pi\\cdot ${T(phi, 0)}^2}{4}`} val={`${T(r.areaPhi, 1)}${mm2}`} />
                 <Eq lhs="n" sym="\left\lceil\dfrac{A_{s,req}}{A_\phi}\right\rceil" num={`\\left\\lceil\\dfrac{${T(r.AsAdopt, 0)}}{${T(r.areaPhi, 1)}}\\right\\rceil`} val={`${r.nBars}\\Rightarrow ${r.nBars}\\,\\phi${phi}`} />
                 <Eq lhs="A_{s,prov}" sym="n\,A_\phi" num={`${r.nBars}\\cdot ${T(r.areaPhi, 1)}`} val={`${T(r.AsProvided, 0)}${mm2}`} />
             </Step>
 
-            <Step n={base + 3} title="Verifica ingombro in larghezza">
+            <Step n="9" title="Verifica ingombro in larghezza">
                 <Eq lhs="L" sym="n\phi+(n-1)\max(\phi,20)+2\phi_{st}+2c_{lat}" num={`${r.nBars}\\cdot ${T(phi, 0)}+${r.nBars - 1}\\cdot ${T(r.gap, 0)}+2\\cdot ${T(phiStirrup, 0)}+2\\cdot ${T(cLat, 0)}`} val={`${T(r.reqWidth, 0)}${mm}`} />
                 <Tex display>{`L=${T(r.reqWidth, 0)}${mm}\\;${r.widthOk ? "\\le" : ">"}\\;B=${T(B, 0)}${mm}`}</Tex>
             </Step>
@@ -531,8 +572,16 @@ function Step({ n, title, children }) {
 // Togglebar per la modalità di progetto (controllo segmentato).
 const MODE_SHORT = { fixB: "Base B", fixH: "Altezza h", fixBH: "B e h" };
 function ModeToggle({ value, onChange }) {
+    const n = DESIGN_MODES.length;
+    const idx = Math.max(0, DESIGN_MODES.findIndex((m) => m.id === value));
     return (
-        <div className="flex rounded-xl border border-slate-200 bg-slate-50 p-1">
+        <div className="relative flex rounded-xl border border-slate-200 bg-slate-50 p-1">
+            {/* indicatore scorrevole */}
+            <span
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-y-1 left-1 rounded-lg bg-sky-600 shadow-sm transition-transform duration-300 ease-out"
+                style={{ width: `calc((100% - 0.5rem) / ${n})`, transform: `translateX(${idx * 100}%)` }}
+            />
             {DESIGN_MODES.map((m) => {
                 const active = value === m.id;
                 return (
@@ -541,8 +590,9 @@ function ModeToggle({ value, onChange }) {
                         type="button"
                         onClick={() => onChange(m.id)}
                         title={m.label}
-                        className={`flex-1 rounded-lg px-2 py-1.5 text-xs font-semibold transition-colors duration-500 ease-in-out ${
-                            active ? "bg-sky-600 text-white shadow-sm" : "text-slate-600 hover:bg-white"
+                        aria-pressed={active}
+                        className={`relative z-10 flex-1 rounded-lg px-2 py-1.5 text-xs font-semibold transition-colors duration-300 ${
+                            active ? "text-white" : "text-slate-600"
                         }`}
                     >
                         {MODE_SHORT[m.id]}
@@ -600,6 +650,8 @@ function VDim({ dimX, yA, yB, edgeX, label, color = "#475569" }) {
 // nell'area di disegno mantenendo le proporzioni, e centrata.
 const BOX_W = 440;
 const BOX_H = 360;
+const SIDE_BOX_W = 520;
+const SIDE_BOX_H = 300;
 
 function DesignDrawing({ result, B, cPrime, phiStirrup = 8, cLat = 30, moment = 0, mode = "fixB", unit = "mm", svgRef }) {
     const { h, d, X, phi, phiPrime = phi, nBars, nBarsPrime, beta } = result;
@@ -787,6 +839,197 @@ function DesignDrawing({ result, B, cPrime, phiStirrup = 8, cLat = 30, moment = 
     );
 }
 
+// -------- Sezione di profilo con le risultanti delle forze interne --------
+// Mostra la sezione vista di lato (profondità verticale) con l'asse neutro a X,
+// la zona compressa e le risultanti: C_c (cls, compressione), C_s (acciaio
+// compresso, solo doppia armatura) e T_s (acciaio teso). Flessione semplice.
+function SideForcesDiagram({ result, unit = "mm", svgRef }) {
+    const { h, d, X, kG, fcd, cC, cT, Cc, Cs, Ts, aCc, aCs, aTs, NEd: Ned, MEdSigned, tensionTop, sigmaSc, concreteModel = "rectangular" } = result;
+    const hasCompr = result.AsPrime > 0;
+    const hasN = Math.abs(Ned) > 1000; // > 1 kN
+    const [show, setShow] = useState({ law: true, forces: true, dims: true, moment: true });
+    const toggle = (k) => setShow((s) => ({ ...s, [k]: !s[k] }));
+
+    const U_FACTOR = { mm: 1, cm: 0.1, m: 0.001 };
+    const U_DEC = { mm: 0, cm: 1, m: 3 };
+    const fmtU = (mm) => {
+        const v = mm * U_FACTOR[unit];
+        if (!Number.isFinite(v)) return "-";
+        return v.toLocaleString("it-IT", { minimumFractionDigits: 0, maximumFractionDigits: U_DEC[unit] });
+    };
+    const kN = (N) => fmt(N / 1000, 1);
+
+    // Geometria SPECCHIATA: la sezione di taglio è a sinistra del corpo trave, che
+    // prosegue a destra; σ_c e le risultanti sono a sinistra del taglio.
+    const W = SIDE_BOX_W, H = SIDE_BOX_H;
+    const secTop = 34, secBot = 250;
+    const secH = secBot - secTop;
+    const scale = secH / h;
+    const stressW = 50;
+    const xRight = 380, xCut = 272;        // corpo trave: xCut..xRight (spostato a sinistra)
+    const xStressL = xCut - stressW;       // σ_c a sinistra del taglio
+    const yOf = (depth) => tensionTop ? secBot - depth * scale : secTop + depth * scale;
+    const yNA = yOf(X), yEdge0 = yOf(0), yN = yOf(h / 2);
+
+    const yCc = yOf(kG * X), yCs = yOf(cC), yTs = yOf(d);
+    let lblCc = yCc, lblCs = yCs;
+    if (hasCompr && Math.abs(yCc - yCs) < 13) {
+        const mid = (yCc + yCs) / 2, up = mid - 7, dn = mid + 7;
+        if (yCc <= yCs) { lblCc = up; lblCs = dn; } else { lblCc = dn; lblCs = up; }
+    }
+
+    const RED = "#dc2626", GREEN = "#15803d", NA_COL = "#0284c7", NCOL = "#2563eb", MCOL = "#2563eb";
+    const MODEL_COL = { rectangular: "#16a34a", parabola: "#ea580c", bilinear: "#ca8a04" };
+    const col = MODEL_COL[concreteModel] || "#16a34a";
+
+    // --- diagramma σ_c (a sinistra del taglio) ---
+    const EPS_CU = 0.0035, EPS_C2 = 0.002, EPS_C3 = 0.00175, LAMBDA = 0.8;
+    const sigmaFrac = (depth) => {
+        const e = EPS_CU * (X - depth) / X;
+        if (concreteModel === "bilinear") return e >= EPS_C3 ? 1 : e / EPS_C3;
+        return e >= EPS_C2 ? 1 : 1 - Math.pow(1 - e / EPS_C2, 2);
+    };
+    let stressPath;
+    if (concreteModel === "rectangular") {
+        const aDepth = Math.min(LAMBDA * X, X);
+        stressPath = `M${xCut},${yEdge0} L${xStressL},${yEdge0} L${xStressL},${yOf(aDepth)} L${xCut},${yOf(aDepth)} Z`;
+    } else {
+        const Nn = 24, pts = [];
+        for (let i = 0; i <= Nn; i++) {
+            const depth = (X * i) / Nn;
+            pts.push(`L${(xCut - sigmaFrac(depth) * stressW).toFixed(1)},${yOf(depth).toFixed(1)}`);
+        }
+        stressPath = `M${xCut},${yEdge0} ${pts.join(" ")} L${xCut},${yNA} Z`;
+    }
+
+    // frecce delle forze: a sinistra del diagramma σ_c (compressione → verso la sezione = destra)
+    const xHead = xStressL - 16, L = 58, xTail = xHead - L, labX = xTail - 6;
+    const compZoneTop = Math.min(yEdge0, yNA), compZoneH = Math.abs(yNA - yEdge0);
+    // posizioni X delle quote (bracci) a destra della trave
+    const qX = xRight + 30, qCc = xRight + 58, qTs = xRight + 86, qCs = xRight + 114;
+
+    // azioni applicate (blu): M_Ed come ARCO curvo (punta in alto) che incrocia
+    // la freccia dritta di N_Ed; N_Ed orizzontale al baricentro.
+    const xcross = xTail + 16;   // punto in cui N incrocia l'arco del momento
+    const bw = 24, mr = 26;      // rigonfiamento dell'arco e sua semi-altezza
+    const xa = xcross + bw;      // estremi (alto/basso) dell'arco
+    const momPath = tensionTop
+        ? `M${xa},${yN - mr} C${xcross},${yN - mr * 0.5} ${xcross},${yN + mr * 0.5} ${xa},${yN + mr}`
+        : `M${xa},${yN + mr} C${xcross},${yN + mr * 0.5} ${xcross},${yN - mr * 0.5} ${xa},${yN - mr}`;
+    const xMlab = xcross + bw / 2;                        // etichetta M vicino all'arco
+    const yMlab = tensionTop ? yN + mr + 14 : yN - mr - 8;
+
+    const Toggle = ({ k, label, color }) => {
+        const on = show[k];
+        return (
+            <button type="button" onClick={() => toggle(k)} aria-pressed={on}
+                className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition ${on ? "border-slate-300 bg-white text-slate-700 shadow-sm" : "border-slate-200 bg-slate-50 text-slate-400"}`}>
+                <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: on ? color : "#cbd5e1" }} />{label}
+            </button>
+        );
+    };
+
+    return (
+        <div>
+            <div className="mb-2 flex flex-wrap items-center justify-center gap-2">
+                <Toggle k="law" label="Legame σc" color={col} />
+                <Toggle k="forces" label="Forze" color={RED} />
+                <Toggle k="dims" label="Quote" color="#64748b" />
+                <Toggle k="moment" label="Momento" color={MCOL} />
+            </div>
+
+            <svg ref={svgRef} width="100%" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Legame costitutivo adottato e risultanti delle forze interne">
+                <defs>
+                    <marker id="sf-red" markerUnits="userSpaceOnUse" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill={RED} /></marker>
+                    <marker id="sf-green" markerUnits="userSpaceOnUse" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill={GREEN} /></marker>
+                    <marker id="sf-ind" markerUnits="userSpaceOnUse" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill={NCOL} /></marker>
+                </defs>
+
+                {/* zona compressa */}
+                <rect x={xCut} y={compZoneTop} width={xRight - xCut} height={compZoneH} fill="#e0f2fe" />
+
+                {/* contorno trave: taglio a sinistra (xCut), prolungamento a destra (xRight) */}
+                <line x1={xCut} y1={secTop} x2={xRight} y2={secTop} stroke="#334155" strokeWidth="2" />
+                <line x1={xCut} y1={secBot} x2={xRight} y2={secBot} stroke="#334155" strokeWidth="2" />
+                <line x1={xCut} y1={secTop} x2={xCut} y2={secBot} stroke="#334155" strokeWidth="2" />
+                <path d={`M${xRight - 1},${secTop + 5} l6,-10 M${xRight + 6},${secTop + 5} l6,-10`} stroke="#334155" strokeWidth="1.3" fill="none" />
+                <path d={`M${xRight - 1},${secBot + 5} l6,-10 M${xRight + 6},${secBot + 5} l6,-10`} stroke="#334155" strokeWidth="1.3" fill="none" />
+
+                {/* armature longitudinali continue (verso destra) */}
+                {hasCompr && <line x1={xCut} y1={yCs} x2={xRight + 6} y2={yCs} stroke="#64748b" strokeWidth="2.6" strokeLinecap="round" />}
+                <line x1={xCut} y1={yTs} x2={xRight + 6} y2={yTs} stroke="#0f172a" strokeWidth="2.6" strokeLinecap="round" />
+
+                {/* asse neutro */}
+                <line x1={xHead} y1={yNA} x2={xRight + 6} y2={yNA} stroke={NA_COL} strokeWidth="1.3" strokeDasharray="6 4" />
+
+                {/* diagramma σ_c adottato */}
+                {show.law && <>
+                    <path d={stressPath} fill={col} fillOpacity="0.16" stroke={col} strokeWidth="1.6" strokeLinejoin="round" />
+                    <text x={xStressL} y={yEdge0 + (tensionTop ? 14 : -5)} textAnchor="start" fontSize="11" fontStyle="italic" fill={col}>σ<tspan fontSize="8" dy="2">c</tspan></text>
+                </>}
+
+                {/* forze risultanti */}
+                {show.forces && <>
+                    {/* baricentro σ_c: qui cade C_c (tratteggio fino alla quota del braccio) */}
+                    {show.dims && <line x1={xTail} y1={yCc} x2={qCc} y2={yCc} stroke="#94a3b8" strokeWidth="1" strokeDasharray="3 3" />}
+                    {show.dims && <text x={xCut - 3} y={yCc - 3} textAnchor="end" fontSize="8" fill="#64748b">G (λ·x)</text>}
+
+                    {/* C_c (compressione → verso la sezione, destra) */}
+                    <line x1={xTail} y1={yCc} x2={xHead} y2={yCc} stroke={RED} strokeWidth="2.2" markerEnd="url(#sf-red)" />
+                    {lblCc !== yCc && <line x1={labX + 3} y1={yCc} x2={labX + 3} y2={lblCc} stroke={RED} strokeWidth="0.6" />}
+                    <text x={labX} y={lblCc + 3.5} textAnchor="end" fontSize="11" fill={RED}>C<tspan fontSize="8" dy="2">c</tspan><tspan dy="-2"> = {kN(Cc)} kN</tspan></text>
+
+                    {hasCompr && <>
+                        {show.dims && <line x1={xTail} y1={yCs} x2={qCs} y2={yCs} stroke="#94a3b8" strokeWidth="1" strokeDasharray="3 3" />}
+                        <line x1={xTail} y1={yCs} x2={xHead} y2={yCs} stroke={RED} strokeWidth="2.2" markerEnd="url(#sf-red)" />
+                        {lblCs !== yCs && <line x1={labX + 3} y1={yCs} x2={labX + 3} y2={lblCs} stroke={RED} strokeWidth="0.6" />}
+                        <text x={labX} y={lblCs + 3.5} textAnchor="end" fontSize="11" fill={RED}>C<tspan fontSize="8" dy="2">s</tspan><tspan dy="-2"> = {kN(Cs)} kN</tspan></text>
+                    </>}
+
+                    {/* N_Ed al baricentro: compressione → destra, trazione → sinistra */}
+                    {hasN && show.dims && <line x1={xTail} y1={yN} x2={xCut} y2={yN} stroke="#94a3b8" strokeWidth="1" strokeDasharray="3 3" />}
+                    {hasN && (Ned > 0
+                        ? <line x1={xTail} y1={yN} x2={xHead} y2={yN} stroke={NCOL} strokeWidth="2.2" markerEnd="url(#sf-ind)" />
+                        : <line x1={xHead} y1={yN} x2={xTail} y2={yN} stroke={NCOL} strokeWidth="2.2" markerEnd="url(#sf-ind)" />)}
+                    {hasN && <text x={xcross - 6} y={yN + 16} textAnchor="end" fontSize="11" fill={NCOL}>N<tspan fontSize="8" dy="2">Ed</tspan><tspan dy="-2"> = {kN(Ned)} kN</tspan></text>}
+
+                    {/* T_s (trazione → via dalla sezione, sinistra) */}
+                    {show.dims && <line x1={xTail} y1={yTs} x2={qTs} y2={yTs} stroke="#94a3b8" strokeWidth="1" strokeDasharray="3 3" />}
+                    <line x1={xHead} y1={yTs} x2={xTail} y2={yTs} stroke={GREEN} strokeWidth="2.2" markerEnd="url(#sf-green)" />
+                    <text x={labX} y={yTs + 3.5} textAnchor="end" fontSize="11" fill={GREEN}>T<tspan fontSize="8" dy="2">s</tspan><tspan dy="-2"> = {kN(Ts)} kN</tspan></text>
+                </>}
+
+                {/* quote: x (asse neutro) e bracci rispetto al baricentro (h/2) */}
+                {show.dims && <>
+                    {/* asse baricentrico h/2 */}
+                    <line x1={xCut} y1={yN} x2={xRight + 120} y2={yN} stroke="#94a3b8" strokeWidth="0.8" strokeDasharray="4 3" />
+                    <text x={xCut + 4} y={yN - 3} textAnchor="start" fontSize="8" fill="#94a3b8">baricentro (h/2)</text>
+                    <VDim dimX={qX} yA={yEdge0} yB={yNA} edgeX={xRight} label={`x=${fmtU(X)}`} color={NA_COL} />
+                    <VDim dimX={qCc} yA={yN} yB={yCc} edgeX={xRight} label={fmtU(Math.abs(aCc))} color="#475569" />
+                    <text x={qCc + 11} y={(yN + yCc) / 2} textAnchor="middle" fontSize="10" fill="#94a3b8" transform={`rotate(-90 ${qCc + 11} ${(yN + yCc) / 2})`}>br. Cc</text>
+                    {hasCompr && <>
+                        <VDim dimX={qCs} yA={yN} yB={yCs} edgeX={xRight} label={fmtU(Math.abs(aCs))} color="#475569" />
+                        <text x={qCs + 11} y={(yN + yCs) / 2} textAnchor="middle" fontSize="10" fill="#94a3b8" transform={`rotate(-90 ${qCs + 11} ${(yN + yCs) / 2})`}>br. C's</text>
+                    </>}
+                    <VDim dimX={qTs} yA={yN} yB={yTs} edgeX={xRight} label={fmtU(Math.abs(aTs))} color="#475569" />
+                    <text x={qTs + 11} y={(yN + yTs) / 2} textAnchor="middle" fontSize="10" fill="#94a3b8" transform={`rotate(-90 ${qTs + 11} ${(yN + yTs) / 2})`}>br. Ts</text>
+                </>}
+
+                {/* azione applicata: M_Ed (blu) arco curvo che incrocia la freccia di N_Ed */}
+                {show.moment && <>
+                    <path d={momPath} fill="none" stroke={MCOL} strokeWidth="2.2" markerEnd="url(#sf-ind)" />
+                    <text x={xMlab} y={yMlab} textAnchor="middle" fontSize="11" fill={MCOL}>M<tspan fontSize="8" dy="2">Ed</tspan><tspan dy="-2"> = {fmt(MEdSigned / 1e6, 1)} kNm</tspan></text>
+                </>}
+            </svg>
+            <p className="mt-1 text-center text-[11px] leading-tight text-slate-400">
+                C_c cade nel baricentro G del diagramma σ_c; i bracci sono misurati dall'asse baricentrico (h/2).
+                Equilibrio: C_c{hasCompr ? " + C's" : ""} − T_s = N_Ed ({kN(Ned)} kN); momento = M_Ed.
+                {tensionTop ? " M_Ed < 0: lato teso in alto." : ""}
+            </p>
+        </div>
+    );
+}
+
 function CheckRow({ ok, label, warn, reference }) {
     return (
         <div className="relative flex items-start gap-2 text-sm">
@@ -830,14 +1073,15 @@ function AssumptionsBox() {
             <div>
                 <p className="font-semibold text-slate-600">Metodo di dimensionamento</p>
                 <p className="mt-1 leading-6">
-                    SLU, flessione semplice. Si fissa X = ξ·d con ξ = ε_cu/(ε_cu+ε_s) =
-                    0,2593 (acciaio a 10‰, cls a 3,5‰). La risultante del cls è
-                    C = ψ·b·X·f_cd con baricentro a k_G·X dal lembo compresso; ψ e k_G
-                    dipendono dal diagramma scelto (rettangolo 0,80/0,40;
-                    parabola-rettangolo 0,81/0,416; triangolo-rettangolo 0,75/0,389).
-                    Equilibrio a traslazione e rotazione → altezza utile d e armatura
-                    A_s (A's = β·A_s); si adotta d arrotondato, si ricalcola A_s e si
-                    sceglie il numero di barre verificando l'ingombro in larghezza.
+                    SLU, pressoflessione. Convenzioni: N_Ed &gt; 0 compressione, M_Ed &gt; 0
+                    tende le fibre inferiori (M_Ed &lt; 0 → sezione ribaltata). La risultante del
+                    cls è C_c = ψ·B·x·f_cd con baricentro a λ·x; ψ e λ dipendono dal diagramma
+                    (rettangolo 0,80/0,40; parabola-rettangolo 0,81/0,416; triangolo-rettangolo
+                    0,75/0,389). Le due equazioni di equilibrio rispetto al baricentro (h/2) —
+                    traslazione C_c + C's − T_s = N_Ed e momento = M_Ed — forniscono le incognite:
+                    A_s (e A's) in «B e h», oppure la geometria (d o B, con rapporto β = A's/A_s)
+                    negli altri casi. Si adotta la geometria arrotondata e si scelgono le barre
+                    verificando l'ingombro.
                 </p>
             </div>
         </div>

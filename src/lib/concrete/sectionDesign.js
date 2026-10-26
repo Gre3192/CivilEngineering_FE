@@ -38,7 +38,8 @@ export const DEFAULT_INPUT = {
     mode: "fixB", // "fixB" (fissa base), "fixH" (fissa altezza), "fixBH" (entrambe)
     B: 300, // larghezza della sezione [mm]
     h: 500, // altezza della sezione [mm] (usata per fixH / fixBH)
-    MEd: 150, // momento di progetto [kNm]
+    MEd: 150, // momento di progetto [kNm] (positivo: fibre inferiori tese)
+    NEd: 0, // sforzo normale di progetto [kN] (positivo: compressione)
     beta: 0, // A's/A_s (0 = semplice armatura) - solo fixB/fixH
     c: 40, // copriferro all'asse armatura tesa [mm]
     cPrime: 40, // copriferro all'asse armatura compressa [mm]
@@ -108,10 +109,21 @@ export function getCompressionCoeffs(model) {
 }
 
 /**
- * Dimensiona la sezione a flessione secondo tre modalita':
- *  - "fixB": fissa B, progetta d e A_s (X = xi_d * d);
- *  - "fixH": fissa h, progetta B e A_s (X = xi_d * d);
- *  - "fixBH": fissa B e h, progetta A_s (x dall'equilibrio, eventuale doppia armatura).
+ * Dimensiona la sezione a PRESSOFLESSIONE (SLU) secondo tre modalita':
+ *  - "fixB": fissa B, progetta d e A_s (X = xi_d * d, A's = beta*A_s);
+ *  - "fixH": fissa h, progetta B e A_s (X = xi_d * d, A's = beta*A_s);
+ *  - "fixBH": fissa B e h, progetta A_s (e A's se serve doppia armatura).
+ *
+ * Convenzioni:
+ *  - N_Ed positivo in COMPRESSIONE;
+ *  - M_Ed positivo se tende le fibre INFERIORI (flessione positiva);
+ *    se M_Ed < 0 la sezione viene ribaltata (lato teso in alto) e si segnala
+ *    con il flag `tensionTop`.
+ *
+ * Equilibrio (rispetto all'asse baricentrico, a h/2):
+ *   (1) C_c + C's - T_s = N_Ed
+ *   (2) C_c (h/2 - k_G x) + C's (h/2 - d'') + T_s (h/2 - d') = M_Ed
+ * dove d'' = copriferro lato compresso, d' = copriferro lato teso.
  */
 export function designSection(input) {
     const {
@@ -119,6 +131,7 @@ export function designSection(input) {
         B: Bin,
         h: hIn,
         MEd: MEd_kNm,
+        NEd: NEd_kN = 0,
         beta,
         c,
         cPrime,
@@ -138,8 +151,8 @@ export function designSection(input) {
 
     const errors = [];
     if (mode !== "fixH" && !(Bin > 0)) errors.push("La larghezza B deve essere positiva.");
-    if (mode !== "fixB" && !(hIn > c)) errors.push("L'altezza h deve essere maggiore del copriferro c.");
-    if (!(MEd_kNm > 0)) errors.push("Il momento M_Ed deve essere positivo.");
+    if (mode !== "fixB" && !(hIn > Math.max(c, cPrime))) errors.push("L'altezza h deve essere maggiore dei copriferri.");
+    if (!(Math.abs(MEd_kNm) > 0)) errors.push("Il momento M_Ed deve essere diverso da zero.");
     if (!(fck > 0)) errors.push("Selezionare una classe di calcestruzzo.");
     if (mode !== "fixBH" && !(beta >= 0 && beta < 0.95)) errors.push("beta = A's/A_s deve essere 0 ≤ β < 0,95.");
     if (errors.length > 0) return { ok: false, errors };
@@ -147,7 +160,7 @@ export function designSection(input) {
     const fcd = (alphaCc * fck) / gammaC;
     const fyd = fyk / gammaS;
     const epsYd = fyd / ES;
-    const MEd = MEd_kNm * 1e6;
+    const Ned = NEd_kN * 1000; // N (compressione +)
     const step = dRound > 0 ? dRound : 1;
 
     // Tensione dell'acciaio in funzione della deformazione (modello scelto)
@@ -165,70 +178,110 @@ export function designSection(input) {
     const xiLim = EPS_CU / (EPS_CU + epsYd); // limite di snervamento (fixBH)
     const { psi, kG } = getCompressionCoeffs(concreteModel);
 
-    let B, h, d, X, z, As, AsPrime, dReq, Breq, doubleReinf;
+    // --- Segno del momento: se negativo si progetta nel frame ribaltato ---
+    const tensionTop = MEd_kNm < 0;
+    const Mabs = Math.abs(MEd_kNm) * 1e6; // N·mm (frame di progetto: teso in basso)
+    const cT = tensionTop ? cPrime : c;   // copriferro lato teso (dal lembo teso)
+    const cC = tensionTop ? c : cPrime;   // copriferro lato compresso (dal lembo compr.)
+
+    // Tensione acciaio compresso in funzione di x (a cC dal lembo compresso)
+    const sigmaScOf = (x) => {
+        const e = EPS_CU * (1 - cC / x);
+        return e > 0 ? sSteel(e) : 0;
+    };
+
+    // Solutore dell'equilibrio a geometria fissata (B, h, d): determina x e le
+    // armature A_s, A's soddisfacendo ESATTAMENTE le due equazioni di equilibrio.
+    // Semplice armatura se x <= x_lim; altrimenti doppia (x = x_lim).
+    const solveAtGeom = (Bg, hg, dg) => {
+        const aT = hg / 2 - cT;
+        // tentativo a semplice armatura (A's = 0): quadratica in x
+        //   -psi fcd B kG x^2 + psi fcd B d x - (N_Ed*aT + M) = 0
+        const A2 = -psi * fcd * Bg * kG;
+        const A1 = psi * fcd * Bg * dg;
+        const A0 = -(Ned * aT + Mabs);
+        const disc = A1 * A1 - 4 * A2 * A0;
+        let xS = Infinity;
+        if (disc >= 0) {
+            const r1 = (-A1 + Math.sqrt(disc)) / (2 * A2);
+            const r2 = (-A1 - Math.sqrt(disc)) / (2 * A2);
+            const cands = [r1, r2].filter((v) => v > 1e-6 && v < 3 * dg).sort((a, b) => a - b);
+            if (cands.length) xS = cands[0];
+        }
+        if (Number.isFinite(xS) && xS <= xiLim * dg) {
+            const Xg = xS, Cc = psi * fcd * Bg * Xg, e = EPS_CU * (1 - cC / Xg);
+            return { X: Xg, As: Math.max((Cc - Ned) / fs, 0), AsPrime: 0, doubleReinf: false, sigmaSc: sigmaScOf(Xg), epsSc: e, comprYield: e >= epsYd, M1: null, M2: null };
+        }
+        const Xg = xiLim * dg, Cc = psi * fcd * Bg * Xg;
+        const aC = hg / 2 - kG * Xg, aSp = hg / 2 - cC, e = EPS_CU * (1 - cC / Xg);
+        const sc = sigmaScOf(Xg);
+        const Cs = (Mabs - Cc * aC - (Cc - Ned) * aT) / (aSp + aT);
+        const AsP = sc > 0 ? Math.max(Cs, 0) / sc : 0;
+        return { X: Xg, As: Math.max((Cc + AsP * sc - Ned) / fs, 0), AsPrime: AsP, doubleReinf: true, sigmaSc: sc, epsSc: e, comprYield: e >= epsYd, M1: Cc * aC, M2: Mabs - Cc * aC };
+    };
+
+    let B, h, d, X, z, As, AsPrime, dReq = null, Breq = null, doubleReinf = false;
     let coeff1 = null, coeff2 = null, AsDesignRaw = null, M1 = null, M2 = null;
     let epsSc = null, sigmaSc = null, comprYield = true;
-    const betaEff = mode === "fixBH" ? 0 : beta; // in fixBH l'armatura compr. deriva dall'equilibrio
+    const betaEff = mode === "fixBH" ? 0 : beta;
 
-    if (mode === "fixB") {
-        B = Bin;
-        const kGxi = kG * xi;
-        const K = fs / (B * psi * xi * fcd);
-        coeff2 = K * fs * (1 - beta) * ((1 - kGxi) + kGxi * beta);
-        coeff1 = beta * fs * cPrime;
-        AsDesignRaw = (coeff1 + Math.sqrt(coeff1 * coeff1 + 4 * coeff2 * MEd)) / (2 * coeff2);
-        dReq = K * AsDesignRaw * (1 - beta);
-        d = Math.ceil(dReq / step) * step;
-        h = d + c;
-        X = xi * d;
-        z = d - kG * X;
-        As = MEd / ((d - kG * X + beta * (kG * X - cPrime)) * fs);
-        AsPrime = beta * As;
-        epsSc = EPS_CU * (1 - cPrime / X);
-        sigmaSc = sSteel(Math.max(epsSc, 0));
-        comprYield = epsSc >= epsYd;
+    if (mode === "fixBH") {
+        // sezione assegnata: x e armature dall'equilibrio (A's solo se necessaria)
+        B = Bin; h = hIn; d = h - cT;
+        const sol = solveAtGeom(B, h, d);
+        X = sol.X; As = sol.As; AsPrime = sol.AsPrime; doubleReinf = sol.doubleReinf;
+        sigmaSc = sol.sigmaSc; epsSc = sol.epsSc; comprYield = sol.comprYield;
+        M1 = sol.M1; M2 = sol.M2;
     } else if (mode === "fixH") {
-        h = hIn;
-        d = h - c;
-        X = xi * d;
-        z = d - kG * X;
-        As = MEd / ((d - kG * X + beta * (kG * X - cPrime)) * fs);
-        AsPrime = beta * As;
-        // Larghezza richiesta dall'equilibrio alla traslazione
-        Breq = (As * fs * (1 - beta)) / (psi * xi * d * fcd);
-        B = Math.ceil(Breq / step) * step;
-        epsSc = EPS_CU * (1 - cPrime / X);
-        sigmaSc = sSteel(Math.max(epsSc, 0));
+        // fissa h, progetta B; il rapporto beta impone A's = beta*A_s (x = xi*d)
+        h = hIn; d = h - cT; X = xi * d;
+        sigmaSc = sigmaScOf(X);
+        epsSc = EPS_CU * (1 - cC / X);
         comprYield = epsSc >= epsYd;
+        const aC = h / 2 - kG * X, aSp = h / 2 - cC, aT = h / 2 - cT;
+        const k1 = beta * sigmaSc - fs, k2 = beta * sigmaSc * aSp + fs * aT;
+        As = Math.max((Mabs - aC * Ned) / (k2 - aC * k1), 0);
+        AsPrime = Math.max(beta * As, 0);
+        const P = psi * X * fcd;
+        Breq = (Ned - k1 * As) / P;
+        B = Math.max(Breq, 1);
+        doubleReinf = AsPrime > 0;
     } else {
-        // fixBH: sezione assegnata, x dall'equilibrio
+        // fixB: fissa B, progetta d; beta impone A's = beta*A_s (bisezione su d, x = xi*d)
         B = Bin;
-        h = hIn;
-        d = h - c;
-        // psi fcd B kG x^2 - psi fcd B d x + MEd = 0
-        const A2 = psi * fcd * B * kG;
-        const A1 = -psi * fcd * B * d;
-        const disc = A1 * A1 - 4 * A2 * MEd;
-        let xSingle = disc >= 0 ? (-A1 - Math.sqrt(disc)) / (2 * A2) : Infinity;
-        if (disc >= 0 && xSingle <= xiLim * d) {
-            doubleReinf = false;
-            X = xSingle;
-            z = d - kG * X;
-            As = (psi * fcd * B * X) / fs;
-            AsPrime = 0;
-        } else {
-            doubleReinf = true;
-            X = xiLim * d;
-            z = d - kG * X;
-            M1 = psi * fcd * B * X * (d - kG * X);
-            M2 = MEd - M1;
-            epsSc = EPS_CU * (1 - cPrime / X);
-            sigmaSc = sSteel(Math.max(epsSc, 0));
-            comprYield = epsSc >= epsYd;
-            AsPrime = sigmaSc > 0 ? M2 / (sigmaSc * (d - cPrime)) : 0;
-            As = (psi * fcd * B * X) / fs + M2 / (fs * (d - cPrime));
+        const residual = (dT) => {
+            const x = xi * dT, hT = dT + cT;
+            const Cc = psi * fcd * B * x, sc = sigmaScOf(x);
+            const aC = hT / 2 - kG * x, aSp = hT / 2 - cC, aT = hT / 2 - cT;
+            const k1 = beta * sc - fs;
+            const As_ = (Ned - Cc) / k1;
+            return Cc * aC + beta * As_ * sc * aSp + As_ * fs * aT - Mabs;
+        };
+        let lo = Math.max(cT, cC) + 2, hi = 6000;
+        if (residual(lo) * residual(hi) > 0) {
+            let prev = lo, fprev = residual(lo);
+            for (let dd = lo + 4; dd <= hi; dd += 4) {
+                const f = residual(dd);
+                if (fprev * f <= 0) { lo = prev; hi = dd; break; }
+                prev = dd; fprev = f;
+            }
         }
+        for (let i = 0; i < 100; i++) {
+            const mid = (lo + hi) / 2;
+            if (residual(lo) * residual(mid) <= 0) hi = mid; else lo = mid;
+        }
+        dReq = (lo + hi) / 2;
+        d = dReq; h = d + cT; X = xi * d;
+        sigmaSc = sigmaScOf(X);
+        epsSc = EPS_CU * (1 - cC / X);
+        comprYield = epsSc >= epsYd;
+        const Cc = psi * fcd * B * X, k1 = beta * sigmaSc - fs;
+        As = Math.max((Ned - Cc) / k1, 0);
+        AsPrime = Math.max(beta * As, 0);
+        doubleReinf = AsPrime > 0;
     }
+
+    z = d - kG * X;
 
     // --- Armature minime e massime (NTC2018 4.1.6.1.1) ---
     const AsMin = Math.max(0.26 * (fctm(fck) / fyk) * B * d, 0.0013 * B * d);
@@ -250,10 +303,34 @@ export function designSection(input) {
     const reqWidth = nBars * phi + (nBars - 1) * gap + 2 * phiStirrup + 2 * cLat;
     const widthOk = reqWidth <= B;
 
+    // --- Risultanti delle forze e bracci rispetto all'asse baricentrico (h/2) ---
+    const Cc = psi * fcd * B * X;          // compressione cls [N]
+    const Cs = AsPrime * (sigmaSc || 0);   // compressione acciaio [N]
+    const Ts = As * fs;                    // trazione acciaio [N]
+    const aCc = h / 2 - kG * X;            // braccio di C_c
+    const aCs = h / 2 - cC;                // braccio di C's
+    const aTs = h / 2 - cT;                // braccio di T_s
+    const eqN = Cc + Cs - Ts;              // dovrebbe = N_Ed
+    const eqM = Cc * aCc + Cs * aCs + Ts * aTs; // dovrebbe = M (frame di progetto)
+
     return {
         ok: true,
         errors: [],
         mode,
+        NEd: Ned,
+        MEd: Mabs,
+        MEdSigned: tensionTop ? -Mabs : Mabs,
+        tensionTop,
+        cT,
+        cC,
+        Cc,
+        Cs,
+        Ts,
+        aCc,
+        aCs,
+        aTs,
+        eqN,
+        eqM,
         fcd,
         fyd,
         fs,

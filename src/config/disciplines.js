@@ -93,7 +93,7 @@ export const DISCIPLINES = [
                         id: "progetto-sezione",
                         name: "Progetto sezione",
                         description:
-                            "Dimensionamento dell'armatura a flessione (SLU) di una sezione rettangolare in c.a.",
+                            "Dimensionamento dell'armatura a pressoflessione (SLU) di una sezione rettangolare in c.a.",
                         icon: SquarePen,
                         status: "ready",
                         component: SectionDesignTool,
