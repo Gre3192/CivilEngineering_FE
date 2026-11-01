@@ -15,7 +15,7 @@ export default function DisciplineSidebar({ discipline, isOpen, onToggle }) {
             className={`
                 fixed left-0 top-0 z-40 flex h-screen flex-col border-r border-slate-200 bg-white
                 transition-all duration-300
-                ${isOpen ? "w-64" : "w-20"}
+                ${isOpen ? "w-64 translate-x-0" : "w-64 -translate-x-full lg:w-20 lg:translate-x-0"}
             `}
         >
             {/* Intestazione materia */}

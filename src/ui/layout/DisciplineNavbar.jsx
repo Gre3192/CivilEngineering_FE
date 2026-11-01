@@ -18,10 +18,10 @@ export default function DisciplineNavbar({
             className={`
                 fixed right-0 top-0 z-30 h-16 border-b border-slate-200 bg-white
                 transition-all duration-300
-                ${isSidebarOpen ? "left-64" : "left-20"}
+                left-0 ${isSidebarOpen ? "lg:left-64" : "lg:left-20"}
             `}
         >
-            <div className="flex h-full items-center justify-between px-6">
+            <div className="flex h-full items-center justify-between gap-3 px-4 sm:px-6">
                 <div className="flex min-w-0 items-center gap-3">
                     <button
                         type="button"

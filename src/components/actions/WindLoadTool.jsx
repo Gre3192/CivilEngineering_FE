@@ -12,7 +12,7 @@ export default function WindLoadTool() {
     const setN = (f) => (v) => setInput((p) => ({ ...p, [f]: Number(v) || 0 }));
 
     return (
-        <div className="grid gap-6 lg:grid-cols-[380px_1fr]">
+        <div className="grid grid-cols-1 gap-6 xl:grid-cols-[380px_minmax(0,1fr)]">
             <div className="space-y-4">
                 <Card>
                     <CardTitle>Sito</CardTitle>

@@ -2,6 +2,8 @@
 // Grafico del legame costitutivo del calcestruzzo (sigma-eps) con assi a freccia:
 // rettangolo (stress-block), parabola-rettangolo, triangolo-rettangolo.
 
+import Sym from "../Sym";
+
 const EPS_CU = 0.0035;
 const EPS_C2 = 0.002;
 const EPS_C3 = 0.00175;
@@ -99,8 +101,8 @@ export default function ConcreteDiagram({ fcd, model }) {
             </svg>
             {model === "rectangular" && (
                 <p className="mt-1 text-[11px] leading-tight text-slate-400">
-                    Blocco equivalente (λ=0,8; η=1,0): σ = f_cd da ε_c4 = (1−λ)·ε_cu = 0,70‰ a ε_cu;
-                    profondità λ·x.
+                    <Sym>Blocco equivalente (λ=0,8; η=1,0): σ = f_cd da ε_c4 = (1−λ)·ε_cu = 0,70‰ a ε_cu;
+                    profondità λ·x.</Sym>
                 </p>
             )}
         </div>

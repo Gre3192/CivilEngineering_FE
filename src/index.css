@@ -1,1 +1,8 @@
 @import "tailwindcss";
+
+/* Formule KaTeX in display allineate a sinistra dentro un contenitore .tex-left
+   (fuori dai layer, come katex.min.css, così prevale per specificità). */
+.tex-left .katex-display,
+.tex-left .katex-display > .katex {
+    text-align: left;
+}

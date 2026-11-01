@@ -23,11 +23,12 @@ export default function Tex({ children, display = false }) {
 // Equazione su due righe con "=" allineati (formula / numeri sostituiti),
 // seguita dal valore. lhs = formula simbolica; num = numeri sostituiti; val =
 // risultato. Se num manca, resta su una riga.
-export function Eq({ lhs, sym, num, val }) {
+export function Eq({ lhs, sym, num, val, breakLine = true }) {
     const valPart = val != null && val !== "" ? ` = ${val}` : "";
+    const numPart = breakLine ? ` \\\\ &= ${num}` : ` = ${num}`;
     const body =
         num != null && num !== ""
-            ? `\\begin{aligned}${lhs} &= ${sym} \\\\ &= ${num}${valPart}\\end{aligned}`
+            ? `\\begin{aligned}${lhs} &= ${sym}${numPart}${valPart}\\end{aligned}`
             : `${lhs} = ${sym}${valPart}`;
     return <Tex display>{body}</Tex>;
 }

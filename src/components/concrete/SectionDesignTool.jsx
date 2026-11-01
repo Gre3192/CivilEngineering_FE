@@ -15,6 +15,7 @@ import {
     DEFAULT_INPUT,
 } from "../../lib/concrete/sectionDesign";
 import Tex, { Eq, texNum as T } from "../Tex";
+import Sym, { sub } from "../Sym";
 import ConcreteDiagram from "./ConcreteDiagram";
 import SteelDiagram from "./SteelDiagram";
 
@@ -114,8 +115,11 @@ export default function SectionDesignTool() {
     const copyForces = () => runCopy(forcesSvgRef, SIDE_BOX_W, SIDE_BOX_H, setIsCopiedF, copiedTimerF);
     const saveForces = () => runSave(forcesSvgRef, SIDE_BOX_W, SIDE_BOX_H, "forze-interne.png", setIsSavedF, savedTimerF);
 
-    const calculatedB = result.ok && result.mode === "fixH" ? result.Breq : result.ok ? result.B : 0;
-    const calculatedH = result.ok && result.mode === "fixB" ? result.dReq + input.c : result.ok ? result.h : 0;
+    // valori commerciali proposti: arrotondamento per eccesso al passo "Arrotond. d"
+    const roundStep = input.dRound > 0 ? input.dRound : 10;
+    const roundUp = (v) => Math.ceil(v / roundStep) * roundStep;
+    const calculatedB = result.ok && result.mode === "fixH" ? roundUp(result.Breq) : result.ok ? result.B : 0;
+    const calculatedH = result.ok && result.mode === "fixB" ? roundUp(result.dReq) + input.c : result.ok ? result.h : 0;
     const adoptedB = Number(adoptedDimensions.B) > 0 ? Number(adoptedDimensions.B) : calculatedB;
     const adoptedH = Number(adoptedDimensions.h) > 0 ? Number(adoptedDimensions.h) : calculatedH;
     const selectedTensionBars = Number(adoptedReinforcement.tensionBars ?? result.nBars);
@@ -137,7 +141,7 @@ export default function SectionDesignTool() {
     const checkedBarCount = selectedTensionBars >= 2 ? selectedTensionBars : result.nBars;
     const checkedBarDiameter = selectedTensionPhi > 0 ? selectedTensionPhi : result.phi;
     const checkedBarGap = Math.max(checkedBarDiameter, 20);
-    const checkedWidth = checkedBarCount * checkedBarDiameter + (checkedBarCount - 1) * checkedBarGap + 2 * input.phiStirrup + 2 * input.cLat;
+    const checkedWidth = checkedBarCount * checkedBarDiameter + (checkedBarCount - 1) * checkedBarGap + 2 * input.phiStirrup + 2 * (result.ok ? result.cT : input.c);
     const checkedWidthLimit = adoptedB || result.B;
     const checkedWidthOk = checkedWidth <= checkedWidthLimit;
     const drawingResult = result.ok ? {
@@ -161,7 +165,7 @@ export default function SectionDesignTool() {
         : { ...p, h: value, d: String(Number(value) - input.c) });
 
     return (
-        <div className="grid gap-6 lg:grid-cols-[380px_1fr]">
+        <div className="grid grid-cols-1 gap-6 xl:grid-cols-[380px_minmax(0,1fr)]">
             {/* -------- INPUT -------- */}
             <div className="space-y-4">
                 <div className="flex items-center justify-between gap-2">
@@ -190,12 +194,12 @@ export default function SectionDesignTool() {
                         <NumberField label="Momento M_Ed" unit="kNm" value={input.MEd} onChange={setNumber("MEd")} />
                         <NumberField label="Sforzo normale N_Ed" unit="kN" value={input.NEd} onChange={setNumber("NEd")} />
                     </div>
-                    <p className="mt-2 text-[11px] text-slate-400">
+                    <p className="mt-2 text-[11px] text-slate-400"><Sym>
                         Convenzioni: N_Ed &gt; 0 compressione; M_Ed &gt; 0 tende le fibre inferiori.
                         {input.mode === "fixBH"
                             ? " Sezione assegnata: A's calcolata solo se necessaria."
                             : " β = 0 → semplice armatura (dimensiona la geometria)."}
-                    </p>
+                    </Sym></p>
                 </CollapsibleCard>
 
                 <CollapsibleCard title="Materiali" command={cardCommand}>
@@ -246,14 +250,14 @@ export default function SectionDesignTool() {
                             <div>
                                 <p className="font-semibold">Dati non validi</p>
                                 <ul className="mt-1 list-disc pl-5 text-sm text-slate-600">
-                                    {result.errors.map((e) => <li key={e}>{e}</li>)}
+                                    {result.errors.map((e) => <li key={e}>{sub(e)}</li>)}
                                 </ul>
                             </div>
                         </div>
                     </Card>
                 ) : (
                     <>
-                        <div className="grid gap-4 sm:grid-cols-3">
+                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                             <BigResult title="Larghezza B" titleSuffix="richiesta" value={fmt(result.mode === "fixH" ? result.Breq : result.B, result.mode === "fixH" ? 1 : 0)} unit="mm"
                                 {...(result.mode === "fixH" || result.mode === "fixBH" ? { onReset: () => setAdoptedDimensions((p) => ({ ...p, B: "" })), resetLabel: "Ripristina larghezza richiesta" } : {})}>
                                 {(result.mode === "fixH" || result.mode === "fixBH") && <NumberField label="Larghezza adottata B" unit="mm" value={adoptedDimensions.B ?? ""} onChange={(v) => setAdoptedDimensions((p) => ({ ...p, B: v }))} />}
@@ -274,7 +278,7 @@ export default function SectionDesignTool() {
                             <div className="grid gap-4 sm:grid-cols-2">
                                 <div className="rounded-xl bg-sky-50 p-4">
                                     <div className="flex items-center justify-between gap-2">
-                                        <p className="flex items-baseline gap-1.5 text-xs font-semibold uppercase tracking-wide text-sky-700">Armatura tesa <span className="normal-case">As</span> <span className="text-[10px] font-medium normal-case tracking-normal text-slate-400">richiesta</span></p>
+                                        <p className="flex items-baseline gap-1.5 text-xs font-semibold uppercase tracking-wide text-sky-700">Armatura tesa <span className="normal-case">A<sub>s</sub></span> <span className="text-[10px] font-medium normal-case tracking-normal text-slate-400">richiesta</span></p>
                                         <button type="button" onClick={() => setAdoptedReinforcement((p) => ({ ...p, tensionBars: String(result.nBars), tensionPhi: String(result.phi) }))} title="Ripristina armatura richiesta" aria-label="Ripristina armatura tesa richiesta" className="rounded-md p-1 text-slate-500 transition hover:bg-sky-100 hover:text-sky-700">
                                             <RotateCcw size={15} />
                                         </button>
@@ -295,7 +299,7 @@ export default function SectionDesignTool() {
                                 {result.AsPrime > 0 && (
                                     <div className="rounded-xl bg-sky-50 p-4">
                                         <div className="flex items-center justify-between gap-2">
-                                            <p className="flex items-baseline gap-1.5 text-xs font-semibold uppercase tracking-wide text-sky-700">Armatura compressa <span className="normal-case">A's</span> <span className="text-[10px] font-medium normal-case tracking-normal text-slate-400">richiesta</span></p>
+                                            <p className="flex items-baseline gap-1.5 text-xs font-semibold uppercase tracking-wide text-sky-700">Armatura compressa <span className="normal-case">A'<sub>s</sub></span> <span className="text-[10px] font-medium normal-case tracking-normal text-slate-400">richiesta</span></p>
                                             <button type="button" onClick={() => setAdoptedReinforcement((p) => ({ ...p, compressionBars: String(result.nBarsPrime), compressionPhi: String(result.phi) }))} title="Ripristina armatura richiesta" aria-label="Ripristina armatura compressa richiesta" className="rounded-md p-1 text-slate-500 transition hover:bg-sky-100 hover:text-sky-700">
                                                 <RotateCcw size={15} />
                                             </button>
@@ -306,7 +310,7 @@ export default function SectionDesignTool() {
                                             <SelectField label="Diametro adottato" value={adoptedReinforcement.compressionPhi || String(result.phi)} onChange={(v) => setAdoptedReinforcement((p) => ({ ...p, compressionPhi: v }))} options={[{ value: "", label: "Seleziona" }, ...BAR_DIAMETERS.map((d) => ({ value: d, label: `φ ${d}` }))]} />
                                         </div>
                                         <p className="mt-2 flex items-center justify-between gap-2 text-sm font-semibold text-slate-700">
-                                            <span>A's <span className="text-[10px] font-medium normal-case tracking-normal text-slate-400">adottata</span> = {adoptedCompressionArea ? `${fmt(adoptedCompressionArea, 0)} mm²` : "—"}</span>
+                                            <span>A'<sub>s</sub> <span className="text-[10px] font-medium normal-case tracking-normal text-slate-400">adottata</span> = {adoptedCompressionArea ? `${fmt(adoptedCompressionArea, 0)} mm²` : "—"}</span>
                                             {adoptedCompressionArea !== null && (adoptedCompressionArea >= result.AsPrimeProvided
                                                 ? <CheckCircle2 size={16} className="shrink-0 text-emerald-600" aria-label="Armatura adottata verificata" role="img" />
                                                 : <AlertTriangle size={16} className="shrink-0 text-amber-500" aria-label="Armatura adottata inferiore a quella richiesta" role="img" />)}
@@ -424,7 +428,12 @@ export default function SectionDesignTool() {
                                 <ChevronDown size={15} aria-hidden="true" className={`text-slate-400 transition-transform duration-300 ${showSteps ? "" : "-rotate-90"}`} />
                             </button>
                             <AnimatedPanel isOpen={showSteps}>
-                                <CalcReport result={result} input={input} adoptedDimensions={adoptedDimensions} />
+                                <CalcReport result={result} input={input} commercial={result.ok ? {
+                                    B: adoptedB, h: adoptedH, d: adoptedH - result.cT,
+                                    nT: checkedBarCount, phiT: checkedBarDiameter, AsT: checkedBarCount * Math.PI * checkedBarDiameter ** 2 / 4,
+                                    nC: adoptedCompressionBars, phiC: adoptedCompressionPhi, AsC: adoptedCompressionBars * Math.PI * adoptedCompressionPhi ** 2 / 4,
+                                    gap: checkedBarGap, width: checkedWidth, widthOk: checkedWidthOk, widthLimit: checkedWidthLimit,
+                                } : null} />
                             </AnimatedPanel>
                         </Card>
 
@@ -437,124 +446,230 @@ export default function SectionDesignTool() {
 }
 
 // -------- Foglio dei passaggi di calcolo (formule in LaTeX) --------
-function CalcReport({ result, input, adoptedDimensions }) {
+function CalcReport({ result, input, commercial }) {
     const r = result;
-    const { fck, fyk, alphaCc, gammaC, gammaS, phi, phiStirrup, cLat } = input;
-    const B = r.B; // larghezza effettiva (progettata o assegnata)
+    const { fck, fyk, alphaCc, gammaC, gammaS, beta, phiStirrup } = input;
     const mm = "\\ \\text{mm}";
     const mm2 = "\\ \\text{mm}^2";
     const MPa = "\\ \\text{MPa}";
-    const uk = "\\ \\text{kN}";
-    const ukm = "\\ \\text{kNm}";
     const hasCompr = r.AsPrime > 0;
-    const kN = (N, d = 1) => T(N / 1000, d);      // N -> kN
-    const kNm = (Nmm, d = 1) => T(Nmm / 1e6, d);  // N·mm -> kNm
-    const mToStr = (lenMm) => T(lenMm / 1000, 3); // mm -> m
-    const dimensionValue = (required, adopted, dec = 1) => {
-        const requestedValue = `${T(required, dec)}${mm}`;
-        return adopted !== undefined && adopted !== "" && Number(adopted) > 0
-            ? `${requestedValue}\\to ${T(Number(adopted), dec)}${mm}`
-            : requestedValue;
-    };
+    const c = r.cT, cp = r.cC; // c = d' (lato teso), c' = d'' (lato compresso)
+    // tensione dell'acciaio teso: f_yd (elasto-plastico) oppure f_s (incrudente, a 10‰)
+    const ts = Math.abs(r.fs - r.fyd) < 1e-9 ? "f_{yd}" : "f_s";
+    const Ps = T(r.psi, 4), Lm = T(r.kG, 3), fcd = T(r.fcd, 2), fyd = T(r.fyd, 1), fsv = T(r.fs, 1);
+    const Nnum = Math.abs(r.NEd) < 1 ? "0" : `${T(r.NEd / 1000, 1)}\\cdot 10^{3}`; // N
+    const Mnum = `${T(r.MEd / 1e6, 1)}\\cdot 10^{6}`;                                // N·mm
+    const h2 = T(r.h / 2, 1);
+
+    // ---- risultanti, bracci e sistema di equilibrio ----
+    // Prima si esprimono C_c, C's, T_s e i bracci con i valori sostituiti e
+    // semplificati; il sistema si scrive poi in forma compatta con questi.
+    const sgn = (v, dec = 1) => (v < 0 ? `-${T(-v, dec)}` : `+${T(v, dec)}`);
+    const lin = (a, v, b, decA = 4) => `${T(a, decA)}\\,${v}${Math.abs(b) < 1e-9 ? "" : sgn(b, 1)}`;
+    const hasCs = r.mode === "fixBH" ? r.xFromXi : beta > 0; // armatura compressa presente nel sistema
+    const kS = (r.mode === "fixBH" ? 1 : beta) * r.fyd;   // C's = kS·A_s (fixB/fixH) oppure kS·A's (fixBH)
+    const kT = r.fs;                                      // T_s = kT·A_s
+    const sameArm = Math.abs(c - cp) < 1e-9;              // c = c': C's e T_s hanno lo stesso braccio
+    const X1 = T(r.X, 1);
+
+    const symSystem = hasCs
+        ? `\\begin{cases}C_c+C_s'-T_s=N_{Ed}\\\\[6pt]C_c\\Big(\\tfrac{h}{2}-\\lambda x\\Big)+C_s'\\Big(\\tfrac{h}{2}-c'\\Big)+T_s\\Big(\\tfrac{h}{2}-c\\Big)=M_{Ed}\\end{cases}`
+        : `\\begin{cases}C_c-T_s=N_{Ed}\\\\[6pt]C_c\\Big(\\tfrac{h}{2}-\\lambda x\\Big)+T_s\\Big(\\tfrac{h}{2}-c\\Big)=M_{Ed}\\end{cases}`;
+    const cases = (eqN, eqM) => `\\begin{cases}${eqN}\\\\[6pt]${eqM}\\end{cases}`;
+
+    // righe delle forze: { lhs, sym, num?, val }
+    const rowCs = r.mode === "fixBH"
+        ? { lhs: "C_s'", sym: "A_s'\\,f_{yd}", val: `${fyd}\\,A_s'` }
+        : { lhs: "C_s'", sym: "\\beta\\,A_s\\,f_{yd}", num: `${T(beta, 2)}\\cdot A_s\\cdot ${fyd}`, val: `${T(kS, 2)}\\,A_s` };
+    const rowTs = { lhs: "T_s", sym: `A_s\\,${ts}`, val: `${fsv}\\,A_s` };
+
+    let forceRows, armItems, numSystem, unknowns;
+    if (r.mode === "fixB") {
+        // x = xi·d e h = d + c: forze e bracci lineari in d
+        const kCd = r.psi * r.B * r.xi * r.fcd;
+        const armC = lin(0.5 - r.kG * r.xi, "d", c / 2);
+        const armS = lin(0.5, "d", c / 2 - cp, 1);
+        const armT = lin(0.5, "d", -c / 2, 1);
+        forceRows = [
+            { lhs: "C_c", sym: "\\Psi\\,B\\,x\\,f_{cd}", num: `${Ps}\\cdot ${T(r.B, 0)}\\cdot 0{,}2593\\,d\\cdot ${fcd}`, val: `${T(kCd, 1)}\\,d` },
+            hasCs ? rowCs : null,
+            rowTs,
+        ];
+        armItems = [
+            `\\tfrac{h}{2}-\\lambda x=\\tfrac{d+${T(c, 0)}}{2}-${Lm}\\cdot 0{,}2593\\,d=${armC}`,
+            hasCs ? `\\tfrac{h}{2}-c'=${armS}` : null,
+            `\\tfrac{h}{2}-c=${armT}`,
+        ];
+        const steel = !hasCs ? [`${fsv}\\,A_s\\,(${armT})`]
+            : sameArm ? [`${T(kS + kT, 2)}\\,A_s\\,(${armT})`]
+                : [`${T(kS, 2)}\\,A_s\\,(${armS})`, `${fsv}\\,A_s\\,(${armT})`];
+        numSystem = cases(
+            `${T(kCd, 1)}\\,d-${T(hasCs ? kT - kS : kT, 2)}\\,A_s=${Nnum}`,
+            `${T(kCd, 1)}\\,d\\,(${armC})+${steel.join("+")}=${Mnum}`);
+        unknowns = "incognite d e A_s";
+    } else if (r.mode === "fixH") {
+        // h e x noti: forze lineari in B e A_s, bracci numerici
+        const kCB = r.psi * r.X * r.fcd;
+        forceRows = [
+            { lhs: "C_c", sym: "\\Psi\\,B\\,x\\,f_{cd}", num: `${Ps}\\cdot B\\cdot ${X1}\\cdot ${fcd}`, val: `${T(kCB, 2)}\\,B` },
+            hasCs ? rowCs : null,
+            rowTs,
+        ];
+        armItems = [
+            `\\tfrac{h}{2}-\\lambda x=${h2}-${Lm}\\cdot ${X1}=${T(r.aCc, 1)}`,
+            hasCs ? `\\tfrac{h}{2}-c'=${T(r.aCs, 1)}` : null,
+            `\\tfrac{h}{2}-c=${T(r.aTs, 1)}`,
+        ];
+        numSystem = cases(
+            `${T(kCB, 2)}\\,B-${T(hasCs ? kT - kS : kT, 2)}\\,A_s=${Nnum}`,
+            `${T(kCB * r.aCc, 1)}\\,B+${T((hasCs ? kS * r.aCs : 0) + kT * r.aTs, 1)}\\,A_s=${Mnum}`);
+        unknowns = "incognite B e A_s";
+    } else if (r.xFromXi) {
+        // B e h note, x = xi·d: C_c noto, incognite A_s e A's
+        forceRows = [
+            { lhs: "C_c", sym: "\\Psi\\,B\\,x\\,f_{cd}", num: `${Ps}\\cdot ${T(r.B, 0)}\\cdot ${X1}\\cdot ${fcd}`, val: `${T(r.Cc / 1000, 1)}\\cdot 10^{3}` },
+            rowCs,
+            rowTs,
+        ];
+        armItems = [
+            `\\tfrac{h}{2}-\\lambda x=${h2}-${Lm}\\cdot ${X1}=${T(r.aCc, 1)}`,
+            `\\tfrac{h}{2}-c'=${T(r.aCs, 1)}`,
+            `\\tfrac{h}{2}-c=${T(r.aTs, 1)}`,
+        ];
+        numSystem = cases(
+            `${T(r.Cc / 1000, 1)}\\cdot 10^{3}+${fyd}\\,A_s'-${fsv}\\,A_s=${Nnum}`,
+            `${T(r.Cc * r.aCc / 1e6, 2)}\\cdot 10^{6}+${T(r.fyd * r.aCs, 1)}\\,A_s'+${T(kT * r.aTs, 1)}\\,A_s=${Mnum}`);
+        unknowns = "incognite A_s e A's";
+    } else {
+        // B e h note, A's = 0: incognite x e A_s
+        const kCx = r.psi * r.B * r.fcd;
+        forceRows = [
+            { lhs: "C_c", sym: "\\Psi\\,B\\,x\\,f_{cd}", num: `${Ps}\\cdot ${T(r.B, 0)}\\cdot x\\cdot ${fcd}`, val: `${T(kCx, 1)}\\,x` },
+            rowTs,
+        ];
+        armItems = [
+            `\\tfrac{h}{2}-\\lambda x=${h2}-${Lm}\\,x`,
+            `\\tfrac{h}{2}-c=${T(r.aTs, 1)}`,
+        ];
+        numSystem = cases(
+            `${T(kCx, 1)}\\,x-${fsv}\\,A_s=${Nnum}`,
+            `${T(kCx, 1)}\\,x\\,(${h2}-${Lm}\\,x)+${T(kT * r.aTs, 1)}\\,A_s=${Mnum}`);
+        unknowns = "incognite x e A_s";
+    }
+
+    // riga di più grandezze che va a capo da sola quando lo spazio non basta
+    const Row = ({ items }) => (
+        <div className="flex flex-wrap items-baseline justify-center gap-x-6 gap-y-1 py-1">
+            {items.filter(Boolean).map((t, i) => <Tex key={i}>{t}</Tex>)}
+        </div>
+    );
+
+    const cm = commercial;
+    const areaT = cm ? cm.AsT : r.AsProvided;
+    const minOk = areaT >= r.AsMin, maxOk = areaT <= r.AsMax;
 
     return (
         <div className="mt-4 space-y-5 text-sm text-slate-700">
-            <Step n="1" title="Resistenze di progetto dei materiali">
-                <Eq lhs="f_{cd}" sym="\dfrac{\alpha_{cc}\,f_{ck}}{\gamma_c}" num={`\\dfrac{${T(alphaCc, 2)}\\cdot ${T(fck, 0)}}{${T(gammaC, 2)}}`} val={`${T(r.fcd, 2)}${MPa}`} />
-                <Eq lhs="f_{yd}" sym="\dfrac{f_{yk}}{\gamma_s}" num={`\\dfrac{${T(fyk, 0)}}{${T(gammaS, 2)}}`} val={`${T(r.fyd, 2)}${MPa}`} />
-                <Eq lhs="\varepsilon_{yd}" sym="\dfrac{f_{yd}}{E_s}" num={`\\dfrac{${T(r.fyd, 1)}}{200000}`} val={`${T(r.epsYd * 1000, 2)}\\text{‰}`} />
+            <Step n="1" title="Dati di progetto">
+                <p className="text-xs font-semibold text-slate-500">Azioni agenti:</p>
+                <Row items={[`M_{Ed}=${T(r.MEdSigned / 1e6, 1)}\\ \\text{kNm}`, `N_{Ed}=${T(r.NEd / 1000, 1)}\\ \\text{kN}`]} />
+                <p className="text-xs font-semibold text-slate-500">Fisso:</p>
+                <Row items={[
+                    r.mode !== "fixH" ? `B=${T(r.B, 0)}${mm}` : null,
+                    r.mode !== "fixB" ? `h=${T(r.h, 0)}${mm}` : null,
+                    `c=d'=${T(c, 0)}${mm}`,
+                    `c'=d''=${T(cp, 0)}${mm}`,
+                    r.mode !== "fixBH" ? `\\beta=${T(beta, 2)}` : null,
+                ]} />
+                <p className="text-xs font-semibold text-slate-500">Materiali:</p>
+                <Eq breakLine={false} lhs="f_{cd}" sym="\dfrac{\alpha_{cc}\,f_{ck}}{\gamma_c}" num={`\\dfrac{${T(alphaCc, 2)}\\cdot ${T(fck, 0)}}{${T(gammaC, 2)}}`} val={`${T(r.fcd, 2)}${MPa}`} />
+                <Eq breakLine={false} lhs="f_{yd}" sym="\dfrac{f_{yk}}{\gamma_s}" num={`\\dfrac{${T(fyk, 0)}}{${T(gammaS, 2)}}`} val={`${T(r.fyd, 2)}${MPa}`} />
+                <p className="text-xs text-slate-400"><Sym>
+                    Convenzioni: N_Ed &gt; 0 compressione; M_Ed &gt; 0 tende le fibre inferiori.
+                    {r.tensionTop ? " M_Ed < 0 → sezione ribaltata (lato teso in alto), si usa |M_Ed|." : ""}
+                </Sym></p>
             </Step>
 
-            <Step n="2" title="Azioni e convenzioni di segno">
-                <Tex display>{`N_{Ed}=${kN(r.NEd)}${uk}\\qquad M_{Ed}=${kNm(r.MEdSigned)}${ukm}`}</Tex>
-                <p className="text-xs text-slate-400">
-                    N_Ed &gt; 0 compressione; M_Ed &gt; 0 tende le fibre inferiori.
-                    {r.tensionTop ? " M_Ed < 0 → sezione ribaltata: lato teso in alto, calcolo con |M_Ed|." : ""}
-                </p>
+            <Step n="2" title="Ipotesi">
+                <p className="text-xs text-slate-600"><Sym>
+                    Si ipotizza uno stato deformativo al limite tra CAMPO 2 e CAMPO 3 per sfruttare al massimo i materiali
+                    (ε_c = 3,5‰, ε_s = 10‰). Si ipotizza inoltre che le armature al lembo compresso siano snervate (σ'_s = f_yd).
+                </Sym></p>
+                <p className="text-xs font-semibold text-slate-500">In questo modo si ha:</p>
+                <Row items={[`\\Psi=${Ps}`, `\\lambda=${Lm}`, `x=0{,}2593\\cdot d${r.mode === "fixB" ? "" : `=0{,}2593\\cdot ${T(r.d, 1)}=${T(xiX(r), 1)}${mm}`}`]} />
             </Step>
 
-            <Step n="3" title="Geometria, asse neutro e coefficienti del cls">
-                {r.mode === "fixBH" && (
-                    <>
-                        <Eq lhs="B,\ h" sym="\text{assegnate}" val={`${T(r.B, 0)}\\times ${T(r.h, 0)}${mm}`} />
-                        <Eq lhs="d" sym="h-c" num={`${T(r.h, 0)}-${T(r.cT, 0)}`} val={`${T(r.d, 0)}${mm}`} />
-                    </>
+            <Step n="3" title="Equazioni di equilibrio">
+                {r.mode === "fixBH" && !r.xFromXi && (
+                    <p className="text-xs text-amber-600">
+                        <Sym>Con x = 0,2593·d risulterebbe A's &lt; 0: l'armatura compressa non è necessaria. Si pone A's = 0 e si ricava x dall'equilibrio.</Sym>
+                    </p>
                 )}
-                {r.mode === "fixH" && (
-                    <>
-                        <Eq lhs="h" sym="\text{assegnata}" val={dimensionValue(r.h, adoptedDimensions.h, 0)} />
-                        <Eq lhs="d" sym="h-c" num={`${T(r.h, 0)}-${T(r.cT, 0)}`} val={`${T(r.d, 0)}${mm}`} />
-                        <p className="text-xs text-slate-400">B dimensionata con ξ = ε_cu/(ε_cu+ε_s) = 0,2593; x e armature dall'equilibrio.</p>
-                    </>
-                )}
-                {r.mode === "fixB" && (
-                    <>
-                        <Eq lhs="B" sym="\text{assegnata}" val={`${T(r.B, 0)}${mm}`} />
-                        <p className="text-xs text-slate-400">d dimensionata con ξ = ε_cu/(ε_cu+ε_s) = 0,2593; x e armature dall'equilibrio.</p>
-                    </>
-                )}
-                <Eq lhs="x" sym="\text{dall'equilibrio}" val={`${T(r.X, 1)}${mm}`} />
-                <Tex display>{`\\psi=${T(r.psi, 3)}\\qquad \\lambda=${T(r.kG, 3)}\\qquad \\tfrac{x}{d}=${T(r.X / r.d, 3)}\\;${r.X / r.d > r.xiLim + 1e-4 ? ">" : "\\le"}\\;\\tfrac{x_{lim}}{d}=${T(r.xiLim, 3)}`}</Tex>
-                <p className="text-xs text-slate-400">
-                    {r.X / r.d > r.xiLim + 1e-4 ? "x oltre il limite di duttilità. " : "x entro il limite di duttilità. "}
-                    {hasCompr ? "Doppia armatura (A's presente)." : "Semplice armatura."}
-                </p>
+                {/* risultanti, bracci e sistemi allineati a sinistra */}
+                <div className="tex-left space-y-1.5">
+                    <p className="text-xs font-semibold text-slate-500">Risultanti delle forze [N]:</p>
+                    {forceRows.filter(Boolean).map((f) => <Eq key={f.lhs} breakLine={false} lhs={f.lhs} sym={f.sym} num={f.num} val={f.val} />)}
+                    <p className="text-xs font-semibold text-slate-500">Bracci rispetto al baricentro (h/2){r.mode === "fixB" ? ", con h = d + c" : ""} [mm]:</p>
+                    {/* bracci in colonna, "=" allineati, primo membro tra parentesi */}
+                    <Tex display>{`\\begin{aligned}${armItems.filter(Boolean).map((s) => {
+                        const i = s.indexOf("=");
+                        return `\\Big(${s.slice(0, i)}\\Big)&=${s.slice(i + 1)}`;
+                    }).join("\\\\[4pt]")}\\end{aligned}`}</Tex>
+                    <p className="text-xs font-semibold text-slate-500">Equilibrio alla traslazione e alla rotazione:</p>
+                    <Tex display>{symSystem}</Tex>
+                    <p className="text-xs font-semibold text-slate-500">Sostituendo ({sub(unknowns)}; forze in N, momenti in N·mm):</p>
+                    <Tex display>{numSystem}</Tex>
+                </div>
+                <p className="text-xs font-semibold text-slate-500">Ottengo:</p>
+                {r.mode === "fixB" && <Row items={[`d=${T(r.dReq, 1)}${mm}`, `h=d+c=${T(r.h, 1)}${mm}`]} />}
+                {r.mode === "fixH" && <Row items={[`B=${T(r.Breq, 1)}${mm}`]} />}
+                {r.mode === "fixBH" && !r.xFromXi && <Row items={[`x=${T(r.X, 1)}${mm}`]} />}
+                <Row items={[`A_s=${T(r.As, 0)}${mm2}`, `A_s'=${r.mode === "fixBH" ? "" : `\\beta\\,A_s=`}${T(r.AsPrime, 0)}${mm2}`]} />
             </Step>
 
-            <Step n="4" title="Risultanti delle forze interne">
-                <Eq lhs="C_c" sym="\psi\,f_{cd}\,B\,x" num={`${T(r.psi, 3)}\\cdot ${T(r.fcd, 2)}\\cdot ${T(B, 0)}\\cdot ${T(r.X, 1)}`} val={`${kN(r.Cc)}${uk}`} />
+            {cm && (
+                <Step n="4" title="Valori commerciali adottati">
+                    <p className="text-xs text-slate-400">In base ai risultati ottenuti scelgo i valori commerciali per la sezione:</p>
+                    {r.mode === "fixB" && <Row items={[`d=${T(cm.d, 0)}${mm}`, `h=${T(cm.h, 0)}${mm}`]} />}
+                    {r.mode === "fixH" && <Tex display>{`B=${T(cm.B, 0)}${mm}`}</Tex>}
+                    <Tex display>{`A_s=${cm.nT}\\,\\phi${T(cm.phiT, 0)}=${T(cm.AsT, 0)}${mm2}\\;\\ge\\;${T(r.As, 0)}${mm2}`}</Tex>
+                    {cm.nC > 0 && <Tex display>{`A_s'=${cm.nC}\\,\\phi${T(cm.phiC, 0)}=${T(cm.AsC, 0)}${mm2}\\;\\ge\\;${T(r.AsPrime, 0)}${mm2}`}</Tex>}
+                </Step>
+            )}
+
+            {cm && (
+                <Step n="5" title="Verifica distanza barre">
+                    <p className="text-xs text-slate-400">Le barre devono essere distanziate di almeno {T(cm.gap, 0)} mm:</p>
+                    <Eq
+                        lhs="L"
+                        sym={`n_{barre}\\,\\Phi_{barre}+(n_{barre}-1)\\cdot ${T(cm.gap, 0)}+2\\,\\Phi_{staffa}+2\\,d'`}
+                        num={`${cm.nT}\\cdot ${T(cm.phiT, 0)}+${cm.nT - 1}\\cdot ${T(cm.gap, 0)}+2\\cdot ${T(phiStirrup, 0)}+2\\cdot ${T(c, 0)}`}
+                        val={`${T(cm.width, 0)}${mm}\\;${cm.widthOk ? "\\le" : ">"}\\;B=${T(cm.widthLimit, 0)}${mm}`} />
+                    <p className={`text-xs ${cm.widthOk ? "text-emerald-600" : "text-red-600"}`}>{cm.widthOk ? "Verificato." : "Non verificato: aumentare B o ridurre il numero di barre."}</p>
+                </Step>
+            )}
+
+            <Step n={cm ? "6" : "4"} title="Verifica armature">
+                <Eq lhs="A_{s,min}" sym="\max\!\Big(0{,}26\tfrac{f_{ctm}}{f_{yk}}Bd,\;0{,}0013\,Bd\Big)" val={`${T(r.AsMin, 0)}${mm2}`} />
+                <Eq lhs="A_{s,max}" sym="0{,}04\,B\,h" val={`${T(r.AsMax, 0)}${mm2}`} />
+                <Tex display>{`A_{s,min}=${T(r.AsMin, 0)}\\;${minOk ? "\\le" : ">"}\\;A_s=${T(areaT, 0)}\\;${maxOk ? "\\le" : ">"}\\;A_{s,max}=${T(r.AsMax, 0)}${mm2}`}</Tex>
                 {hasCompr && (
                     <>
-                        <Eq lhs="\varepsilon_s'" sym="\varepsilon_{cu}\Big(1-\dfrac{c'}{x}\Big)" num={`3{,}5\\big(1-${T(r.cC, 0)}/${T(r.X, 1)}\\big)`} val={`${T(r.epsSc * 1000, 2)}\\text{‰}\\Rightarrow\\sigma_s'=${T(r.sigmaSc, 1)}${MPa}`} />
-                        <Eq lhs="C_s'" sym="A_s'\,\sigma_s'" num={`${T(r.AsPrime, 0)}\\cdot ${T(r.sigmaSc, 1)}`} val={`${kN(r.Cs)}${uk}`} />
+                        <p className="mt-1 text-xs font-semibold text-slate-500">Ipotesi di snervamento dell'armatura compressa:</p>
+                        <Eq breakLine={false} lhs="\varepsilon_s'" sym="\varepsilon_{cu}\Big(1-\dfrac{c'}{x}\Big)" num={`3{,}5\\big(1-${T(cp, 0)}/${T(r.X, 1)}\\big)`} val={`${T(r.epsSc * 1000, 2)}\\text{‰}\\;${r.comprYield ? "\\ge" : "<"}\\;\\varepsilon_{yd}=${T(r.epsYd * 1000, 2)}\\text{‰}`} />
+                        <p className={`text-xs ${r.comprYield ? "text-emerald-600" : "text-amber-600"}`}>
+                            {sub(r.comprYield ? "Ipotesi verificata: l'armatura compressa è snervata." : "Ipotesi NON verificata: A's non snervata (σ's < f_yd), risultato approssimato.")}
+                        </p>
                     </>
                 )}
-                <Eq lhs="T_s" sym="A_s\,f_{s}" num={`${T(r.As, 0)}\\cdot ${T(r.fs, 1)}`} val={`${kN(r.Ts)}${uk}`} />
-                <p className="text-xs text-slate-400">f_s = tensione dell'acciaio teso a ε_s = 10‰ ({T(r.fs, 1)} MPa).</p>
-            </Step>
-
-            <Step n="5" title="Equazioni di equilibrio (rispetto al baricentro, h/2)">
-                <p className="text-xs font-semibold text-slate-500">Traslazione:</p>
-                <Tex display>{`C_c+C_s'-T_s=N_{Ed}`}</Tex>
-                <Tex display>{`${kN(r.Cc)}${hasCompr ? `+${kN(r.Cs)}` : ""}-${kN(r.Ts)}=${kN(r.NEd)}${uk}`}</Tex>
-                <p className="mt-2 text-xs font-semibold text-slate-500">Momento (bracci dal baricentro):</p>
-                <Tex display>{`C_c\\Big(\\tfrac{h}{2}-\\lambda x\\Big)+C_s'\\Big(\\tfrac{h}{2}-c'\\Big)+T_s\\Big(\\tfrac{h}{2}-c\\Big)=M_{Ed}`}</Tex>
-                <Tex display>{`${kN(r.Cc)}\\cdot ${mToStr(r.aCc)}${hasCompr ? `+${kN(r.Cs)}\\cdot ${mToStr(r.aCs)}` : ""}+${kN(r.Ts)}\\cdot ${mToStr(r.aTs)}=${kNm(r.MEd)}${ukm}`}</Tex>
-                <p className="text-xs text-slate-400">Forze in kN, bracci in m. {r.tensionTop ? "Equazioni nel frame ribaltato (|M_Ed|)." : ""}</p>
-            </Step>
-
-            <Step n="6" title="Incognite ricavate dall'equilibrio">
-                {r.mode === "fixH" && <Eq lhs="B" sym="\text{(equilibrio)}" val={dimensionValue(r.Breq, adoptedDimensions.B, 1)} />}
-                {r.mode === "fixB" && (
-                    <>
-                        <Eq lhs="d" sym="\text{(equilibrio)}" val={dimensionValue(r.dReq, adoptedDimensions.d, 1)} />
-                        <Eq lhs="h" sym="d+c" num={`${T(r.dReq, 1)}+${T(r.cT, 0)}`} val={dimensionValue(r.h, adoptedDimensions.h, 1)} />
-                    </>
-                )}
-                <Eq lhs="A_s" sym="\dfrac{T_s}{f_s}" num={`\\dfrac{${kN(r.Ts)}\\cdot 10^3}{${T(r.fs, 1)}}`} val={`${T(r.As, 0)}${mm2}`} />
-                {hasCompr
-                    ? <Eq lhs="A_s'" sym="\dfrac{C_s'}{\sigma_s'}" num={`\\dfrac{${kN(r.Cs)}\\cdot 10^3}{${T(r.sigmaSc, 1)}}`} val={`${T(r.AsPrime, 0)}${mm2}`} />
-                    : <p className="text-xs text-slate-400">Armatura compressa non necessaria (A's = 0).</p>}
-            </Step>
-
-            <Step n="7" title="Armature limite (NTC2018 §4.1.6.1.1)">
-                <Eq lhs="A_{s,min}" sym="\max\!\Big(0{,}26\tfrac{f_{ctm}}{f_{yk}}Bd,\;0{,}0013\,Bd\Big)" num={`\\max\\!\\Big(0{,}26\\tfrac{${T(r.fctm, 2)}}{${T(fyk, 0)}}\\cdot ${T(B, 0)}\\cdot ${T(r.d, 0)},\\;0{,}0013\\cdot ${T(B, 0)}\\cdot ${T(r.d, 0)}\\Big)`} val={`${T(r.AsMin, 0)}${mm2}`} />
-                <Eq lhs="A_{s,max}" sym="0{,}04\,B\,h" num={`0{,}04\\cdot ${T(B, 0)}\\cdot ${T(r.h, 0)}`} val={`${T(r.AsMax, 0)}${mm2}`} />
-                <Eq lhs="A_{s,req}" sym="\max(A_s,\,A_{s,min})" val={`${T(r.AsAdopt, 0)}${mm2}`} />
-            </Step>
-
-            <Step n="8" title="Scelta delle barre">
-                <Eq lhs="A_\phi" sym="\dfrac{\pi\phi^2}{4}" num={`\\dfrac{\\pi\\cdot ${T(phi, 0)}^2}{4}`} val={`${T(r.areaPhi, 1)}${mm2}`} />
-                <Eq lhs="n" sym="\left\lceil\dfrac{A_{s,req}}{A_\phi}\right\rceil" num={`\\left\\lceil\\dfrac{${T(r.AsAdopt, 0)}}{${T(r.areaPhi, 1)}}\\right\\rceil`} val={`${r.nBars}\\Rightarrow ${r.nBars}\\,\\phi${phi}`} />
-                <Eq lhs="A_{s,prov}" sym="n\,A_\phi" num={`${r.nBars}\\cdot ${T(r.areaPhi, 1)}`} val={`${T(r.AsProvided, 0)}${mm2}`} />
-            </Step>
-
-            <Step n="9" title="Verifica ingombro in larghezza">
-                <Eq lhs="L" sym="n\phi+(n-1)\max(\phi,20)+2\phi_{st}+2c_{lat}" num={`${r.nBars}\\cdot ${T(phi, 0)}+${r.nBars - 1}\\cdot ${T(r.gap, 0)}+2\\cdot ${T(phiStirrup, 0)}+2\\cdot ${T(cLat, 0)}`} val={`${T(r.reqWidth, 0)}${mm}`} />
-                <Tex display>{`L=${T(r.reqWidth, 0)}${mm}\\;${r.widthOk ? "\\le" : ">"}\\;B=${T(B, 0)}${mm}`}</Tex>
             </Step>
         </div>
     );
+}
+
+// x dall'ipotesi di campo 2-3 (anche quando la soluzione finale ha x dall'equilibrio)
+function xiX(r) {
+    return r.xi * r.d;
 }
 
 function Step({ n, title, children }) {
@@ -1006,13 +1121,13 @@ function SideForcesDiagram({ result, unit = "mm", svgRef }) {
                     <text x={xCut + 4} y={yN - 3} textAnchor="start" fontSize="8" fill="#94a3b8">baricentro (h/2)</text>
                     <VDim dimX={qX} yA={yEdge0} yB={yNA} edgeX={xRight} label={`x=${fmtU(X)}`} color={NA_COL} />
                     <VDim dimX={qCc} yA={yN} yB={yCc} edgeX={xRight} label={fmtU(Math.abs(aCc))} color="#475569" />
-                    <text x={qCc + 11} y={(yN + yCc) / 2} textAnchor="middle" fontSize="10" fill="#94a3b8" transform={`rotate(-90 ${qCc + 11} ${(yN + yCc) / 2})`}>br. Cc</text>
+                    <text x={qCc + 11} y={(yN + yCc) / 2} textAnchor="middle" fontSize="10" fill="#94a3b8" transform={`rotate(-90 ${qCc + 11} ${(yN + yCc) / 2})`}>br. C<tspan fontSize="7" dy="2">c</tspan></text>
                     {hasCompr && <>
                         <VDim dimX={qCs} yA={yN} yB={yCs} edgeX={xRight} label={fmtU(Math.abs(aCs))} color="#475569" />
-                        <text x={qCs + 11} y={(yN + yCs) / 2} textAnchor="middle" fontSize="10" fill="#94a3b8" transform={`rotate(-90 ${qCs + 11} ${(yN + yCs) / 2})`}>br. C's</text>
+                        <text x={qCs + 11} y={(yN + yCs) / 2} textAnchor="middle" fontSize="10" fill="#94a3b8" transform={`rotate(-90 ${qCs + 11} ${(yN + yCs) / 2})`}>br. C'<tspan fontSize="7" dy="2">s</tspan></text>
                     </>}
                     <VDim dimX={qTs} yA={yN} yB={yTs} edgeX={xRight} label={fmtU(Math.abs(aTs))} color="#475569" />
-                    <text x={qTs + 11} y={(yN + yTs) / 2} textAnchor="middle" fontSize="10" fill="#94a3b8" transform={`rotate(-90 ${qTs + 11} ${(yN + yTs) / 2})`}>br. Ts</text>
+                    <text x={qTs + 11} y={(yN + yTs) / 2} textAnchor="middle" fontSize="10" fill="#94a3b8" transform={`rotate(-90 ${qTs + 11} ${(yN + yTs) / 2})`}>br. T<tspan fontSize="7" dy="2">s</tspan></text>
                 </>}
 
                 {/* azione applicata: M_Ed (blu) arco curvo che incrocia la freccia di N_Ed */}
@@ -1021,11 +1136,11 @@ function SideForcesDiagram({ result, unit = "mm", svgRef }) {
                     <text x={xMlab} y={yMlab} textAnchor="middle" fontSize="11" fill={MCOL}>M<tspan fontSize="8" dy="2">Ed</tspan><tspan dy="-2"> = {fmt(MEdSigned / 1e6, 1)} kNm</tspan></text>
                 </>}
             </svg>
-            <p className="mt-1 text-center text-[11px] leading-tight text-slate-400">
+            <p className="mt-1 text-center text-[11px] leading-tight text-slate-400"><Sym>
                 C_c cade nel baricentro G del diagramma σ_c; i bracci sono misurati dall'asse baricentrico (h/2).
                 Equilibrio: C_c{hasCompr ? " + C's" : ""} − T_s = N_Ed ({kN(Ned)} kN); momento = M_Ed.
                 {tensionTop ? " M_Ed < 0: lato teso in alto." : ""}
-            </p>
+            </Sym></p>
         </div>
     );
 }
@@ -1035,7 +1150,7 @@ function CheckRow({ ok, label, warn, reference }) {
         <div className="relative flex items-start gap-2 text-sm">
             {ok ? <CheckCircle2 size={16} className="mt-0.5 shrink-0 text-emerald-600" /> : <AlertTriangle size={16} className={`mt-0.5 shrink-0 ${warn ? "text-amber-500" : "text-red-500"}`} />}
             <div className="flex min-w-0 flex-1 items-start justify-between gap-3">
-                <span className="text-slate-600">{label}</span>
+                <span className="text-slate-600">{sub(label)}</span>
                 {reference && <div className="group relative shrink-0">
                     <button type="button" aria-label="Mostra riferimenti normativi" aria-haspopup="true" title="Riferimenti normativi" className="rounded-full p-0.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600 focus:outline-none focus:ring-2 focus:ring-sky-200">
                         <Info size={15} />
@@ -1072,7 +1187,7 @@ function AssumptionsBox() {
             <Info size={18} className="mt-0.5 shrink-0 text-slate-400" />
             <div>
                 <p className="font-semibold text-slate-600">Metodo di dimensionamento</p>
-                <p className="mt-1 leading-6">
+                <p className="mt-1 leading-6"><Sym>
                     SLU, pressoflessione. Convenzioni: N_Ed &gt; 0 compressione, M_Ed &gt; 0
                     tende le fibre inferiori (M_Ed &lt; 0 → sezione ribaltata). La risultante del
                     cls è C_c = ψ·B·x·f_cd con baricentro a λ·x; ψ e λ dipendono dal diagramma
@@ -1082,7 +1197,7 @@ function AssumptionsBox() {
                     A_s (e A's) in «B e h», oppure la geometria (d o B, con rapporto β = A's/A_s)
                     negli altri casi. Si adotta la geometria arrotondata e si scelgono le barre
                     verificando l'ingombro.
-                </p>
+                </Sym></p>
             </div>
         </div>
     );
@@ -1155,9 +1270,9 @@ function CardTitle({ children }) {
 }
 function BigResult({ title, titleSuffix, value, unit, note, children, onReset, resetLabel = "Ripristina valore richiesto" }) {
     return (
-        <div className="rounded-2xl border border-sky-200 bg-gradient-to-br from-sky-50 to-white p-5">
+        <div className="min-w-0 rounded-2xl border border-sky-200 bg-gradient-to-br from-sky-50 to-white p-4">
             <div className="relative min-h-4">
-                <p className={`flex items-baseline gap-1.5 text-xs font-semibold uppercase tracking-wide text-sky-700 ${onReset ? "pr-7" : ""}`}>
+                <p className={`flex flex-wrap items-baseline gap-x-1.5 text-xs font-semibold uppercase tracking-wide text-sky-700 ${onReset ? "pr-7" : ""}`}>
                     {title}
                     {titleSuffix && <span className="text-[10px] font-medium normal-case tracking-normal text-slate-400">{titleSuffix}</span>}
                 </p>
@@ -1165,7 +1280,7 @@ function BigResult({ title, titleSuffix, value, unit, note, children, onReset, r
                     <RotateCcw size={15} />
                 </button>}
             </div>
-            <div className="mt-1 flex items-end gap-2">
+            <div className="mt-1 flex flex-wrap items-end gap-x-2">
                 <span className="text-3xl font-bold text-slate-900">{value}</span>
                 {unit && <span className="mb-1 text-base font-semibold text-slate-400">{unit}</span>}
             </div>
@@ -1180,7 +1295,7 @@ function ResultGrid({ children }) {
 function ResultRow({ label, value, unit, strong }) {
     return (
         <div className="flex items-baseline justify-between border-b border-slate-100 py-1">
-            <span className="text-xs text-slate-500">{label}</span>
+            <span className="text-xs text-slate-500">{sub(label)}</span>
             <span className={`text-sm tabular-nums ${strong ? "font-bold text-slate-900" : "font-semibold text-slate-700"}`}>
                 {value}
                 {unit && <span className="ml-1 text-xs text-slate-400">{unit}</span>}
@@ -1192,7 +1307,7 @@ function NumberField({ label, unit, value, onChange, onBlur, min, step = "1" }) 
     return (
         <label className="block">
             <span className="mb-1 block text-xs font-semibold text-slate-500">
-                {label}{unit && <span className="ml-1 text-slate-400">[{unit}]</span>}
+                {sub(label)}{unit && <span className="ml-1 text-slate-400">[{unit}]</span>}
             </span>
             <input type="number" value={value} min={min} step={step} onChange={(e) => onChange(e.target.value)} onBlur={onBlur ? (e) => onBlur(e.target.value) : undefined}
                 className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100" />
@@ -1202,7 +1317,7 @@ function NumberField({ label, unit, value, onChange, onBlur, min, step = "1" }) 
 function SelectField({ label, value, onChange, options }) {
     return (
         <label className="block">
-            <span className="mb-1 block text-xs font-semibold text-slate-500">{label}</span>
+            <span className="mb-1 block text-xs font-semibold text-slate-500">{sub(label)}</span>
             <select value={value} onChange={(e) => onChange(e.target.value)}
                 className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100">
                 {options.map((opt) => <option key={String(opt.value) + opt.label} value={opt.value}>{opt.label}</option>)}

@@ -2,6 +2,8 @@
 // Grafico del legame costitutivo dell'acciaio (sigma-eps), ramo di trazione:
 // elasto-plastico oppure incrudente (k_s), con assi a freccia e valori.
 
+import { sub } from "../Sym";
+
 const ES = 200000; // MPa
 const EPS_UD = 0.0675; // deformazione ultima di progetto (B450C)
 const COLOR = "#4f46e5"; // indaco
@@ -93,9 +95,9 @@ export default function SteelDiagram({ fyd, model = "ep", ks = 1.15 }) {
                 <text x={xUd} y={oy + 27} textAnchor="middle" fontSize="8" fill="#64748b">{permille(EPS_UD)}‰</text>
             </svg>
             <p className="mt-1 text-[11px] leading-tight text-slate-400">
-                {hardening
+                {sub(hardening
                     ? "Incrudente: σ cresce da f_yd (a ε_yd) a k_s·f_yd (a ε_ud); E_s = 200 GPa."
-                    : "Elasto-plastico: tratto elastico fino a ε_yd, poi plateau a f_yd; E_s = 200 GPa."}
+                    : "Elasto-plastico: tratto elastico fino a ε_yd, poi plateau a f_yd; E_s = 200 GPa.")}
                 {" "}Asse ε con scala spezzata (tratto elastico ingrandito).
             </p>
         </div>
