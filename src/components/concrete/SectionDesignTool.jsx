@@ -13,9 +13,11 @@ import {
     DESIGN_MODES,
     STEEL_MODELS,
     DEFAULT_INPUT,
+    barRows,
 } from "../../lib/concrete/sectionDesign";
 import Tex, { Eq, fmtNum, texNum as T } from "../Tex";
 import Sym, { sub } from "../Sym";
+import { concreteTable, STEEL_TABLE } from "../../lib/concrete/materialTables";
 import ConcreteDiagram from "./ConcreteDiagram";
 import SteelDiagram from "./SteelDiagram";
 
@@ -36,6 +38,7 @@ export default function SectionDesignTool() {
     const [adoptedReinforcement, setAdoptedReinforcement] = useState({});
     const [cardCommand, setCardCommand] = useState({ id: 0, open: null });
     const [showSteps, setShowSteps] = useState(false);
+    const [materialInfo, setMaterialInfo] = useState(null); // "concrete" | "steel" | null
     const [drawUnit, setDrawUnit] = useState("mm"); // unità delle quote del disegno
     const drawingSvgRef = useRef(null);
     const forcesSvgRef = useRef(null);
@@ -135,11 +138,13 @@ export default function SectionDesignTool() {
         }
     };
 
-    // valori commerciali proposti: arrotondamento per eccesso al passo "Arrotond. d"
+    // valori commerciali proposti: arrotondamento per eccesso al passo "Arrotond." delle
+    // dimensioni di cassero (h o B); d segue da h meno il copriferro al baricentro
+    // delle barre tese
     const roundStep = input.dRound > 0 ? input.dRound : 10;
     const roundUp = (v) => Math.ceil(v / roundStep) * roundStep;
     const calculatedB = result.ok && result.mode === "fixH" ? roundUp(result.Breq) : result.ok ? result.B : 0;
-    const calculatedH = result.ok && result.mode === "fixB" ? roundUp(result.dReq) + result.cT : result.ok ? result.h : 0;
+    const calculatedH = result.ok && result.mode === "fixB" ? roundUp(result.dReq + result.cT) : result.ok ? result.h : 0;
     const adoptedB = Number(adoptedDimensions.B) > 0 ? Number(adoptedDimensions.B) : calculatedB;
     const adoptedH = Number(adoptedDimensions.h) > 0 ? Number(adoptedDimensions.h) : calculatedH;
     const selectedTensionBars = Number(adoptedReinforcement.tensionBars ?? result.nBars);
@@ -161,22 +166,28 @@ export default function SectionDesignTool() {
     const checkedBarCount = selectedTensionBars >= 2 ? selectedTensionBars : result.nBars;
     const checkedBarDiameter = selectedTensionPhi > 0 ? selectedTensionPhi : result.phi;
     const checkedBarGap = Math.max(checkedBarDiameter, 20);
-    const checkedWidth = checkedBarCount * checkedBarDiameter + (checkedBarCount - 1) * checkedBarGap + 2 * input.phiStirrup + input.cLeft + input.cRight;
     const checkedWidthLimit = adoptedB || result.B;
+    // disposizione delle barre adottate su una o più file (stesso criterio del calcolo)
+    const rowsMax = (top) => (input.multiLayer ? Math.max(1, Math.trunc(top ? input.maxLayersTop : input.maxLayersBot) || 1) : 1);
+    const rowArgs = { B: checkedWidthLimit, cLeft: input.cLeft, cRight: input.cRight, phiStirrup: input.phiStirrup };
+    const adoptedLayT = barRows({ ...rowArgs, n: adoptedTensionBars, phi: adoptedTensionPhi, maxRows: rowsMax(result.tensionTop) });
+    const adoptedLayC = barRows({ ...rowArgs, n: adoptedCompressionBars, phi: adoptedCompressionPhi, maxRows: rowsMax(!result.tensionTop) });
+    // ingombro della fila più numerosa
+    const checkedWidth = adoptedLayT.width;
     const checkedWidthOk = checkedWidth <= checkedWidthLimit;
-    // ingombro delle barre compresse (superiori), se presenti
     const checkedGapC = Math.max(adoptedCompressionPhi, 20);
-    const checkedWidthC = adoptedCompressionBars > 0
-        ? adoptedCompressionBars * adoptedCompressionPhi + (adoptedCompressionBars - 1) * checkedGapC + 2 * input.phiStirrup + input.cLeft + input.cRight
-        : 0;
+    const checkedWidthC = adoptedLayC.width;
     const checkedWidthCOk = checkedWidthC <= checkedWidthLimit;
+    // altezza utile della sezione adottata: al baricentro delle barre tese
+    const coverT = result.ok ? result.dTNom + adoptedLayT.delta : input.dInf; // al baricentro delle barre tese
+    const adoptedD = result.ok ? Math.max(1, adoptedH - coverT) : 0;
     const drawingResult = result.ok ? {
         ...result,
         h: adoptedH,
-        d: Math.max(1, adoptedH - result.cT),
+        d: adoptedD,
         // asse neutro secondo l'ipotesi di progetto (x = ξ·d), salvo il caso
         // "B e h" senza armatura compressa in cui x viene dall'equilibrio
-        X: result.xFromXi ? result.xi * Math.max(1, adoptedH - result.cT) : result.X,
+        X: result.xFromXi ? result.xi * adoptedD : result.X,
         nBars: adoptedTensionBars,
         nBarsPrime: adoptedCompressionBars,
         phi: adoptedTensionPhi,
@@ -187,13 +198,21 @@ export default function SectionDesignTool() {
     const setNumber = (f) => (v) => setInput((p) => ({ ...p, [f]: Number(v) || 0 }));
     const setAdoptedD = (value) => setAdoptedDimensions((p) => value === ""
         ? { ...p, d: "", h: "" }
-        : { ...p, d: value, h: String(Number(value) + input.dInf) });
+        : { ...p, d: value, h: String(+(Number(value) + coverT).toFixed(1)) });
     const setAdoptedH = (value) => setAdoptedDimensions((p) => value === ""
         ? { ...p, d: "", h: "" }
-        : { ...p, h: value, d: String(Number(value) - input.dInf) });
+        : { ...p, h: value, d: undefined });
+    // la dimensione adottata è h: d si ricava sempre da h e dal copriferro al
+    // baricentro delle barre tese attuale (cambia se le barre passano su più
+    // file); il testo digitato in d si mostra solo finché è coerente con h
+    const typedD = adoptedDimensions.d;
+    const shownD = typedD === "" ? ""
+        : typedD !== undefined && Math.abs(Number(typedD) + coverT - adoptedH) < 0.051 ? typedD
+            : String(+(adoptedH - coverT).toFixed(1));
 
     return (
         <div className="grid grid-cols-1 gap-6 xl:grid-cols-[380px_minmax(0,1fr)]">
+            {materialInfo && <MaterialInfoModal kind={materialInfo} fck={input.fck} steelGrade={input.steelGrade ?? "B450C"} onClose={() => setMaterialInfo(null)} />}
             {/* -------- INPUT -------- */}
             <div className="space-y-4">
                 <div className="flex items-center justify-between gap-2">
@@ -241,8 +260,12 @@ export default function SectionDesignTool() {
 
                 <CollapsibleCard title="Materiali" command={cardCommand}>
                     <div className="grid grid-cols-2 gap-3">
-                        <SelectField label="Calcestruzzo" value={input.fck} onChange={setNumber("fck")} options={CONCRETE_CLASSES.map((c) => ({ value: c.fck, label: c.id }))} />
-                        <SelectField label="Acciaio" value={input.fyk} onChange={setNumber("fyk")} options={STEEL_GRADES.map((s) => ({ value: s.fyk, label: s.id }))} />
+                        <SelectField label="Calcestruzzo" value={input.fck} onChange={setNumber("fck")} options={CONCRETE_CLASSES.map((c) => ({ value: c.fck, label: c.id }))}
+                            labelExtra={<InfoButton label="Caratteristiche delle classi di calcestruzzo" onClick={() => setMaterialInfo("concrete")} />} />
+                        <SelectField label="Acciaio" value={input.steelGrade ?? "B450C"}
+                            onChange={(v) => setInput((p) => ({ ...p, steelGrade: v, fyk: STEEL_GRADES.find((g) => g.id === v)?.fyk ?? p.fyk }))}
+                            options={STEEL_GRADES.map((g) => ({ value: g.id, label: g.id }))}
+                            labelExtra={<InfoButton label="Caratteristiche degli acciai da cemento armato" onClick={() => setMaterialInfo("steel")} />} />
                     </div>
                     <div className="mt-3">
                         <SelectField label="Diagramma calcestruzzo" value={input.concreteModel} onChange={setField("concreteModel")} options={CONCRETE_MODELS.map((m) => ({ value: m.id, label: m.label }))} />
@@ -264,11 +287,21 @@ export default function SectionDesignTool() {
                         <SelectField label="Diametro φ" value={input.phi} onChange={setNumber("phi")} options={BAR_DIAMETERS.map((d) => ({ value: d, label: `φ ${d}` }))} />
                         <SelectField label="Staffa φ" value={input.phiStirrup} onChange={setNumber("phiStirrup")} options={STIRRUP_DIAMETERS.map((d) => ({ value: d, label: `φ ${d}` }))} />
                     </div>
+                    <label className="mt-3 flex cursor-pointer items-start gap-2 text-xs font-semibold text-slate-600">
+                        <input type="checkbox" checked={!!input.multiLayer} onChange={(e) => setField("multiLayer")(e.target.checked)} className="mt-0.5 h-4 w-4 accent-sky-600" />
+                        <span>Armature su più file<span className="block text-[10px] font-normal text-slate-400">se le barre non entrano in una fila con l'interferro minimo</span></span>
+                    </label>
+                    {input.multiLayer && (
+                        <div className="mt-3 grid grid-cols-2 gap-3">
+                            <NumberField label="Max file inferiori" value={input.maxLayersBot} min="1" step="1" onChange={setNumber("maxLayersBot")} />
+                            <NumberField label="Max file superiori" value={input.maxLayersTop} min="1" step="1" onChange={setNumber("maxLayersTop")} />
+                        </div>
+                    )}
                 </CollapsibleCard>
 
                 <CollapsibleCard title="Dettagli avanzati" defaultOpen={false} command={cardCommand}>
                         <div className="grid grid-cols-2 gap-3">
-                            <NumberField label="Arrotond. d" unit="mm" value={input.dRound} onChange={setNumber("dRound")} />
+                            <NumberField label="Arrotond. h / B" unit="mm" value={input.dRound} onChange={setNumber("dRound")} />
                             <NumberField label="α_cc" value={input.alphaCc} step="0.05" onChange={setNumber("alphaCc")} />
                             <NumberField label="γ_c" value={input.gammaC} step="0.05" onChange={setNumber("gammaC")} />
                             <NumberField label="γ_s" value={input.gammaS} step="0.05" onChange={setNumber("gammaS")} />
@@ -297,15 +330,18 @@ export default function SectionDesignTool() {
                             <BigResult title="Larghezza B" titleSuffix="richiesta" value={fmt(result.mode === "fixH" ? result.Breq : result.B, result.mode === "fixH" ? 1 : 0)} unit="mm"
                                 {...(result.mode === "fixH" || result.mode === "fixBH" ? { onReset: () => setAdoptedDimensions((p) => ({ ...p, B: undefined })), resetLabel: "Ripristina larghezza richiesta" } : {})}>
                                 {(result.mode === "fixH" || result.mode === "fixBH") && <NumberField label="Larghezza adottata B" unit="mm" value={adoptedDimensions.B ?? String(calculatedB)} onChange={(v) => setAdoptedDimensions((p) => ({ ...p, B: v }))} />}
+                                {result.mode === "fixH" && <AdoptionUtilization adopted={adoptedB} required={result.Breq} label="Sfruttamento larghezza" errorText="dimensione insufficiente" />}
                             </BigResult>
                             <BigResult title="Altezza h" titleSuffix="richiesta" value={fmt(result.mode === "fixB" ? result.dReq + result.cT : result.h, result.mode === "fixB" ? 1 : 0)} unit="mm"
                                 {...(result.mode === "fixB" || result.mode === "fixBH" ? { onReset: () => setAdoptedDimensions((p) => ({ ...p, d: undefined, h: undefined })), resetLabel: "Ripristina altezza richiesta" } : {})}>
                                 {result.mode === "fixB" && <NumberField label="Altezza adottata h" unit="mm" value={adoptedDimensions.h ?? String(calculatedH)} onChange={setAdoptedH} />}
+                                {result.mode === "fixB" && <AdoptionUtilization adopted={adoptedH} required={result.dReq + result.cT} label="Sfruttamento altezza" errorText="dimensione insufficiente" />}
                                 {result.mode === "fixBH" && <NumberField label="Altezza adottata h" unit="mm" value={adoptedDimensions.h ?? String(calculatedH)} onChange={setAdoptedH} />}
                             </BigResult>
                             <BigResult title="Altezza utile d" titleSuffix="richiesta" value={fmt(result.mode === "fixB" ? result.dReq : result.d, result.mode === "fixB" ? 1 : 0)} unit="mm"
                                 {...(result.mode === "fixB" ? { onReset: () => setAdoptedDimensions((p) => ({ ...p, d: undefined, h: undefined })), resetLabel: "Ripristina altezza utile richiesta" } : {})}>
-                                {result.mode === "fixB" && <NumberField label="Altezza utile adottata d" unit="mm" value={adoptedDimensions.d ?? String(calculatedH - result.cT)} onChange={setAdoptedD} />}
+                                {result.mode === "fixB" && <NumberField label="Altezza utile adottata d" unit="mm" value={shownD} onChange={setAdoptedD} />}
+                                {result.mode === "fixB" && <AdoptionUtilization adopted={adoptedD} required={result.dReq} label="Sfruttamento altezza utile" errorText="dimensione insufficiente" />}
                             </BigResult>
                         </div>
 
@@ -328,7 +364,7 @@ export default function SectionDesignTool() {
                                         <span>A<sub>s</sub> <span className="text-[10px] font-medium normal-case tracking-normal text-slate-400">adottata</span> = {adoptedTensionArea ? `${adoptedTensionBars} φ ${adoptedTensionPhi} = ${fmt(adoptedTensionArea, 0)} mm²` : "—"}</span>
                                         {adoptedTensionArea !== null && (adoptedTensionArea >= result.As
                                             ? <CheckCircle2 size={16} className="shrink-0 text-emerald-600" aria-label="Armatura adottata verificata" role="img" />
-                                            : <AlertTriangle size={16} className="shrink-0 text-amber-500" aria-label="Armatura adottata inferiore a quella richiesta" role="img" />)}
+                                            : <AlertTriangle size={16} className="shrink-0 text-red-600" aria-label="Armatura adottata inferiore a quella richiesta" role="img" />)}
                                     </p>
                                     <AdoptionUtilization adopted={adoptedTensionArea} required={result.As} />
                                 </div>
@@ -349,7 +385,7 @@ export default function SectionDesignTool() {
                                             <span>A'<sub>s</sub> <span className="text-[10px] font-medium normal-case tracking-normal text-slate-400">adottata</span> = {adoptedCompressionArea ? `${adoptedCompressionBars} φ ${adoptedCompressionPhi} = ${fmt(adoptedCompressionArea, 0)} mm²` : "—"}</span>
                                             {adoptedCompressionArea !== null && (adoptedCompressionArea >= result.AsPrime
                                                 ? <CheckCircle2 size={16} className="shrink-0 text-emerald-600" aria-label="Armatura adottata verificata" role="img" />
-                                                : <AlertTriangle size={16} className="shrink-0 text-amber-500" aria-label="Armatura adottata inferiore a quella richiesta" role="img" />)}
+                                                : <AlertTriangle size={16} className="shrink-0 text-red-600" aria-label="Armatura adottata inferiore a quella richiesta" role="img" />)}
                                         </p>
                                         <AdoptionUtilization adopted={adoptedCompressionArea} required={result.AsPrime} />
                                     </div>
@@ -399,7 +435,7 @@ export default function SectionDesignTool() {
                             </div>
                             {exportMessage && <p role="status" className="mb-2 text-right text-xs text-slate-500">{exportMessage}</p>}
                             <div className="mx-auto max-w-[480px]">
-                                <DesignDrawing result={drawingResult} B={adoptedB} dSup={input.dSup} phiStirrup={input.phiStirrup} cLeft={input.cLeft} cRight={input.cRight} moment={input.MEd} mode="fixBH" unit={drawUnit} svgRef={drawingSvgRef} />
+                                <DesignDrawing result={drawingResult} B={adoptedB} layT={adoptedLayT} layC={adoptedLayC} dTNom={result.dTNom} dCNom={result.dCNom} phiStirrup={input.phiStirrup} cLeft={input.cLeft} cRight={input.cRight} moment={input.MEd} mode="fixBH" unit={drawUnit} svgRef={drawingSvgRef} />
                             </div>
                         </Card>
 
@@ -437,29 +473,6 @@ export default function SectionDesignTool() {
                         </Card>
 
                         <Card>
-                            <CardTitle>Dimensionamento</CardTitle>
-                            <div className="grid gap-x-6 sm:grid-cols-2">
-                                {result.mode === "fixBH" ? (
-                                    <>
-                                        <ResultRow label="x / d" value={fmt(result.X / result.d, 3)} />
-                                        <ResultRow label="x_lim / d" value={fmt(result.xiLim, 3)} />
-                                    </>
-                                ) : (
-                                    <ResultRow label="ξ = X/d" value={fmt(result.xi, 6)} />
-                                )}
-                                <ResultRow label="ψ / λ (cls)" value={`${fmt(result.psi, 5)} / ${fmt(result.kG, 3)}`} />
-                                <ResultRow label="X (asse neutro)" value={fmt(result.X, 1)} unit="mm" />
-                                <ResultRow label="z (braccio)" value={fmt(result.z, 1)} unit="mm" />
-                                {result.mode === "fixH" && <ResultRow label="B richiesta" value={fmt(result.Breq, 0)} unit="mm" />}
-                                <ResultRow label="f_cd" value={fmt(result.fcd, 2)} unit="MPa" />
-                                <ResultRow label="f_yd" value={fmt(result.fyd, 1)} unit="MPa" />
-                                <ResultRow label="A_s (calcolo)" value={fmt(result.As, 0)} unit="mm²" />
-                                {result.mode === "fixBH" && result.doubleReinf && <ResultRow label="A's (calcolo)" value={fmt(result.AsPrime, 0)} unit="mm²" />}
-                                <ResultRow label="A_s,min / A_s,max" value={`${fmt(result.AsMin, 0)} / ${fmt(result.AsMax, 0)}`} unit="mm²" />
-                            </div>
-                        </Card>
-
-                        <Card>
                             <div className="flex items-center gap-2">
                                 <button type="button" aria-expanded={showSteps} onClick={() => setShowSteps((s) => !s)} className="flex min-w-0 flex-1 cursor-pointer items-center justify-between text-left text-sm font-bold text-slate-800">
                                     Foglio dei passaggi di calcolo
@@ -477,13 +490,13 @@ export default function SectionDesignTool() {
                             <AnimatedPanel isOpen={showSteps}>
                                 <div ref={reportRef}>
                                 <CalcReport result={result} input={input}
-                                    sectionDrawing={<DesignDrawing result={drawingResult} B={adoptedB} dSup={input.dSup} phiStirrup={input.phiStirrup} cLeft={input.cLeft} cRight={input.cRight} moment={input.MEd} mode="fixBH" unit={drawUnit} bare />}
+                                    sectionDrawing={<DesignDrawing result={drawingResult} B={adoptedB} layT={adoptedLayT} layC={adoptedLayC} dTNom={result.dTNom} dCNom={result.dCNom} phiStirrup={input.phiStirrup} cLeft={input.cLeft} cRight={input.cRight} moment={input.MEd} mode="fixBH" unit={drawUnit} bare />}
                                     forcesDrawing={<SideForcesDiagram result={result} unit={drawUnit} bare />}
                                     commercial={result.ok ? {
-                                    B: adoptedB, h: adoptedH, d: adoptedH - result.cT,
+                                    B: adoptedB, h: adoptedH, d: adoptedD,
                                     nT: checkedBarCount, phiT: checkedBarDiameter, AsT: checkedBarCount * Math.PI * checkedBarDiameter ** 2 / 4,
                                     nC: adoptedCompressionBars, phiC: adoptedCompressionPhi, AsC: adoptedCompressionBars * Math.PI * adoptedCompressionPhi ** 2 / 4,
-                                    gap: checkedBarGap, width: checkedWidth, widthOk: checkedWidthOk, widthLimit: checkedWidthLimit,
+                                    gap: checkedBarGap, width: checkedWidth, rowsT: adoptedLayT.rows, rowsC: adoptedLayC.rows, widthOk: checkedWidthOk, widthLimit: checkedWidthLimit,
                                 } : null} />
                                 </div>
                             </AnimatedPanel>
@@ -552,6 +565,136 @@ function printReport(node, title) {
     printFrame(iframe, title).finally(() => window.setTimeout(() => iframe.remove(), 1000));
 }
 
+// Pulsante "i" (come quello dei riferimenti normativi) che apre un approfondimento.
+function InfoButton({ label, onClick }) {
+    return (
+        <button type="button" title={label} aria-label={label}
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onClick(); }}
+            className="rounded-full p-0.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600 focus:outline-none focus:ring-2 focus:ring-sky-200">
+            <Info size={14} />
+        </button>
+    );
+}
+
+// Modal con la tabella delle classi di calcestruzzo o degli acciai (NTC 2018 /
+// EC2), con la riga della classe in uso evidenziata.
+function MaterialInfoModal({ kind, fck, steelGrade, onClose }) {
+    useEffect(() => {
+        const onKey = (e) => { if (e.key === "Escape") onClose(); };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [onClose]);
+    const isConcrete = kind === "concrete";
+    const th = "whitespace-nowrap border-b border-slate-200 px-2 py-1.5 text-center align-bottom font-semibold text-slate-600 first:text-left";
+    const td = "whitespace-nowrap px-2 py-1 text-center tabular-nums first:text-left";
+    const rowCls = (on) => (on ? "bg-sky-100 font-semibold text-slate-900" : "odd:bg-white even:bg-slate-50 text-slate-600");
+    return (
+        <div role="dialog" aria-modal="true" aria-label={isConcrete ? "Classi di calcestruzzo" : "Acciai da cemento armato"} className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/60 p-2 sm:p-6" onClick={onClose}>
+            <div className="w-full max-w-5xl overflow-hidden rounded-2xl bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
+                    <div className="min-w-0">
+                        <p className="text-sm font-bold text-slate-800">{isConcrete ? "Classi di resistenza del calcestruzzo" : "Acciai per cemento armato"}</p>
+                        <p className="text-[11px] text-slate-400">{isConcrete ? "NTC 2018 §4.1.2.1, §11.2.10 · EC2 Tab. 3.1" : "NTC 2018 §11.3.2 (Tab. 11.3.Ia / 11.3.Ib) · EC2 §3.2"}</p>
+                    </div>
+                    <button type="button" onClick={onClose} aria-label="Chiudi" className="rounded-full p-1.5 text-slate-500 transition hover:bg-slate-100 hover:text-slate-800">
+                        <XIcon size={18} />
+                    </button>
+                </div>
+                <div className="overflow-x-auto p-4">
+                    {isConcrete ? (
+                        <table className="w-full border-collapse text-xs">
+                            <thead>
+                                <tr>
+                                    <th className={th}>Classe</th>
+                                    <th className={th}>f<sub>ck</sub><span className="block text-[10px] font-normal text-slate-400">[MPa]</span></th>
+                                    <th className={th}>R<sub>ck</sub><span className="block text-[10px] font-normal text-slate-400">[MPa]</span></th>
+                                    <th className={th}>f<sub>cm</sub><span className="block text-[10px] font-normal text-slate-400">[MPa]</span></th>
+                                    <th className={th}>f<sub>ctm</sub><span className="block text-[10px] font-normal text-slate-400">[MPa]</span></th>
+                                    <th className={th}>f<sub>ctk,0,05</sub><span className="block text-[10px] font-normal text-slate-400">[MPa]</span></th>
+                                    <th className={th}>f<sub>ctk,0,95</sub><span className="block text-[10px] font-normal text-slate-400">[MPa]</span></th>
+                                    <th className={th}>E<sub>cm</sub><span className="block text-[10px] font-normal text-slate-400">[MPa]</span></th>
+                                    <th className={th}>ε<sub>c1</sub><span className="block text-[10px] font-normal text-slate-400">[‰]</span></th>
+                                    <th className={th}>ε<sub>cu1</sub><span className="block text-[10px] font-normal text-slate-400">[‰]</span></th>
+                                    <th className={th}>ε<sub>c2</sub><span className="block text-[10px] font-normal text-slate-400">[‰]</span></th>
+                                    <th className={th}>ε<sub>cu2</sub><span className="block text-[10px] font-normal text-slate-400">[‰]</span></th>
+                                    <th className={th}>n</th>
+                                    <th className={th}>ε<sub>c3</sub><span className="block text-[10px] font-normal text-slate-400">[‰]</span></th>
+                                    <th className={th}>ε<sub>cu3</sub><span className="block text-[10px] font-normal text-slate-400">[‰]</span></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {concreteTable().map((c) => (
+                                    <tr key={c.id} className={rowCls(c.fck === fck)} aria-current={c.fck === fck ? "true" : undefined}>
+                                        <td className={td}>{c.id}</td>
+                                        <td className={td}>{fmtNum(c.fck, 0)}</td>
+                                        <td className={td}>{fmtNum(c.Rck, 0)}</td>
+                                        <td className={td}>{fmtNum(c.fcm, 0)}</td>
+                                        <td className={td}>{fmt(c.fctm, 2)}</td>
+                                        <td className={td}>{fmt(c.fctk005, 2)}</td>
+                                        <td className={td}>{fmt(c.fctk095, 2)}</td>
+                                        <td className={td}>{fmt(c.Ecm, 0)}</td>
+                                        <td className={td}>{fmt(c.epsC1, 2)}</td>
+                                        <td className={td}>{fmt(c.epsCu1, 2)}</td>
+                                        <td className={td}>{fmt(c.epsC2, 2)}</td>
+                                        <td className={td}>{fmt(c.epsCu2, 2)}</td>
+                                        <td className={td}>{fmt(c.n, 2)}</td>
+                                        <td className={td}>{fmt(c.epsC3, 2)}</td>
+                                        <td className={td}>{fmt(c.epsCu3, 2)}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    ) : (
+                        <table className="w-full border-collapse text-xs">
+                            <thead>
+                                <tr>
+                                    <th className={th}>Acciaio</th>
+                                    <th className={th}>f<sub>y,nom</sub><span className="block text-[10px] font-normal text-slate-400">[MPa]</span></th>
+                                    <th className={th}>f<sub>t,nom</sub><span className="block text-[10px] font-normal text-slate-400">[MPa]</span></th>
+                                    <th className={th}>f<sub>yk</sub><span className="block text-[10px] font-normal text-slate-400">[MPa]</span></th>
+                                    <th className={th}>f<sub>tk</sub><span className="block text-[10px] font-normal text-slate-400">[MPa]</span></th>
+                                    <th className={th}>(f<sub>t</sub>/f<sub>y</sub>)<sub>k</sub></th>
+                                    <th className={th}>(f<sub>y</sub>/f<sub>y,nom</sub>)<sub>k</sub></th>
+                                    <th className={th}>A<sub>gt,k</sub><span className="block text-[10px] font-normal text-slate-400">[%]</span></th>
+                                    <th className={th}>E<sub>s</sub><span className="block text-[10px] font-normal text-slate-400">[MPa]</span></th>
+                                    <th className={th}>f<sub>yd</sub><span className="block text-[10px] font-normal text-slate-400">[MPa]</span></th>
+                                    <th className={th}>ε<sub>yd</sub><span className="block text-[10px] font-normal text-slate-400">[‰]</span></th>
+                                    <th className={th}>ε<sub>ud</sub><span className="block text-[10px] font-normal text-slate-400">[‰]</span></th>
+                                    <th className={th}>Diametri φ<span className="block text-[10px] font-normal text-slate-400">[mm]</span></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {STEEL_TABLE.map((g) => (
+                                    <tr key={g.id} className={rowCls(g.id === steelGrade)} aria-current={g.id === steelGrade ? "true" : undefined}>
+                                        <td className={td}>{g.id}</td>
+                                        <td className={td}>{fmtNum(g.fyNom, 0)}</td>
+                                        <td className={td}>{fmtNum(g.ftNom, 0)}</td>
+                                        <td className={td}>{g.fyk}</td>
+                                        <td className={td}>{g.ftk}</td>
+                                        <td className={td}>{g.ftfy}</td>
+                                        <td className={td}>{g.fyfyNom}</td>
+                                        <td className={td}>≥ {fmt(g.Agt, 1)}</td>
+                                        <td className={td}>{fmt(g.Es, 0)}</td>
+                                        <td className={td}>{fmt(g.fyd, 2)}</td>
+                                        <td className={td}>{fmt(g.epsYd, 2)}</td>
+                                        <td className={td}>{fmt(g.epsUd, 2)}</td>
+                                        <td className={td}>{g.diameters}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    )}
+                    <p className="mt-3 text-[11px] leading-snug text-slate-400">
+                        {isConcrete
+                            ? "Colonne nell'ordine dell'EC2 Tab. 3.1. fcm = fck + 8; fctm = 0,30·fck^(2/3) fino a C50/60, oltre 2,12·ln(1 + fcm/10); fctk,0,05 = 0,7·fctm; fctk,0,95 = 1,3·fctm; Ecm = 22000·(fcm/10)^0,3; εc1 = 0,7·fcm^0,31 ≤ 2,8‰. Lo strumento di progetto ammette le classi da C20/25 a C50/60."
+                            : "Colonne da fy,nom ad Agt,k nell'ordine delle NTC 2018 Tab. 11.3.Ia/b; seguono i valori di progetto: fyd = fyk / γs con γs = 1,15; εyd = fyd / Es; εud = 0,9·εuk con εuk = Agt,k; diametri ammessi (§11.3.2.1)."}
+                    </p>
+                </div>
+            </div>
+        </div>
+    );
+}
+
 // Anteprima del PDF: il documento di stampa in una finestra sopra la pagina.
 function PdfPreview({ html, title, onClose }) {
     const frameRef = useRef(null);
@@ -600,7 +743,10 @@ function CalcReport({ result, input, commercial, sectionDrawing, forcesDrawing }
     const c = r.cT, cp = r.cC; // copriferri verticali lato teso / lato compresso [mm]
     // simboli: d' / d'' verticali inferiore / superiore, c / c' orizzontali
     // sinistro / destro; con M_Ed < 0 il lato teso è quello superiore
-    const sT = r.tensionTop ? "d''" : "d'", sC = r.tensionTop ? "d'" : "d''";
+    const multiT = (r.layT?.rows.length || 0) > 1, multiC = (r.layC?.rows.length || 0) > 1;
+    const baseT = r.tensionTop ? "d''" : "d'", baseC = r.tensionTop ? "d'" : "d''";
+    const sT = multiT ? `${baseT}_{eff}` : baseT, sC = multiC ? `${baseC}_{eff}` : baseC;
+    const sTtxt = multiT ? `${baseT}_eff` : baseT;      // per il testo semplice (sub)
     // tensione dell'acciaio teso: f_yd (elasto-plastico) oppure f_s (incrudente, a 10‰)
     const ts = Math.abs(r.fs - r.fyd) < 1e-9 ? "f_{yd}" : "f_s";
     const Ps = T(r.psi, 5), Lm = T(r.kG, 3), Xi = T(r.xi, 6), fcd = T(r.fcd, 2), fyd = T(r.fyd, 1), fsv = T(r.fs, 1);
@@ -756,6 +902,17 @@ function CalcReport({ result, input, commercial, sectionDrawing, forcesDrawing }
                     `c'=${T(input.cRight, 0)}${mm}`,
                     r.mode !== "fixBH" ? `\\beta=${T(beta, 2)}` : null,
                 ]} />
+                {(multiT || multiC) && <>
+                    <p className="text-xs font-semibold text-slate-500">Armature su più file (copriferro al baricentro delle barre) [mm]:</p>
+                    <p className="text-xs text-slate-400">
+                        {[multiT && `tese: ${r.layT.rows.join(" + ")} φ${r.phi}`, multiC && `compresse: ${r.layC.rows.join(" + ")} φ${r.phi}`].filter(Boolean).join("; ")}
+                        {" "}(file dall'esterno; passo verticale tra gli assi φ + max(φ, 20 mm) = {T(r.layT?.sV || r.layC?.sV, 0)} mm).
+                    </p>
+                    <Tex display>{eqBlock([
+                        multiT ? { lhs: sT, sym: `${baseT}+\\dfrac{\\sum n_i\\,y_i}{n}`, num: layerNum(r.dTNom, r.layT), val: `${T(r.cT, 1)}${mm}` } : null,
+                        multiC ? { lhs: sC, sym: `${baseC}+\\dfrac{\\sum n_i\\,y_i}{n}`, num: layerNum(r.dCNom, r.layC), val: `${T(r.cC, 1)}${mm}` } : null,
+                    ].filter(Boolean))}</Tex>
+                </>}
                 <p className="text-xs font-semibold text-slate-500">Materiali:</p>
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                     <div className="min-w-0 rounded-xl border border-slate-200 bg-white p-3">
@@ -769,7 +926,7 @@ function CalcReport({ result, input, commercial, sectionDrawing, forcesDrawing }
                         ])}</Tex></div>
                     </div>
                     <div className="min-w-0 rounded-xl border border-slate-200 bg-white p-3">
-                        <p className="text-xs font-semibold text-slate-600">Acciaio {STEEL_GRADES.find((m) => m.fyk === fyk)?.id}</p>
+                        <p className="text-xs font-semibold text-slate-600">Acciaio {input.steelGrade ?? STEEL_GRADES.find((m) => m.fyk === fyk)?.id}</p>
                         <div className="tex-left text-[0.8em]"><Tex display>{matRows([
                             `f_{yk}&=${T(fyk, 0)}${MPa}`,
                             `f_{yd}&=\\dfrac{f_{yk}}{\\gamma_s}=\\dfrac{${T(fyk, 0)}}{${T(gammaS, 2)}}=${T(r.fyd, 2)}${MPa}`,
@@ -810,7 +967,7 @@ function CalcReport({ result, input, commercial, sectionDrawing, forcesDrawing }
                 <div className="tex-left space-y-1.5">
                     <p className="text-xs font-semibold text-slate-500">Risultanti delle forze [N]:</p>
                     <Tex display>{eqBlock(forceRows.filter(Boolean))}</Tex>
-                    <p className="text-xs font-semibold text-slate-500">Bracci rispetto al baricentro (h/2){r.mode === "fixB" ? `, con h = d + ${sT}` : ""} [mm]:</p>
+                    <p className="text-xs font-semibold text-slate-500">Bracci rispetto al baricentro (h/2){r.mode === "fixB" ? sub(`, con h = d + ${sTtxt}`) : ""} [mm]:</p>
                     {/* bracci in colonna, "=" allineati, primo membro tra parentesi */}
                     <Tex display>{`\\begin{aligned}${armItems.filter(Boolean).map((s) => {
                         const i = s.indexOf("=");
@@ -858,9 +1015,11 @@ function CalcReport({ result, input, commercial, sectionDrawing, forcesDrawing }
             {cm && (
                 <Step n="6" title="Verifica distanza barre">
                     {[
-                        { key: "t", title: "Armatura tesa A_s:", lhs: "L", n: cm.nT, phi: cm.phiT },
-                        cm.nC > 0 ? { key: "c", title: "Armatura compressa A's:", lhs: "L'", n: cm.nC, phi: cm.phiC } : null,
-                    ].filter(Boolean).map((b) => {
+                        { key: "t", title: "Armatura tesa A_s:", lhs: "L", rows: cm.rowsT?.length ? cm.rowsT : [cm.nT], phi: cm.phiT },
+                        cm.nC > 0 ? { key: "c", title: "Armatura compressa A's:", lhs: "L'", rows: cm.rowsC?.length ? cm.rowsC : [cm.nC], phi: cm.phiC } : null,
+                    ].filter(Boolean).map((b0) => {
+                        // su più file si verifica la fila più numerosa
+                        const b = { ...b0, n: Math.max(...b0.rows) };
                         // interferro minimo: max(φ, 20 mm); ingombro con i copriferri laterali c, c'
                         const gap = Math.max(b.phi, 20);
                         const width = b.n * b.phi + (b.n - 1) * gap + 2 * phiStirrup + input.cLeft + input.cRight;
@@ -868,6 +1027,7 @@ function CalcReport({ result, input, commercial, sectionDrawing, forcesDrawing }
                         return (
                             <div key={b.key} className="space-y-1.5">
                                 <p className="text-xs font-semibold text-slate-500">{sub(b.title)}</p>
+                                {b.rows.length > 1 && <p className="text-xs text-slate-400">Barre su {b.rows.length} file ({b.rows.join(" + ")}): si verifica la fila più numerosa, n<sub>barre</sub> = {b.n}.</p>}
                                 <p className="text-xs text-slate-400">Le barre devono essere distanziate di almeno {T(gap, 0)} mm:</p>
                                 <Eq
                                     lhs={b.lhs}
@@ -903,6 +1063,14 @@ function CalcReport({ result, input, commercial, sectionDrawing, forcesDrawing }
         </div>
     );
 }
+
+// Numeri del copriferro efficace: d + (Σ n_i·y_i)/n, con y_i = i·passo verticale.
+function layerNum(dNom, lay) {
+    const n = lay.rows.reduce((a, b) => a + b, 0);
+    const terms = lay.rows.map((ni, i) => (i > 0 ? `${ni}\\cdot ${texNumInt(i * lay.sV)}` : null)).filter(Boolean).join("+");
+    return `${texNumInt(dNom)}+\\dfrac{${terms}}{${n}}`;
+}
+const texNumInt = (v) => T(v, 0);
 
 // Più equazioni { lhs, sym, num?, val } in un unico blocco allineato sull'"=",
 // così le righe restano vicine.
@@ -1027,10 +1195,15 @@ const BOX_H = 360;
 const SIDE_BOX_W = 520;
 const SIDE_BOX_H = 300;
 
-function DesignDrawing({ result, B, dSup, phiStirrup = 8, cLeft = 30, cRight = 30, moment = 0, mode = "fixB", unit = "mm", svgRef, bare = false }) {
+function DesignDrawing({ result, B, layT, layC, dTNom = 40, dCNom = 40, phiStirrup = 8, cLeft = 30, cRight = 30, moment = 0, mode = "fixB", unit = "mm", svgRef, bare = false }) {
     const { h, d, X, phi, phiPrime = phi, nBars, nBarsPrime, beta } = result;
-    const cP = dSup ?? 40; // d'': copriferro verticale superiore (all'asse delle barre)
-    const c = h - d; // d': copriferro verticale inferiore (all'asse delle barre tese)
+    // barre su una o più file: d al baricentro delle barre tese, cP al baricentro
+    // di quelle compresse; le file esterne sono a d' / d'' (nominali) dai lembi
+    const rowsT = layT?.rows?.length ? layT.rows : [nBars];
+    const rowsC = layC?.rows?.length ? layC.rows : nBarsPrime > 0 ? [nBarsPrime] : [];
+    const multiT = rowsT.length > 1, multiC = rowsC.length > 1;
+    const cP = dCNom + (layC?.delta || 0); // d'' (efficace): dal lembo superiore al baricentro delle barre compresse
+    const c = h - d; // d' (efficace): dal lembo inferiore al baricentro delle barre tese
 
     // Colore delle quote B/h: grigio = dato di input, nero = valore calcolato.
     // fixB → B input, h calcolata; fixH → h input, B calcolata; fixBH → entrambe input.
@@ -1095,8 +1268,10 @@ function DesignDrawing({ result, B, dSup, phiStirrup = 8, cLeft = 30, cRight = 3
     };
     const barR = Math.max(2.5, (phi * scale) / 2);
     const barRPrime = Math.max(2.5, (phiPrime * scale) / 2);
-    const tensionBars = barsAt(nBars, d, phi);
-    const comprBars = nBarsPrime > 0 ? barsAt(nBarsPrime, cP, phiPrime) : [];
+    const yRowT = (i) => h - dTNom - i * (layT?.sV || 0);      // profondità della fila i (0 = esterna)
+    const yRowC = (i) => dCNom + i * (layC?.sV || 0);
+    const tensionBars = rowsT.flatMap((ni, i) => barsAt(ni, yRowT(i), phi));
+    const comprBars = rowsC.flatMap((ni, i) => barsAt(ni, yRowC(i), phiPrime));
 
     // Staffa sempre TANGENTE alle barre, senza che le barre la sovrastino:
     // l'asse della staffa dista (phi/2 + phi_st/2) dal centro delle barre
@@ -1113,8 +1288,8 @@ function DesignDrawing({ result, B, dSup, phiStirrup = 8, cLeft = 30, cRight = 3
     const cornerL = (p) => secLeft + latL(p) * scale, cornerR = (p) => secLeft + (B - latR(p)) * scale;
     const stLeft = Math.min(cornerL(phi) - offPx, nBarsPrime > 0 ? cornerL(phiPrime) - offPxPrime : Infinity);
     const stRight = Math.max(cornerR(phi) + offPx, nBarsPrime > 0 ? cornerR(phiPrime) + offPxPrime : -Infinity);
-    const stBottom = yOf(d) + offPx;
-    const stTop = yOf(cP) - (nBarsPrime > 0 ? offPxPrime : offPx);
+    const stBottom = yOf(yRowT(0)) + offPx;
+    const stTop = yOf(dCNom) - (nBarsPrime > 0 ? offPxPrime : offPx);
     const stX = stLeft;
     const stY = stTop;
     const stW = stRight - stLeft;
@@ -1205,9 +1380,9 @@ function DesignDrawing({ result, B, dSup, phiStirrup = 8, cLeft = 30, cRight = 3
                         {/* a sinistra: x (asse neutro) e la colonna d + d' (= h) */}
                         <VDim dimX={secLeft - 16} yA={yOf(0)} yB={yOf(X)} edgeX={secLeft} label="x" color="#0284c7" />
                         <VDim dimX={secLeft - 38} yA={yOf(0)} yB={yOf(d)} edgeX={secLeft} label={`d=${fmtU(d)}`} color="#334155" />
-                        <VDim dimX={secLeft - 38} yA={yOf(d)} yB={yOf(h)} edgeX={secLeft} label={`d'=${fmtU(c)}`} color="#64748b" />
+                        <VDim dimX={secLeft - 38} yA={yOf(d)} yB={yOf(h)} edgeX={secLeft} label={multiT ? svgSubText([["d'"], ["eff", true], [`=${fmtU(c)}`]]) : `d'=${fmtU(c)}`} color="#64748b" />
                         {/* a destra: d'' (lembo superiore -> As') e h */}
-                        <VDim dimX={secRight + 16} yA={yOf(0)} yB={yOf(cP)} edgeX={secRight} label={`d''=${fmtU(cP)}`} color="#64748b" />
+                        <VDim dimX={secRight + 16} yA={yOf(0)} yB={yOf(cP)} edgeX={secRight} label={multiC ? svgSubText([["d''"], ["eff", true], [`=${fmtU(cP)}`]]) : `d''=${fmtU(cP)}`} color="#64748b" />
                         <VDim dimX={secRight + 38} yA={yOf(0)} yB={yOf(h)} edgeX={secRight} label={`h=${fmtU(h)}`} color={hColor} />
                     </>
                 )}
@@ -1267,6 +1442,7 @@ function SideForcesDiagram({ result, unit = "mm", svgRef, bare = false }) {
     // In fase di progetto x e i bracci dipendono dalle incognite: le quote sono
     // simboliche (d' / d'' copriferri verticali inferiore / superiore).
     const symT = tensionTop ? "d''" : "d'", symC = tensionTop ? "d'" : "d''";
+    const effT = (result.layT?.rows.length || 0) > 1, effC = (result.layC?.rows.length || 0) > 1;
     const [show, setShow] = useState({ law: true, forces: true, dims: true, moment: true });
     const toggle = (k) => setShow((s) => ({ ...s, [k]: !s[k] }));
 
@@ -1428,10 +1604,10 @@ function SideForcesDiagram({ result, unit = "mm", svgRef, bare = false }) {
                     <VDim dimX={qCc} yA={yN} yB={yCc} edgeX={xRight} label="h/2 − λx" color="#475569" />
                     <text x={qCc + 11} y={(yN + yCc) / 2} textAnchor="middle" fontSize="10" fill="#94a3b8" transform={`rotate(-90 ${qCc + 11} ${(yN + yCc) / 2})`}>br. C<tspan fontSize="7" dy="2">c</tspan></text>
                     {hasCompr && <>
-                        <VDim dimX={qCs} yA={yN} yB={yCs} edgeX={xRight} label={`h/2 − ${symC}`} color="#475569" />
+                        <VDim dimX={qCs} yA={yN} yB={yCs} edgeX={xRight} label={svgSubText([[`h/2 − ${symC}`], ...(effC ? [["eff", true]] : [])])} color="#475569" />
                         <text x={qCs + 11} y={(yN + yCs) / 2} textAnchor="middle" fontSize="10" fill="#94a3b8" transform={`rotate(-90 ${qCs + 11} ${(yN + yCs) / 2})`}>br. C'<tspan fontSize="7" dy="2">s</tspan></text>
                     </>}
-                    <VDim dimX={qTs} yA={yN} yB={yTs} edgeX={xRight} label={`h/2 − ${symT}`} color="#475569" />
+                    <VDim dimX={qTs} yA={yN} yB={yTs} edgeX={xRight} label={svgSubText([[`h/2 − ${symT}`], ...(effT ? [["eff", true]] : [])])} color="#475569" />
                     <text x={qTs + 11} y={(yN + yTs) / 2} textAnchor="middle" fontSize="10" fill="#94a3b8" transform={`rotate(-90 ${qTs + 11} ${(yN + yTs) / 2})`}>br. T<tspan fontSize="7" dy="2">s</tspan></text>
                 </>}
 
@@ -1471,17 +1647,24 @@ function CheckRow({ ok, label, warn, reference }) {
     );
 }
 
-function AdoptionUtilization({ adopted, required }) {
+// Sfruttamento = richiesto / adottato. Se l'adottato è inferiore al richiesto è un
+// errore: la barra si ferma al 100% ed è rossa.
+function AdoptionUtilization({ adopted, required, label = "Sfruttamento barre", errorText = "armatura insufficiente" }) {
     if (!(adopted > 0) || !(required > 0)) return null;
     const utilization = (required / adopted) * 100;
-    const meetsRequirement = utilization <= 100;
-    const width = Math.min(100, Math.max(0, utilization));
+    const meetsRequirement = utilization <= 100 + 1e-9;
+    const shown = Math.min(100, Math.max(0, utilization));
     return (
-        <div className="mt-2 flex items-center gap-3" aria-label={`Sfruttamento armatura ${fmt(utilization, 1)} per cento`}>
-            <div className="h-2 min-w-0 flex-1 overflow-hidden rounded-full bg-slate-200" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={width} aria-valuetext={`${fmt(utilization, 1)}%`}>
-                <div className={`h-full rounded-full transition-[width] duration-300 ${meetsRequirement ? "bg-emerald-500" : "bg-amber-500"}`} style={{ width: `${width}%` }} />
+        <div className="mt-2">
+            <p className="mb-1 text-[11px] font-medium normal-case tracking-normal text-slate-500">
+                {label}{!meetsRequirement && <span className="ml-1 font-semibold text-red-600">({errorText})</span>}
+            </p>
+            <div className="flex items-center gap-3" aria-label={`${label} ${fmt(shown, 1)} per cento`}>
+                <div className="h-2 min-w-0 flex-1 overflow-hidden rounded-full bg-slate-200" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={shown} aria-valuetext={`${fmt(shown, 1)}%`}>
+                    <div className={`h-full rounded-full transition-[width] duration-300 ${meetsRequirement ? "bg-emerald-500" : "bg-red-500"}`} style={{ width: `${shown}%` }} />
+                </div>
+                <span className={`shrink-0 text-xs font-semibold tabular-nums ${meetsRequirement ? "text-emerald-700" : "text-red-600"}`}>{fmt(shown, 1)}%</span>
             </div>
-            <span className={`shrink-0 text-xs font-semibold tabular-nums ${meetsRequirement ? "text-emerald-700" : "text-amber-700"}`}>{fmt(utilization, 1)}%</span>
         </div>
     );
 }
@@ -1594,20 +1777,6 @@ function BigResult({ title, titleSuffix, value, unit, note, children, onReset, r
         </div>
     );
 }
-function ResultGrid({ children }) {
-    return <div className="grid grid-cols-1 gap-y-1">{children}</div>;
-}
-function ResultRow({ label, value, unit, strong }) {
-    return (
-        <div className="flex items-baseline justify-between border-b border-slate-100 py-1">
-            <span className="text-xs text-slate-500">{sub(label)}</span>
-            <span className={`text-sm tabular-nums ${strong ? "font-bold text-slate-900" : "font-semibold text-slate-700"}`}>
-                {value}
-                {unit && <span className="ml-1 text-xs text-slate-400">{unit}</span>}
-            </span>
-        </div>
-    );
-}
 function NumberField({ label, hint, unit, value, onChange, onBlur, min, step = "1" }) {
     return (
         <label className="block">
@@ -1621,10 +1790,10 @@ function NumberField({ label, hint, unit, value, onChange, onBlur, min, step = "
         </label>
     );
 }
-function SelectField({ label, value, onChange, options }) {
+function SelectField({ label, value, onChange, options, labelExtra }) {
     return (
         <label className="block">
-            <span className="mb-1 block text-xs font-semibold text-slate-500">{sub(label)}</span>
+            <span className="mb-1 flex items-center gap-1 text-xs font-semibold text-slate-500">{sub(label)}{labelExtra}</span>
             <select value={value} onChange={(e) => onChange(e.target.value)}
                 className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100">
                 {options.map((opt) => <option key={String(opt.value) + opt.label} value={opt.value}>{opt.label}</option>)}

@@ -45,6 +45,7 @@ export const DEFAULT_INPUT = {
     dSup: 40, // d'': copriferro verticale superiore, all'asse delle barre superiori [mm]
     fck: 25, // [MPa]
     fyk: 450, // [MPa]
+    steelGrade: "B450C", // classe dell'acciaio (B450C / B450A)
     alphaCc: 0.85,
     gammaC: 1.5,
     gammaS: 1.15,
@@ -56,6 +57,9 @@ export const DEFAULT_INPUT = {
     concreteModel: "rectangular", // diagramma costitutivo del cls
     steelModel: "ep", // "ep" elasto-plastico | "hardening" incrudente
     ks: 1.15, // ft/fy (incrudimento)
+    multiLayer: false, // consente di disporre le barre su più file se non entrano in una
+    maxLayersBot: 2, // numero massimo di file inferiori
+    maxLayersTop: 2, // numero massimo di file superiori
 };
 
 export const DESIGN_MODES = [
@@ -128,8 +132,72 @@ export function getCompressionCoeffs(model) {
  * e d_C = copriferro verticale lato compresso.
  * Copriferri: d' / d'' verticali inferiore / superiore (all'asse delle barre),
  * c / c' orizzontali sinistro / destro (netti alla staffa).
+ *
+ * Con "multiLayer" le barre che non entrano in una fila (interferro minimo
+ * max(φ, 20 mm)) vanno su più file, fino al massimo indicato: il baricentro
+ * delle barre si sposta verso l'interno di δ e il copriferro di calcolo diventa
+ * d' + δ (d'' + δ). Poiché δ dipende dal numero di barre, che dipende a sua
+ * volta dal calcolo, si itera fino a che la disposizione non cambia più.
  */
 export function designSection(input) {
+    const multi = !!input.multiLayer;
+    const maxRows = (v) => (multi ? Math.max(1, Math.trunc(Number(v)) || 1) : 1);
+    let addInf = 0, addSup = 0, r, layInf, laySup;
+    for (let it = 0; it < 12; it++) {
+        r = designSectionCore({ ...input, dInf: input.dInf + addInf, dSup: input.dSup + addSup });
+        if (!r.ok) return r;
+        const common = { phi: r.phi, B: r.B, cLeft: r.cLeft, cRight: r.cRight, phiStirrup: input.phiStirrup };
+        layInf = barRows({ ...common, n: r.tensionTop ? r.nBarsPrime : r.nBars, maxRows: maxRows(input.maxLayersBot) });
+        laySup = barRows({ ...common, n: r.tensionTop ? r.nBars : r.nBarsPrime, maxRows: maxRows(input.maxLayersTop) });
+        if (Math.abs(layInf.delta - addInf) < 1e-9 && Math.abs(laySup.delta - addSup) < 1e-9) break;
+        addInf = layInf.delta;
+        addSup = laySup.delta;
+    }
+    const layT = r.tensionTop ? laySup : layInf;
+    const layC = r.tensionTop ? layInf : laySup;
+    return {
+        ...r,
+        layInf, laySup, layT, layC,
+        dInfNom: input.dInf, dSupNom: input.dSup,         // copriferri nominali (alla fila esterna)
+        dTNom: r.tensionTop ? input.dSup : input.dInf,     // lato teso
+        dCNom: r.tensionTop ? input.dInf : input.dSup,     // lato compresso
+        reqWidth: layT.width,                              // ingombro della fila più piena
+        widthOk: layT.width <= r.B,
+    };
+}
+
+/**
+ * Disposizione di n barre di diametro phi su una o più file (al massimo maxRows):
+ * si riempie la fila esterna con il massimo numero di barre che entrano con
+ * l'interferro minimo max(φ, 20 mm), poi le successive; l'ultima fila prende le
+ * barre rimanenti (se eccedono, l'ingombro non è verificato). Le file interne
+ * distano (φ + max(φ, 20 mm)) tra gli assi. delta = spostamento del baricentro
+ * delle barre verso l'interno rispetto all'asse della fila esterna [mm].
+ */
+export function barRows({ n, phi, B, cLeft, cRight, phiStirrup, maxRows = 1 }) {
+    const gapH = Math.max(phi, 20);                         // interferro orizzontale minimo
+    const sV = phi + Math.max(phi, 20);                     // passo verticale tra gli assi delle file
+    const span = B - cLeft - cRight - 2 * phiStirrup - phi; // distanza tra gli assi delle barre d'angolo
+    const perRowMax = Math.max(1, Math.floor(span / (phi + gapH) + 1e-9) + 1);
+    const rows = [];
+    if (n > 0) {
+        const k = Math.min(Math.max(1, Math.trunc(maxRows) || 1), Math.ceil(n / perRowMax));
+        let left = n;
+        for (let i = 0; i < k; i++) {
+            const take = i === k - 1 ? left : Math.min(perRowMax, left);
+            rows.push(take);
+            left -= take;
+        }
+        // niente file interne con una sola barra: se possibile se ne sposta una
+        for (let i = rows.length - 1; i > 0; i--) if (rows[i] === 1 && rows[i - 1] > 2) { rows[i - 1]--; rows[i]++; }
+    }
+    const delta = n > 0 ? rows.reduce((sum, ni, i) => sum + ni * i * sV, 0) / n : 0;
+    const nMax = rows.length ? Math.max(...rows) : 0;
+    const width = nMax > 0 ? nMax * phi + (nMax - 1) * gapH + 2 * phiStirrup + cLeft + cRight : 0;
+    return { rows, perRowMax, sV, gapH, delta, nMax, width, fits: rows.every((ni) => ni <= perRowMax) };
+}
+
+function designSectionCore(input) {
     const {
         mode = "fixB",
         B: Bin,
