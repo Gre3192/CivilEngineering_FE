@@ -3,8 +3,8 @@
 // Strumento: Progetto (dimensionamento) a flessione (SLU) di una sezione
 // rettangolare in c.a. — metodo degli appunti (X = 0.2593 d).
 
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle2, AlertTriangle, Info, RotateCcw, ChevronDown, Copy, Download, Check } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { CheckCircle2, AlertTriangle, Info, RotateCcw, ChevronDown, Copy, Download, Check, FileDown, Eye, X as XIcon } from "lucide-react";
 import {
     designSection,
     CONCRETE_CLASSES,
@@ -114,6 +114,26 @@ export default function SectionDesignTool() {
     const saveImage = () => runSave(drawingSvgRef, BOX_W, BOX_H, "sezione-progettata.png", setIsSaved, savedTimer);
     const copyForces = () => runCopy(forcesSvgRef, SIDE_BOX_W, SIDE_BOX_H, setIsCopiedF, copiedTimerF);
     const saveForces = () => runSave(forcesSvgRef, SIDE_BOX_W, SIDE_BOX_H, "forze-interne.png", setIsSavedF, savedTimerF);
+    const reportRef = useRef(null);
+    const REPORT_TITLE = "Progetto sezione c.a. - Passaggi di calcolo";
+    const [previewHtml, setPreviewHtml] = useState(null);
+    const closePreview = useCallback(() => setPreviewHtml(null), []);
+    const exportPdf = () => {
+        try {
+            printReport(reportRef.current, REPORT_TITLE);
+            setExportMessage("");
+        } catch {
+            setExportMessage("Esportazione PDF non riuscita");
+        }
+    };
+    const openPreview = () => {
+        try {
+            setPreviewHtml(buildReportHtml(reportRef.current, REPORT_TITLE));
+            setExportMessage("");
+        } catch {
+            setExportMessage("Anteprima PDF non riuscita");
+        }
+    };
 
     // valori commerciali proposti: arrotondamento per eccesso al passo "Arrotond. d"
     const roundStep = input.dRound > 0 ? input.dRound : 10;
@@ -195,7 +215,7 @@ export default function SectionDesignTool() {
                         <NumberField label="Sforzo normale N_Ed" unit="kN" value={input.NEd} onChange={setNumber("NEd")} />
                     </div>
                     <p className="mt-2 text-[11px] text-slate-400"><Sym>
-                        Convenzioni: N_Ed &gt; 0 compressione; M_Ed &gt; 0 tende le fibre inferiori.
+                        Convenzioni: M_Ed &gt; 0 tende le fibre inferiori; N_Ed &gt; 0 compressione.
                         {input.mode === "fixBH"
                             ? " Sezione assegnata: A's calcolata solo se necessaria."
                             : " β = 0 → semplice armatura (dimensiona la geometria)."}
@@ -423,23 +443,119 @@ export default function SectionDesignTool() {
                         </Card>
 
                         <Card>
-                            <button type="button" aria-expanded={showSteps} onClick={() => setShowSteps((s) => !s)} className="flex w-full cursor-pointer items-center justify-between text-sm font-bold text-slate-800">
-                                Foglio dei passaggi di calcolo
-                                <ChevronDown size={15} aria-hidden="true" className={`text-slate-400 transition-transform duration-300 ${showSteps ? "" : "-rotate-90"}`} />
-                            </button>
+                            <div className="flex items-center gap-2">
+                                <button type="button" aria-expanded={showSteps} onClick={() => setShowSteps((s) => !s)} className="flex min-w-0 flex-1 cursor-pointer items-center justify-between text-left text-sm font-bold text-slate-800">
+                                    Foglio dei passaggi di calcolo
+                                    <ChevronDown size={15} aria-hidden="true" className={`text-slate-400 transition-transform duration-300 ${showSteps ? "" : "-rotate-90"}`} />
+                                </button>
+                                <button type="button" onClick={openPreview} title="Anteprima del PDF" aria-label="Anteprima del PDF dei passaggi di calcolo" className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50">
+                                    <Eye size={14} />
+                                    Anteprima
+                                </button>
+                                <button type="button" onClick={exportPdf} title="Esporta i passaggi in PDF" aria-label="Esporta i passaggi di calcolo in PDF" className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50">
+                                    <FileDown size={14} />
+                                    PDF
+                                </button>
+                            </div>
                             <AnimatedPanel isOpen={showSteps}>
+                                <div ref={reportRef}>
                                 <CalcReport result={result} input={input} commercial={result.ok ? {
                                     B: adoptedB, h: adoptedH, d: adoptedH - result.cT,
                                     nT: checkedBarCount, phiT: checkedBarDiameter, AsT: checkedBarCount * Math.PI * checkedBarDiameter ** 2 / 4,
                                     nC: adoptedCompressionBars, phiC: adoptedCompressionPhi, AsC: adoptedCompressionBars * Math.PI * adoptedCompressionPhi ** 2 / 4,
                                     gap: checkedBarGap, width: checkedWidth, widthOk: checkedWidthOk, widthLimit: checkedWidthLimit,
                                 } : null} />
+                                </div>
                             </AnimatedPanel>
                         </Card>
 
                         <AssumptionsBox />
+                        {previewHtml && <PdfPreview html={previewHtml} title={REPORT_TITLE} onClose={closePreview} />}
                     </>
                 )}
+            </div>
+        </div>
+    );
+}
+
+// Documento HTML del foglio dei passaggi con gli stessi stili della pagina, per
+// la stampa ("Salva come PDF": testo e formule restano vettoriali) e per
+// l'anteprima, dove a schermo il foglio è impaginato come una pagina A4.
+// Il foglio è nel DOM anche quando la card è chiusa.
+function buildReportHtml(node, title) {
+    if (!node) throw new Error("Foglio non disponibile");
+    const styles = [...document.querySelectorAll('link[rel="stylesheet"], style')].map((el) => el.outerHTML).join("\n");
+    const date = new Date().toLocaleDateString("it-IT");
+    return `<!doctype html><html lang="it"><head><meta charset="utf-8"><base href="${document.baseURI}"><title>${title}</title>${styles}
+<style>
+    @page { size: A4; margin: 15mm 14mm; }
+    html, body { background: #fff; }
+    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .overflow-x-auto { overflow: visible !important; }
+    .katex-display, svg, .rounded-xl, p { break-inside: avoid; }
+    @media screen {
+        html { background: #e2e8f0; }
+        body { box-sizing: border-box; width: 210mm; min-height: 297mm; margin: 24px auto; padding: 15mm 14mm; box-shadow: 0 4px 16px rgb(15 23 42 / 0.15); }
+    }
+</style></head>
+<body class="text-slate-700">
+    <header class="mb-2 flex items-baseline justify-between border-b border-slate-200 pb-2">
+        <h1 class="text-base font-bold text-slate-900">${title}</h1>
+        <span class="text-xs text-slate-400">${date}</span>
+    </header>
+    ${node.innerHTML}
+</body></html>`;
+}
+
+// Apre la finestra di stampa dell'iframe dopo che stili e font (KaTeX) sono caricati.
+async function printFrame(iframe, title) {
+    const doc = iframe.contentDocument;
+    while (doc.readyState !== "complete") await new Promise((r) => window.setTimeout(r, 50));
+    await doc.fonts?.ready;
+    const prevTitle = document.title;
+    document.title = title; // nome proposto per il file PDF
+    iframe.contentWindow.focus();
+    iframe.contentWindow.print(); // bloccante finché la finestra di stampa è aperta
+    document.title = prevTitle;
+}
+
+// Stampa il foglio in un iframe nascosto.
+function printReport(node, title) {
+    const html = buildReportHtml(node, title);
+    const iframe = document.createElement("iframe");
+    iframe.setAttribute("aria-hidden", "true");
+    iframe.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden";
+    document.body.appendChild(iframe);
+    iframe.contentDocument.open();
+    iframe.contentDocument.write(html);
+    iframe.contentDocument.close();
+    printFrame(iframe, title).finally(() => window.setTimeout(() => iframe.remove(), 1000));
+}
+
+// Anteprima del PDF: il documento di stampa in una finestra sopra la pagina.
+function PdfPreview({ html, title, onClose }) {
+    const frameRef = useRef(null);
+    useEffect(() => {
+        const onKey = (e) => { if (e.key === "Escape") onClose(); };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [onClose]);
+    return (
+        <div role="dialog" aria-modal="true" aria-label="Anteprima PDF" className="fixed inset-0 z-50 flex flex-col bg-slate-900/60 p-2 sm:p-6" onClick={onClose}>
+            <div className="mx-auto flex min-h-0 w-full max-w-5xl flex-1 flex-col overflow-hidden rounded-2xl bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
+                    <p className="min-w-0 truncate text-sm font-bold text-slate-800">Anteprima PDF</p>
+                    <div className="flex shrink-0 items-center gap-2">
+                        <button type="button" onClick={() => printFrame(frameRef.current, title)} className="inline-flex items-center gap-1.5 rounded-full bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-slate-700">
+                            <FileDown size={14} />
+                            Salva PDF
+                        </button>
+                        <button type="button" onClick={onClose} aria-label="Chiudi anteprima" className="rounded-full p-1.5 text-slate-500 transition hover:bg-slate-100 hover:text-slate-800">
+                            <XIcon size={18} />
+                        </button>
+                    </div>
+                </div>
+                <iframe ref={frameRef} title="Anteprima PDF dei passaggi di calcolo" srcDoc={html} className="min-h-0 w-full flex-1 bg-slate-200" />
             </div>
         </div>
     );
@@ -452,6 +568,12 @@ function CalcReport({ result, input, commercial }) {
     const mm = "\\ \\text{mm}";
     const mm2 = "\\ \\text{mm}^2";
     const MPa = "\\ \\text{MPa}";
+    // deformazione a cui il cls raggiunge f_cd, secondo il legame adottato
+    const epsKnee = {
+        rectangular: "\\varepsilon_{c4}=0{,}70\\text{‰}",
+        parabola: "\\varepsilon_{c2}=2\\text{‰}",
+        bilinear: "\\varepsilon_{c3}=1{,}75\\text{‰}",
+    }[input.concreteModel] ?? "\\varepsilon_{c2}=2\\text{‰}";
     const hasCompr = r.AsPrime > 0;
     const c = r.cT, cp = r.cC; // c = d' (lato teso), c' = d'' (lato compresso)
     // tensione dell'acciaio teso: f_yd (elasto-plastico) oppure f_s (incrudente, a 10‰)
@@ -465,7 +587,7 @@ function CalcReport({ result, input, commercial }) {
     // Prima si esprimono C_c, C's, T_s e i bracci con i valori sostituiti e
     // semplificati; il sistema si scrive poi in forma compatta con questi.
     const sgn = (v, dec = 1) => (v < 0 ? `-${T(-v, dec)}` : `+${T(v, dec)}`);
-    const lin = (a, v, b, decA = 4) => `${T(a, decA)}\\,${v}${Math.abs(b) < 1e-9 ? "" : sgn(b, 1)}`;
+    const lin = (a, v, b, decA = 4) => `${T(a, decA)}\\,${v}${T(b, 1) === "0" ? "" : sgn(b, 1)}`;
     const hasCs = r.mode === "fixBH" ? r.xFromXi : beta > 0; // armatura compressa presente nel sistema
     const kS = (r.mode === "fixBH" ? 1 : beta) * r.fyd;   // C's = kS·A_s (fixB/fixH) oppure kS·A's (fixBH)
     const kT = r.fs;                                      // T_s = kT·A_s
@@ -573,6 +695,10 @@ function CalcReport({ result, input, commercial }) {
             <Step n="1" title="Dati di progetto">
                 <p className="text-xs font-semibold text-slate-500">Azioni agenti:</p>
                 <Row items={[`M_{Ed}=${T(r.MEdSigned / 1e6, 1)}\\ \\text{kNm}`, `N_{Ed}=${T(r.NEd / 1000, 1)}\\ \\text{kN}`]} />
+                <p className="text-xs text-slate-400"><Sym>
+                    Convenzioni: M_Ed &gt; 0 tende le fibre inferiori; N_Ed &gt; 0 compressione..
+                    {r.tensionTop ? " M_Ed < 0 → sezione ribaltata (lato teso in alto), si usa |M_Ed|." : ""}
+                </Sym></p>
                 <p className="text-xs font-semibold text-slate-500">Fisso:</p>
                 <Row items={[
                     r.mode !== "fixH" ? `B=${T(r.B, 0)}${mm}` : null,
@@ -582,15 +708,35 @@ function CalcReport({ result, input, commercial }) {
                     r.mode !== "fixBH" ? `\\beta=${T(beta, 2)}` : null,
                 ]} />
                 <p className="text-xs font-semibold text-slate-500">Materiali:</p>
-                <Eq breakLine={false} lhs="f_{cd}" sym="\dfrac{\alpha_{cc}\,f_{ck}}{\gamma_c}" num={`\\dfrac{${T(alphaCc, 2)}\\cdot ${T(fck, 0)}}{${T(gammaC, 2)}}`} val={`${T(r.fcd, 2)}${MPa}`} />
-                <Eq breakLine={false} lhs="f_{yd}" sym="\dfrac{f_{yk}}{\gamma_s}" num={`\\dfrac{${T(fyk, 0)}}{${T(gammaS, 2)}}`} val={`${T(r.fyd, 2)}${MPa}`} />
-                <p className="text-xs text-slate-400"><Sym>
-                    Convenzioni: N_Ed &gt; 0 compressione; M_Ed &gt; 0 tende le fibre inferiori.
-                    {r.tensionTop ? " M_Ed < 0 → sezione ribaltata (lato teso in alto), si usa |M_Ed|." : ""}
-                </Sym></p>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <div className="min-w-0 rounded-xl border border-slate-200 bg-white p-3">
+                        <p className="text-xs font-semibold text-slate-600">Calcestruzzo {CONCRETE_CLASSES.find((m) => m.fck === fck)?.id}</p>
+                        <div className="text-[0.8em]"><Tex display>{`f_{ck}=${T(fck, 0)}${MPa}`}</Tex></div>
+                        <div className="text-[0.8em]"><Eq breakLine={false} lhs="f_{cd}" sym="\dfrac{\alpha_{cc}\,f_{ck}}{\gamma_c}" num={`\\dfrac{${T(alphaCc, 2)}\\cdot ${T(fck, 0)}}{${T(gammaC, 2)}}`} val={`${T(r.fcd, 2)}${MPa}`} /></div>
+                        <div className="text-[0.8em]"><Tex display>{`${epsKnee}\\qquad \\varepsilon_{cu}=3{,}5\\text{‰}`}</Tex></div>
+                    </div>
+                    <div className="min-w-0 rounded-xl border border-slate-200 bg-white p-3">
+                        <p className="text-xs font-semibold text-slate-600">Acciaio {STEEL_GRADES.find((m) => m.fyk === fyk)?.id}</p>
+                        <div className="text-[0.8em]"><Tex display>{`f_{yk}=${T(fyk, 0)}${MPa}`}</Tex></div>
+                        <div className="text-[0.8em]"><Eq breakLine={false} lhs="f_{yd}" sym="\dfrac{f_{yk}}{\gamma_s}" num={`\\dfrac{${T(fyk, 0)}}{${T(gammaS, 2)}}`} val={`${T(r.fyd, 2)}${MPa}`} /></div>
+                        <div className="text-[0.8em]"><Eq breakLine={false} lhs="\varepsilon_{yd}" sym="\dfrac{f_{yd}}{E_s}" num={`\\dfrac{${T(r.fyd, 2)}}{200\\,000}`} val={`${T(r.epsYd * 1000, 2)}\\text{‰}`} /></div>
+                        <div className="text-[0.8em]"><Tex display>{`\\varepsilon_{ud}=67{,}5\\text{‰}`}</Tex></div>
+                    </div>
+                </div>
+                <p className="text-xs font-semibold text-slate-500">Legami costitutivi adottati:</p>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <div className="min-w-0 rounded-xl border border-slate-200 bg-white p-3">
+                        <p className="text-xs font-semibold text-slate-600">Calcestruzzo: {CONCRETE_MODELS.find((m) => m.id === input.concreteModel)?.label}</p>
+                        <div className="mx-auto max-w-[264px]"><ConcreteDiagram fcd={r.fcd} model={input.concreteModel} /></div>
+                    </div>
+                    <div className="min-w-0 rounded-xl border border-slate-200 bg-white p-3">
+                        <p className="text-xs font-semibold text-slate-600">Acciaio: {STEEL_MODELS.find((m) => m.id === input.steelModel)?.label}</p>
+                        <div className="mx-auto max-w-[264px]"><SteelDiagram fyd={r.fyd} model={input.steelModel} ks={input.ks} /></div>
+                    </div>
+                </div>
             </Step>
 
-            <Step n="2" title="Ipotesi">
+            <Step n="2" title="Ipotesi di progetto">
                 <p className="text-xs text-slate-600"><Sym>
                     Si ipotizza uno stato deformativo al limite tra CAMPO 2 e CAMPO 3 per sfruttare al massimo i materiali
                     (ε_c = 3,5‰, ε_s = 10‰). Si ipotizza inoltre che le armature al lembo compresso siano snervate (σ'_s = f_yd).
@@ -617,7 +763,7 @@ function CalcReport({ result, input, commercial }) {
                     }).join("\\\\[4pt]")}\\end{aligned}`}</Tex>
                     <p className="text-xs font-semibold text-slate-500">Equilibrio alla traslazione e alla rotazione:</p>
                     <Tex display>{symSystem}</Tex>
-                    <p className="text-xs font-semibold text-slate-500">Sostituendo ({sub(unknowns)}; forze in N, momenti in N·mm):</p>
+                    <p className="text-xs font-semibold text-slate-500">Sostituendo ({sub(unknowns)}; forze in [N], momenti in [N·mm]):</p>
                     <Tex display>{numSystem}</Tex>
                 </div>
                 <p className="text-xs font-semibold text-slate-500">Ottengo:</p>
@@ -1188,8 +1334,8 @@ function AssumptionsBox() {
             <div>
                 <p className="font-semibold text-slate-600">Metodo di dimensionamento</p>
                 <p className="mt-1 leading-6"><Sym>
-                    SLU, pressoflessione. Convenzioni: N_Ed &gt; 0 compressione, M_Ed &gt; 0
-                    tende le fibre inferiori (M_Ed &lt; 0 → sezione ribaltata). La risultante del
+                    SLU, pressoflessione. Convenzioni: M_Ed &gt; 0
+                    tende le fibre inferiori, N_Ed &gt; 0 compressione (M_Ed &lt; 0 → sezione ribaltata). La risultante del
                     cls è C_c = ψ·B·x·f_cd con baricentro a λ·x; ψ e λ dipendono dal diagramma
                     (rettangolo 0,80/0,40; parabola-rettangolo 0,81/0,416; triangolo-rettangolo
                     0,75/0,389). Le due equazioni di equilibrio rispetto al baricentro (h/2) —

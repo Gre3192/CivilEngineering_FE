@@ -2,7 +2,9 @@
 // Grafico del legame costitutivo dell'acciaio (sigma-eps), ramo di trazione:
 // elasto-plastico oppure incrudente (k_s), con assi a freccia e valori.
 
+import { useId } from "react";
 import { sub } from "../Sym";
+import useCenteredViewBox from "./useCenteredViewBox";
 
 const ES = 200000; // MPa
 const EPS_UD = 0.0675; // deformazione ultima di progetto (B450C)
@@ -12,6 +14,8 @@ const permille = (e) =>
     (e * 1000).toLocaleString("it-IT", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 export default function SteelDiagram({ fyd, model = "ep", ks = 1.15 }) {
+    // id univoco del marker: lo stesso grafico può comparire più volte nella pagina
+    const arrowId = "sd-arrow-" + useId().replace(/[^A-Za-z0-9_-]/g, "");
     const W = 320;
     const H = 186;
     const ox = 50;
@@ -44,12 +48,13 @@ export default function SteelDiagram({ fyd, model = "ep", ks = 1.15 }) {
 
     const fydTxt = fyd.toLocaleString("it-IT", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     const ftdTxt = ftd.toLocaleString("it-IT", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const [svgRef, viewBox] = useCenteredViewBox(W, H, [fydTxt, ftdTxt, model]);
 
     return (
         <div className="mt-3">
-            <svg width="100%" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Legame costitutivo acciaio">
+            <svg ref={svgRef} width="100%" viewBox={viewBox} role="img" aria-label="Legame costitutivo acciaio">
                 <defs>
-                    <marker id="sd-arrow" markerWidth="8" markerHeight="8" refX="1" refY="3" orient="auto">
+                    <marker id={arrowId} markerWidth="8" markerHeight="8" refX="1" refY="3" orient="auto">
                         <path d="M0,0 L6,3 L0,6 Z" fill="#334155" />
                     </marker>
                 </defs>
@@ -64,25 +69,28 @@ export default function SteelDiagram({ fyd, model = "ep", ks = 1.15 }) {
                 {hardening && <line x1={ox} y1={yTop} x2={xUd} y2={yTop} stroke="#94a3b8" strokeWidth="0.5" strokeDasharray="3 3" />}
 
                 {/* assi a freccia */}
-                <line x1={ox} y1={oy} x2={W - 8} y2={oy} stroke="#334155" strokeWidth="1.2" markerEnd="url(#sd-arrow)" />
-                <line x1={ox} y1={oy} x2={ox} y2={10} stroke="#334155" strokeWidth="1.2" markerEnd="url(#sd-arrow)" />
+                <line x1={ox} y1={oy} x2={W - 8} y2={oy} stroke="#334155" strokeWidth="1.2" markerEnd={`url(#${arrowId})`} />
+                <line x1={ox} y1={oy} x2={ox} y2={10} stroke="#334155" strokeWidth="1.2" markerEnd={`url(#${arrowId})`} />
                 {/* marcatore di interruzione di scala sull'asse ε */}
                 <path d={`M${xYd + 2},${oy + 4} l5,-8 M${xYd + 7},${oy + 4} l5,-8`} stroke="#334155" strokeWidth="1" fill="none" />
 
                 {/* etichette assi */}
-                <text x={ox - 10} y={18} textAnchor="middle" fontSize="12" fontStyle="italic" fill="#334155">σ</text>
+                <text x={ox - 5} y={18} textAnchor="end" fontSize="12" fill="#334155"><tspan fontStyle="italic">σ</tspan><tspan fontSize="9"> (MPa)</tspan></text>
                 <text x={W - 10} y={oy + 16} textAnchor="middle" fontSize="12" fontStyle="italic" fill="#334155">ε</text>
 
                 {/* f_yd */}
                 <text x={ox - 6} y={yYd + 3} textAnchor="end" fontSize="10" fill="#334155">
                     f<tspan fontSize="7" dy="2">yd</tspan>
                 </text>
-                <text x={xYd + 6} y={yYd - 4} textAnchor="start" fontSize="8" fill="#64748b">{fydTxt} MPa</text>
-                {hardening && (
-                    <text x={ox - 6} y={yTop + 3} textAnchor="end" fontSize="9" fill="#64748b">
-                        f<tspan fontSize="6" dy="2">td</tspan>={ftdTxt}
+                {/* valore di f_yd a sinistra del ginocchio, sopra il tratteggio */}
+                <text x={xYd - 4} y={yYd - 4} textAnchor="end" fontSize="8" fill="#64748b">{fydTxt}</text>
+                {hardening && <>
+                    <text x={ox - 6} y={yTop + 3} textAnchor="end" fontSize="10" fill="#334155">
+                        f<tspan fontSize="7" dy="2">td</tspan>
                     </text>
-                )}
+                    {/* valore di f_td in cima al ramo incrudente, vicino alla punta */}
+                    <text x={xUd} y={yTop - 4} textAnchor="end" fontSize="8" fill="#64748b">{ftdTxt}</text>
+                </>}
 
                 {/* deformazioni */}
                 <text x={xYd} y={oy + 15} textAnchor="middle" fontSize="10" fill="#334155">

@@ -2,7 +2,9 @@
 // Grafico del legame costitutivo del calcestruzzo (sigma-eps) con assi a freccia:
 // rettangolo (stress-block), parabola-rettangolo, triangolo-rettangolo.
 
+import { useId } from "react";
 import Sym from "../Sym";
+import useCenteredViewBox from "./useCenteredViewBox";
 
 const EPS_CU = 0.0035;
 const EPS_C2 = 0.002;
@@ -20,6 +22,8 @@ const permille = (e) =>
     (e * 1000).toLocaleString("it-IT", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 export default function ConcreteDiagram({ fcd, model }) {
+    // id univoco del marker: lo stesso grafico può comparire più volte nella pagina
+    const arrowId = "cd-arrow-" + useId().replace(/[^A-Za-z0-9_-]/g, "");
     const W = 320;
     const H = 186;
     const ox = 50; // origine X
@@ -28,6 +32,7 @@ export default function ConcreteDiagram({ fcd, model }) {
     const plotH = oy - 26; // altezza fino a f_cd
     const col = COLOR[model] || "#0284c7";
     const fcdTxt = fcd.toLocaleString("it-IT", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const [svgRef, viewBox] = useCenteredViewBox(W, H, [fcdTxt, model]);
 
     const sx = (e) => ox + (e / EPS_CU) * plotW;
     const sy = (s) => oy - (s / fcd) * plotH;
@@ -59,9 +64,9 @@ export default function ConcreteDiagram({ fcd, model }) {
 
     return (
         <div className="mt-3">
-            <svg width="100%" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Legame costitutivo calcestruzzo">
+            <svg ref={svgRef} width="100%" viewBox={viewBox} role="img" aria-label="Legame costitutivo calcestruzzo">
                 <defs>
-                    <marker id="cd-arrow" markerWidth="8" markerHeight="8" refX="1" refY="3" orient="auto">
+                    <marker id={arrowId} markerWidth="8" markerHeight="8" refX="1" refY="3" orient="auto">
                         <path d="M0,0 L6,3 L0,6 Z" fill="#334155" />
                     </marker>
                 </defs>
@@ -76,18 +81,19 @@ export default function ConcreteDiagram({ fcd, model }) {
                 <line x1={sx(knee)} y1={oy} x2={sx(knee)} y2={yF} stroke="#cbd5e1" strokeWidth="0.75" strokeDasharray="2 2" />
 
                 {/* assi a freccia */}
-                <line x1={ox} y1={oy} x2={W - 8} y2={oy} stroke="#334155" strokeWidth="1.2" markerEnd="url(#cd-arrow)" />
-                <line x1={ox} y1={oy} x2={ox} y2={10} stroke="#334155" strokeWidth="1.2" markerEnd="url(#cd-arrow)" />
+                <line x1={ox} y1={oy} x2={W - 8} y2={oy} stroke="#334155" strokeWidth="1.2" markerEnd={`url(#${arrowId})`} />
+                <line x1={ox} y1={oy} x2={ox} y2={10} stroke="#334155" strokeWidth="1.2" markerEnd={`url(#${arrowId})`} />
 
                 {/* etichette assi */}
-                <text x={ox - 10} y={18} textAnchor="middle" fontSize="12" fontStyle="italic" fill="#334155">σ</text>
+                <text x={ox - 5} y={18} textAnchor="end" fontSize="12" fill="#334155"><tspan fontStyle="italic">σ</tspan><tspan fontSize="9"> (MPa)</tspan></text>
                 <text x={W - 10} y={oy + 16} textAnchor="middle" fontSize="12" fontStyle="italic" fill="#334155">ε</text>
 
-                {/* f_cd sull'asse + valore */}
+                {/* f_cd sull'asse */}
                 <text x={ox - 6} y={yF + 3} textAnchor="end" fontSize="10" fill="#334155">
                     f<tspan fontSize="7" dy="2">cd</tspan>
                 </text>
-                <text x={ox + 6} y={yF - 4} textAnchor="start" fontSize="8" fill="#64748b">{fcdTxt} MPa</text>
+                {/* valore di f_cd a sinistra del ginocchio, sopra il tratteggio */}
+                <text x={sx(knee) - 4} y={yF - 4} textAnchor="end" fontSize="8" fill="#64748b">{fcdTxt}</text>
 
                 {/* marcatori di deformazione + valori */}
                 <text x={sx(knee)} y={oy + 15} textAnchor="middle" fontSize="10" fill="#334155">

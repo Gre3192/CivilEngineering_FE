@@ -37,6 +37,10 @@ export function Eq({ lhs, sym, num, val, breakLine = true }) {
 // migliaia): 14.17 -> "14{,}17".
 export function texNum(v, dec = 2) {
     if (v === undefined || v === null || Number.isNaN(v) || !Number.isFinite(v)) return "-";
+    // un valore che arrotondato è intero si scrive senza decimali ("8" e non
+    // "8,0"; "0" e non "0,00" né "-0,0")
+    const rounded = Number(Number(v).toFixed(dec));
+    if (Number.isInteger(rounded)) return String(rounded === 0 ? 0 : rounded);
     const s = Number(v).toLocaleString("it-IT", {
         minimumFractionDigits: dec,
         maximumFractionDigits: dec,
