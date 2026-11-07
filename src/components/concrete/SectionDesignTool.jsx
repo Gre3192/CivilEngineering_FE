@@ -1075,15 +1075,21 @@ function DesignDrawing({ result, B, dSup, phiStirrup = 8, cLeft = 30, cRight = 3
 
     // Posizione orizzontale delle barre: l'asse delle barre d'angolo è a
     // (c + phi_st + phi/2) dal bordo sinistro e (c' + phi_st + phi/2) dal bordo
-    // destro, così poggiano dentro la staffa.
+    // destro, così poggiano dentro la staffa; le barre intermedie sono
+    // distribuite uniformemente. Se non ci stanno con l'interferro minimo
+    // max(phi, 20 mm) (ingombro non verificato) si dispongono con l'interferro
+    // minimo, simmetriche rispetto all'asse della sezione: quelle oltre le
+    // posizioni d'angolo escono dalla staffa / sezione (over).
     const latL = (p) => Math.min(cLeft + phiStirrup + p / 2, B / 2 - p / 2);  // asse barra d'angolo sx dal bordo [mm]
     const latR = (p) => Math.min(cRight + phiStirrup + p / 2, B / 2 - p / 2); // asse barra d'angolo dx dal bordo [mm]
     const barsAt = (n, depthY, p) => {
         const arr = [];
         const xL = latL(p), xR = B - latR(p);
+        const pitch = p + Math.max(p, 20);                 // passo minimo tra gli assi
+        const fits = n <= 1 || (n - 1) * pitch <= xR - xL + 1e-6;
         for (let i = 0; i < n; i++) {
-            const pos = n === 1 ? B / 2 : xL + ((xR - xL) * i) / (n - 1);
-            arr.push({ x: secLeft + pos * scale, y: yOf(depthY) });
+            const pos = n === 1 ? B / 2 : fits ? xL + ((xR - xL) * i) / (n - 1) : B / 2 + (i - (n - 1) / 2) * pitch;
+            arr.push({ x: secLeft + pos * scale, y: yOf(depthY), over: !fits && (pos < xL - 1e-6 || pos > xR + 1e-6) });
         }
         return arr;
     };
@@ -1102,10 +1108,11 @@ function DesignDrawing({ result, B, dSup, phiStirrup = 8, cLeft = 30, cRight = 3
     const stWidth = Math.max(1.4, phiStirrup * scale * 0.8); // spessore visivo staffa
     const offPx = Math.max((phi / 2 + phiStirrup / 2) * scale, barR + stWidth / 2);
     const offPxPrime = Math.max((phiPrime / 2 + phiStirrup / 2) * scale, barRPrime + stWidth / 2);
-    const cornerBars = [tensionBars[0], tensionBars[tensionBars.length - 1]].filter(Boolean);
-    const cornerBarsPrime = [comprBars[0], comprBars[comprBars.length - 1]].filter(Boolean);
-    const stLeft = Math.min(...cornerBars.map((b) => b.x - offPx), ...cornerBarsPrime.map((b) => b.x - offPxPrime));
-    const stRight = Math.max(...cornerBars.map((b) => b.x + offPx), ...cornerBarsPrime.map((b) => b.x + offPxPrime));
+    // la staffa resta fissa: lati verticali sulle posizioni d'angolo nominali
+    // (anche se le barre non ci stanno ed escono)
+    const cornerL = (p) => secLeft + latL(p) * scale, cornerR = (p) => secLeft + (B - latR(p)) * scale;
+    const stLeft = Math.min(cornerL(phi) - offPx, nBarsPrime > 0 ? cornerL(phiPrime) - offPxPrime : Infinity);
+    const stRight = Math.max(cornerR(phi) + offPx, nBarsPrime > 0 ? cornerR(phiPrime) + offPxPrime : -Infinity);
     const stBottom = yOf(d) + offPx;
     const stTop = yOf(cP) - (nBarsPrime > 0 ? offPxPrime : offPx);
     const stX = stLeft;
@@ -1184,8 +1191,9 @@ function DesignDrawing({ result, B, dSup, phiStirrup = 8, cLeft = 30, cRight = 3
                 )}
 
                 {/* barre */}
-                {show.bars && tensionBars.map((b, i) => <circle key={`t${i}`} cx={b.x} cy={b.y} r={barR} fill="#0f172a" />)}
-                {show.bars && comprBars.map((b, i) => <circle key={`c${i}`} cx={b.x} cy={b.y} r={barRPrime} fill="#64748b" />)}
+                {/* barre: in rosso quelle che escono dalla sezione (ingombro non verificato) */}
+                {show.bars && tensionBars.map((b, i) => <circle key={`t${i}`} cx={b.x} cy={b.y} r={barR} fill={b.over ? "#dc2626" : "#0f172a"} />)}
+                {show.bars && comprBars.map((b, i) => <circle key={`c${i}`} cx={b.x} cy={b.y} r={barRPrime} fill={b.over ? "#dc2626" : "#64748b"} />)}
 
                 {/* linea media delle barre: punto geometrico di calcolo delle armature (a d e a d'') */}
                 {show.axes && nBars > 0 && <line x1={secLeft} y1={yOf(d)} x2={secRight} y2={yOf(d)} stroke="#d97706" strokeWidth="1" strokeDasharray="8 3 2 3" />}
