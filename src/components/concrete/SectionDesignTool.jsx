@@ -54,9 +54,12 @@ export default function SectionDesignTool() {
 
     const result = useMemo(() => designSection(input), [input]);
 
-    const createPng = async (ref, w, h) => {
+    const createPng = async (ref, w0, h0) => {
         const svg = ref.current;
         if (!svg) throw new Error("Disegno non disponibile");
+        // proporzioni dal viewBox effettivo (il disegno della sezione è ritagliato)
+        const vb = svg.viewBox?.baseVal;
+        const w = vb?.width || w0, h = vb?.height || h0;
         const clone = svg.cloneNode(true);
         clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
         clone.setAttribute("width", String(w * 2));
@@ -328,18 +331,18 @@ export default function SectionDesignTool() {
                     <>
                         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                             <BigResult title="Larghezza B" titleSuffix="richiesta" value={fmt(result.mode === "fixH" ? result.Breq : result.B, result.mode === "fixH" ? 1 : 0)} unit="mm"
-                                {...(result.mode === "fixH" || result.mode === "fixBH" ? { onReset: () => setAdoptedDimensions((p) => ({ ...p, B: undefined })), resetLabel: "Ripristina larghezza richiesta" } : {})}>
+                                {...(result.mode === "fixH" || result.mode === "fixBH" ? { onReset: () => setAdoptedDimensions((p) => ({ ...p, B: undefined })), resetLabel: "Ripristina larghezza adottata minima" } : {})}>
                                 {(result.mode === "fixH" || result.mode === "fixBH") && <NumberField label="Larghezza adottata B" unit="mm" value={adoptedDimensions.B ?? String(calculatedB)} onChange={(v) => setAdoptedDimensions((p) => ({ ...p, B: v }))} />}
                                 {result.mode === "fixH" && <AdoptionUtilization adopted={adoptedB} required={result.Breq} label="Sfruttamento larghezza" errorText="dimensione insufficiente" />}
                             </BigResult>
                             <BigResult title="Altezza h" titleSuffix="richiesta" value={fmt(result.mode === "fixB" ? result.dReq + result.cT : result.h, result.mode === "fixB" ? 1 : 0)} unit="mm"
-                                {...(result.mode === "fixB" || result.mode === "fixBH" ? { onReset: () => setAdoptedDimensions((p) => ({ ...p, d: undefined, h: undefined })), resetLabel: "Ripristina altezza richiesta" } : {})}>
+                                {...(result.mode === "fixB" || result.mode === "fixBH" ? { onReset: () => setAdoptedDimensions((p) => ({ ...p, d: undefined, h: undefined })), resetLabel: "Ripristina altezza adottata minima" } : {})}>
                                 {result.mode === "fixB" && <NumberField label="Altezza adottata h" unit="mm" value={adoptedDimensions.h ?? String(calculatedH)} onChange={setAdoptedH} />}
                                 {result.mode === "fixB" && <AdoptionUtilization adopted={adoptedH} required={result.dReq + result.cT} label="Sfruttamento altezza" errorText="dimensione insufficiente" />}
                                 {result.mode === "fixBH" && <NumberField label="Altezza adottata h" unit="mm" value={adoptedDimensions.h ?? String(calculatedH)} onChange={setAdoptedH} />}
                             </BigResult>
                             <BigResult title="Altezza utile d" titleSuffix="richiesta" value={fmt(result.mode === "fixB" ? result.dReq : result.d, result.mode === "fixB" ? 1 : 0)} unit="mm"
-                                {...(result.mode === "fixB" ? { onReset: () => setAdoptedDimensions((p) => ({ ...p, d: undefined, h: undefined })), resetLabel: "Ripristina altezza utile richiesta" } : {})}>
+                                {...(result.mode === "fixB" ? { onReset: () => setAdoptedDimensions((p) => ({ ...p, d: undefined, h: undefined })), resetLabel: "Ripristina altezza utile adottata minima" } : {})}>
                                 {result.mode === "fixB" && <NumberField label="Altezza utile adottata d" unit="mm" value={shownD} onChange={setAdoptedD} />}
                                 {result.mode === "fixB" && <AdoptionUtilization adopted={adoptedD} required={result.dReq} label="Sfruttamento altezza utile" errorText="dimensione insufficiente" />}
                             </BigResult>
@@ -351,7 +354,7 @@ export default function SectionDesignTool() {
                                 <div className="rounded-xl bg-sky-50 p-4">
                                     <div className="flex items-center justify-between gap-2">
                                         <p className="flex items-baseline gap-1.5 text-xs font-semibold uppercase tracking-wide text-sky-700">Armatura tesa <span className="normal-case">A<sub>s</sub></span> <span className="text-[10px] font-medium normal-case tracking-normal text-slate-400">richiesta</span></p>
-                                        <button type="button" onClick={() => setAdoptedReinforcement((p) => ({ ...p, tensionBars: String(result.nBars), tensionPhi: String(result.phi) }))} title="Ripristina armatura richiesta" aria-label="Ripristina armatura tesa richiesta" className="rounded-md p-1 text-slate-500 transition hover:bg-sky-100 hover:text-sky-700">
+                                        <button type="button" onClick={() => setAdoptedReinforcement((p) => ({ ...p, tensionBars: String(result.nBars), tensionPhi: String(result.phi) }))} title="Ripristina armatura tesa adottata minima" aria-label="Ripristina armatura tesa adottata minima" className="rounded-md p-1 text-slate-500 transition hover:bg-sky-100 hover:text-sky-700">
                                             <RotateCcw size={15} />
                                         </button>
                                     </div>
@@ -372,7 +375,7 @@ export default function SectionDesignTool() {
                                     <div className="rounded-xl bg-sky-50 p-4">
                                         <div className="flex items-center justify-between gap-2">
                                             <p className="flex items-baseline gap-1.5 text-xs font-semibold uppercase tracking-wide text-sky-700">Armatura compressa <span className="normal-case">A'<sub>s</sub></span> <span className="text-[10px] font-medium normal-case tracking-normal text-slate-400">richiesta</span></p>
-                                            <button type="button" onClick={() => setAdoptedReinforcement((p) => ({ ...p, compressionBars: String(result.nBarsPrime), compressionPhi: String(result.phi) }))} title="Ripristina armatura richiesta" aria-label="Ripristina armatura compressa richiesta" className="rounded-md p-1 text-slate-500 transition hover:bg-sky-100 hover:text-sky-700">
+                                            <button type="button" onClick={() => setAdoptedReinforcement((p) => ({ ...p, compressionBars: String(result.nBarsPrime), compressionPhi: String(result.phi) }))} title="Ripristina armatura compressa adottata minima" aria-label="Ripristina armatura compressa adottata minima" className="rounded-md p-1 text-slate-500 transition hover:bg-sky-100 hover:text-sky-700">
                                                 <RotateCcw size={15} />
                                             </button>
                                         </div>
@@ -1195,6 +1198,9 @@ const BOX_H = 360;
 const SIDE_BOX_W = 520;
 const SIDE_BOX_H = 300;
 
+const STIRRUP_COL = "#9333ea"; // staffa (viola)
+const OVER_COL = "#dc2626"; // barre fuori ingombro (rosse, distinte dalla staffa viola)
+
 function DesignDrawing({ result, B, layT, layC, dTNom = 40, dCNom = 40, phiStirrup = 8, cLeft = 30, cRight = 30, moment = 0, mode = "fixB", unit = "mm", svgRef, bare = false }) {
     const { h, d, X, phi, phiPrime = phi, nBars, nBarsPrime, beta } = result;
     // barre su una o più file: d al baricentro delle barre tese, cP al baricentro
@@ -1297,6 +1303,15 @@ function DesignDrawing({ result, B, layT, layC, dTNom = 40, dCNom = 40, phiStirr
     const stR = Math.min(offPx, nBarsPrime > 0 ? offPxPrime : offPx);
     const stirrupFits = stW > 8 && stH > 8;
     const showStirrup = show.stirrup && stirrupFits;
+    // Scritte sotto il disegno (staffa, armature): poco sotto la quota di B; il
+    // viewBox viene poi ritagliato sopra e sotto il contenuto, così la legenda
+    // input / calcolato resta subito sotto senza spazio vuoto.
+    const labelY = show.dims ? [74, 85, 96] : [48, 59, 70];
+    const lastY = show.bars && nBarsPrime > 0 ? labelY[2]
+        : show.bars && nBars > 0 ? labelY[1]
+            : showStirrup ? labelY[0] : show.dims ? 47 : 24;
+    const vbY = Math.max(0, secTop - mT);
+    const vbH = secTop + ht + lastY + 3 - vbY;
 
     const Toggle = ({ k, label, color }) => {
         const on = show[k];
@@ -1319,14 +1334,14 @@ function DesignDrawing({ result, B, layT, layC, dTNom = 40, dCNom = 40, phiStirr
         <div>
             {/* comandi di visibilità dentro il box (non nel foglio dei passaggi) */}
             {!bare && <div className="mb-2 flex flex-wrap items-center justify-center gap-2">
-                <Toggle k="stirrup" label="Staffa" color="#dc2626" />
+                <Toggle k="stirrup" label="Staffa" color={STIRRUP_COL} />
                 <Toggle k="bars" label="Armature" color="#0f172a" />
                 <Toggle k="axes" label="Linea media barre" color="#d97706" />
                 <Toggle k="moment" label="Momento" color="#16a34a" />
                 <Toggle k="dims" label="Quote" color="#64748b" />
             </div>}
 
-            <svg ref={svgRef} width="100%" viewBox={`0 0 ${BOX_W} ${BOX_H}`} role="img" aria-label="Sezione progettata quotata">
+            <svg ref={svgRef} width="100%" viewBox={`0 ${vbY} ${BOX_W} ${vbH}`} role="img" aria-label="Sezione progettata quotata">
                 {/* zona compressa + contorno */}
                 <rect x={secLeft} y={secTop} width={w} height={Math.min(X * scale, ht)} fill="#e0f2fe" />
                 <rect x={secLeft} y={secTop} width={w} height={ht} fill="none" stroke="#334155" strokeWidth="2" />
@@ -1336,11 +1351,11 @@ function DesignDrawing({ result, B, layT, layC, dTNom = 40, dCNom = 40, phiStirr
                     <>
                         <rect
                             x={stX} y={stY} width={stW} height={stH} rx={stR} ry={stR}
-                            fill="none" stroke="#dc2626" strokeWidth={stWidth} strokeLinejoin="round"
+                            fill="none" stroke={STIRRUP_COL} strokeWidth={stWidth} strokeLinejoin="round"
                         />
                         {/* ganci di chiusura 135° (angolo in alto a sinistra) */}
-                        <line x1={stX + stR} y1={stY} x2={stX + stR + 7} y2={stY + 7} stroke="#dc2626" strokeWidth={stWidth} strokeLinecap="round" />
-                        <line x1={stX} y1={stY + stR} x2={stX + 7} y2={stY + stR + 7} stroke="#dc2626" strokeWidth={stWidth} strokeLinecap="round" />
+                        <line x1={stX + stR} y1={stY} x2={stX + stR + 7} y2={stY + 7} stroke={STIRRUP_COL} strokeWidth={stWidth} strokeLinecap="round" />
+                        <line x1={stX} y1={stY + stR} x2={stX + 7} y2={stY + stR + 7} stroke={STIRRUP_COL} strokeWidth={stWidth} strokeLinecap="round" />
                     </>
                 )}
 
@@ -1365,10 +1380,9 @@ function DesignDrawing({ result, B, layT, layC, dTNom = 40, dCNom = 40, phiStirr
                     </g>
                 )}
 
-                {/* barre */}
-                {/* barre: in rosso quelle che escono dalla sezione (ingombro non verificato) */}
-                {show.bars && tensionBars.map((b, i) => <circle key={`t${i}`} cx={b.x} cy={b.y} r={barR} fill={b.over ? "#dc2626" : "#0f172a"} />)}
-                {show.bars && comprBars.map((b, i) => <circle key={`c${i}`} cx={b.x} cy={b.y} r={barRPrime} fill={b.over ? "#dc2626" : "#64748b"} />)}
+                {/* barre: in rosso quelle che escono dalla staffa (ingombro non verificato), distinte dalla staffa viola */}
+                {show.bars && tensionBars.map((b, i) => <circle key={`t${i}`} cx={b.x} cy={b.y} r={barR} fill={b.over ? OVER_COL : "#0f172a"} />)}
+                {show.bars && comprBars.map((b, i) => <circle key={`c${i}`} cx={b.x} cy={b.y} r={barRPrime} fill={b.over ? OVER_COL : "#64748b"} />)}
 
                 {/* linea media delle barre: punto geometrico di calcolo delle armature (a d e a d'') */}
                 {show.axes && nBars > 0 && <line x1={secLeft} y1={yOf(d)} x2={secRight} y2={yOf(d)} stroke="#d97706" strokeWidth="1" strokeDasharray="8 3 2 3" />}
@@ -1399,12 +1413,12 @@ function DesignDrawing({ result, B, layT, layC, dTNom = 40, dCNom = 40, phiStirr
                 ) : (
                     <text x={secLeft + w / 2} y={secTop + ht + 20} textAnchor="middle" fontSize="11" fill={bColor}>B = {fmtU(B)}</text>
                 )}
-                {showStirrup && <text x={secLeft + w / 2} y={secTop + ht + (show.dims ? 63 : 45)} textAnchor="middle" fontSize="10" fill="#dc2626">staffa φ{fmt(phiStirrup, 0)}</text>}
-                {show.bars && nBars > 0 && <text x={secLeft + w / 2} y={secTop + ht + (show.dims ? 74 : 56)} textAnchor="middle" fontSize="10" fill="#0f172a">armatura tesa φ{fmt(phi, 0)}</text>}
-                {show.bars && nBarsPrime > 0 && <text x={secLeft + w / 2} y={secTop + ht + (show.dims ? 85 : 67)} textAnchor="middle" fontSize="10" fill="#64748b">armatura compressa φ{fmt(phiPrime, 0)}</text>}
+                {showStirrup && <text x={secLeft + w / 2} y={secTop + ht + labelY[0]} textAnchor="middle" fontSize="10" fill={STIRRUP_COL}>staffa φ{fmt(phiStirrup, 0)}</text>}
+                {show.bars && nBars > 0 && <text x={secLeft + w / 2} y={secTop + ht + labelY[1]} textAnchor="middle" fontSize="10" fill="#0f172a">armatura tesa φ{fmt(phi, 0)}</text>}
+                {show.bars && nBarsPrime > 0 && <text x={secLeft + w / 2} y={secTop + ht + labelY[2]} textAnchor="middle" fontSize="10" fill="#64748b">armatura compressa φ{fmt(phiPrime, 0)}</text>}
             </svg>
             {show.dims && (
-                <p className="mt-1 flex items-center justify-center gap-3 text-[11px] text-slate-400">
+                <p className="flex items-center justify-center gap-3 text-[11px] text-slate-400">
                     <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: INPUT_COLOR }} />input</span>
                     <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: CALC_COLOR }} />calcolato</span>
                 </p>
@@ -1765,7 +1779,7 @@ function AnimatedPanel({ isOpen, children }) {
 function CardTitle({ children }) {
     return <h3 className="mb-3 text-sm font-bold text-slate-800">{children}</h3>;
 }
-function BigResult({ title, titleSuffix, value, unit, note, children, onReset, resetLabel = "Ripristina valore richiesto" }) {
+function BigResult({ title, titleSuffix, value, unit, note, children, onReset, resetLabel = "Ripristina valore adottato minimo" }) {
     return (
         <div className="min-w-0 rounded-2xl border border-sky-200 bg-gradient-to-br from-sky-50 to-white p-4">
             <div className="relative min-h-4">

@@ -1,5 +1,25 @@
 @import "tailwindcss";
 
+/* Cursore a manina su tutto ciò che è cliccabile (Tailwind v4 lascia il
+   cursore di default sui pulsanti). Nel layer base, così le utility come
+   cursor-not-allowed possono sovrascriverlo. */
+@layer base {
+    a[href],
+    button:not(:disabled),
+    [role="button"]:not([aria-disabled="true"]),
+    select:not(:disabled),
+    summary,
+    label:has(> input[type="checkbox"]:not(:disabled)),
+    label:has(> input[type="radio"]:not(:disabled)),
+    input[type="checkbox"]:not(:disabled),
+    input[type="radio"]:not(:disabled),
+    input[type="range"]:not(:disabled),
+    input[type="file"]:not(:disabled),
+    input[type="color"]:not(:disabled) {
+        cursor: pointer;
+    }
+}
+
 /* Formule KaTeX in display allineate a sinistra dentro un contenitore .tex-left
    (fuori dai layer, come katex.min.css, così prevale per specificità). */
 .tex-left .katex-display,
