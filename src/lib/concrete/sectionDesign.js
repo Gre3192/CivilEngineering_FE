@@ -41,8 +41,8 @@ export const DEFAULT_INPUT = {
     MEd: 150, // momento di progetto [kNm] (positivo: fibre inferiori tese)
     NEd: 0, // sforzo normale di progetto [kN] (positivo: compressione)
     beta: 0, // A's/A_s (0 = semplice armatura) - solo fixB/fixH
-    c: 40, // copriferro all'asse armatura tesa [mm]
-    cPrime: 40, // copriferro all'asse armatura compressa [mm]
+    dInf: 40, // d': copriferro verticale inferiore, all'asse delle barre inferiori [mm]
+    dSup: 40, // d'': copriferro verticale superiore, all'asse delle barre superiori [mm]
     fck: 25, // [MPa]
     fyk: 450, // [MPa]
     alphaCc: 0.85,
@@ -50,7 +50,8 @@ export const DEFAULT_INPUT = {
     gammaS: 1.15,
     phi: 16, // diametro barre longitudinali [mm]
     phiStirrup: 8, // diametro staffa [mm]
-    cLat: 30, // copriferro laterale netto [mm]
+    cLeft: 30, // c: copriferro orizzontale sinistro, netto alla staffa [mm]
+    cRight: 30, // c': copriferro orizzontale destro, netto alla staffa [mm]
     dRound: 10, // arrotondamento della dimensione progettata [mm]
     concreteModel: "rectangular", // diagramma costitutivo del cls
     steelModel: "ep", // "ep" elasto-plastico | "hardening" incrudente
@@ -122,8 +123,11 @@ export function getCompressionCoeffs(model) {
  *
  * Equilibrio (rispetto all'asse baricentrico, a h/2):
  *   (1) C_c + C's - T_s = N_Ed
- *   (2) C_c (h/2 - k_G x) + C's (h/2 - d'') + T_s (h/2 - d') = M_Ed
- * dove d'' = copriferro lato compresso, d' = copriferro lato teso.
+ *   (2) C_c (h/2 - k_G x) + C's (h/2 - d_C) + T_s (h/2 - d_T) = M_Ed
+ * dove d_T = copriferro verticale lato teso (d' se M_Ed > 0, d'' se M_Ed < 0)
+ * e d_C = copriferro verticale lato compresso.
+ * Copriferri: d' / d'' verticali inferiore / superiore (all'asse delle barre),
+ * c / c' orizzontali sinistro / destro (netti alla staffa).
  */
 export function designSection(input) {
     const {
@@ -133,8 +137,10 @@ export function designSection(input) {
         MEd: MEd_kNm,
         NEd: NEd_kN = 0,
         beta,
-        c,
-        cPrime,
+        dInf,
+        dSup,
+        cLeft = 30,
+        cRight = 30,
         fck,
         fyk,
         alphaCc,
@@ -142,7 +148,6 @@ export function designSection(input) {
         gammaS,
         phi,
         phiStirrup,
-        cLat,
         dRound,
         concreteModel = "rectangular",
         steelModel = "ep",
@@ -151,7 +156,7 @@ export function designSection(input) {
 
     const errors = [];
     if (mode !== "fixH" && !(Bin > 0)) errors.push("La larghezza B deve essere positiva.");
-    if (mode !== "fixB" && !(hIn > Math.max(c, cPrime))) errors.push("L'altezza h deve essere maggiore dei copriferri.");
+    if (mode !== "fixB" && !(hIn > Math.max(dInf, dSup))) errors.push("L'altezza h deve essere maggiore dei copriferri.");
     if (!(Math.abs(MEd_kNm) > 0)) errors.push("Il momento M_Ed deve essere diverso da zero.");
     if (!(fck > 0)) errors.push("Selezionare una classe di calcestruzzo.");
     if (mode !== "fixBH" && !(beta >= 0 && beta < 0.95)) errors.push("beta = A's/A_s deve essere 0 ≤ β < 0,95.");
@@ -181,8 +186,8 @@ export function designSection(input) {
     // --- Segno del momento: se negativo si progetta nel frame ribaltato ---
     const tensionTop = MEd_kNm < 0;
     const Mabs = Math.abs(MEd_kNm) * 1e6; // N·mm (frame di progetto: teso in basso)
-    const cT = tensionTop ? cPrime : c;   // copriferro lato teso (dal lembo teso)
-    const cC = tensionTop ? c : cPrime;   // copriferro lato compresso (dal lembo compr.)
+    const cT = tensionTop ? dSup : dInf;  // copriferro verticale lato teso (dal lembo teso)
+    const cC = tensionTop ? dInf : dSup;  // copriferro verticale lato compresso (dal lembo compr.)
 
     // Ipotesi di progetto (procedimento "SLU - Tensioni normali"):
     //  - stato deformativo al limite tra campo 2 e campo 3: x = xi*d = 0,2593 d;
@@ -308,7 +313,7 @@ export function designSection(input) {
     }
 
     const gap = Math.max(phi, 20);
-    const reqWidth = nBars * phi + (nBars - 1) * gap + 2 * phiStirrup + 2 * cT; // procedimento: n·φ + (n-1)·i + 2·φ_st + 2·d'
+    const reqWidth = nBars * phi + (nBars - 1) * gap + 2 * phiStirrup + cLeft + cRight; // n·φ + (n-1)·i + 2·φ_st + c + c'
     const widthOk = reqWidth <= B;
 
     // --- Risultanti delle forze e bracci rispetto all'asse baricentrico (h/2) ---
@@ -332,6 +337,8 @@ export function designSection(input) {
         xFromXi,
         cT,
         cC,
+        cLeft,
+        cRight,
         Cc,
         Cs,
         Ts,
@@ -386,5 +393,50 @@ export function designSection(input) {
         reqWidth,
         widthOk,
         utilization: AsProvided > 0 ? AsAdopt / AsProvided : 0,
+    };
+}
+
+/**
+ * Forze interne della sezione ADOTTATA (dimensioni e barre commerciali), a
+ * rottura con eps_c = eps_cu al lembo compresso (campi 3-4) e diagramma del cls
+ * con i coefficienti psi / k_G del legame scelto.
+ * L'asse neutro x si ricava dall'equilibrio alla traslazione
+ *   psi·B·x·f_cd + A's·sigma's(x) - A_s·sigma_s(x) = N_Ed
+ * con le tensioni dell'acciaio dal legame adottato (snervato o elastico).
+ * Restituisce forze, bracci rispetto a h/2 e il momento resistente M_Rd.
+ */
+export function analyzeSection({ B, h, cT, cC, As, AsPrime = 0, NEd = 0, fcd, fyd, psi, kG, steelModel = "ep", ks = 1.15 }) {
+    const d = h - cT;
+    const epsYd = fyd / ES;
+    const sSteel = (eps) => {
+        const e = Math.abs(eps);
+        let s;
+        if (e <= epsYd) s = ES * e;
+        else if (steelModel === "hardening") s = Math.min(fyd * (1 + ((e - epsYd) / (EPS_UD - epsYd)) * (ks - 1)), ks * fyd);
+        else s = fyd;
+        return Math.sign(eps) * s;
+    };
+    const epsS = (x) => (EPS_CU * (d - x)) / x;     // acciaio teso (+ = trazione)
+    const epsSc = (x) => (EPS_CU * (x - cC)) / x;   // acciaio compresso (+ = compressione)
+    const resid = (x) => psi * fcd * B * x + AsPrime * sSteel(epsSc(x)) - As * sSteel(epsS(x)) - NEd;
+    let lo = 1e-3, hi = h;
+    for (let i = 0; i < 200; i++) {
+        const mid = (lo + hi) / 2;
+        if (resid(mid) > 0) hi = mid; else lo = mid;
+    }
+    const x = (lo + hi) / 2;
+    const sigmaS = sSteel(epsS(x));
+    const sigmaSc = sSteel(epsSc(x));
+    const Cc = psi * fcd * B * x;
+    const Cs = AsPrime * sigmaSc;
+    const Ts = As * sigmaS;
+    const aCc = h / 2 - kG * x;
+    const aCs = h / 2 - cC;
+    const aTs = h / 2 - cT;
+    return {
+        B, h, d, x, As, AsPrime,
+        epsS: epsS(x), epsSc: epsSc(x), sigmaS, sigmaSc,
+        Cc, Cs, Ts, aCc, aCs, aTs,
+        MRd: Cc * aCc + Cs * aCs + Ts * aTs, // N·mm, rispetto all'asse baricentrico
     };
 }

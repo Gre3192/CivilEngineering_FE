@@ -139,7 +139,7 @@ export default function SectionDesignTool() {
     const roundStep = input.dRound > 0 ? input.dRound : 10;
     const roundUp = (v) => Math.ceil(v / roundStep) * roundStep;
     const calculatedB = result.ok && result.mode === "fixH" ? roundUp(result.Breq) : result.ok ? result.B : 0;
-    const calculatedH = result.ok && result.mode === "fixB" ? roundUp(result.dReq) + input.c : result.ok ? result.h : 0;
+    const calculatedH = result.ok && result.mode === "fixB" ? roundUp(result.dReq) + result.cT : result.ok ? result.h : 0;
     const adoptedB = Number(adoptedDimensions.B) > 0 ? Number(adoptedDimensions.B) : calculatedB;
     const adoptedH = Number(adoptedDimensions.h) > 0 ? Number(adoptedDimensions.h) : calculatedH;
     const selectedTensionBars = Number(adoptedReinforcement.tensionBars ?? result.nBars);
@@ -161,14 +161,22 @@ export default function SectionDesignTool() {
     const checkedBarCount = selectedTensionBars >= 2 ? selectedTensionBars : result.nBars;
     const checkedBarDiameter = selectedTensionPhi > 0 ? selectedTensionPhi : result.phi;
     const checkedBarGap = Math.max(checkedBarDiameter, 20);
-    const checkedWidth = checkedBarCount * checkedBarDiameter + (checkedBarCount - 1) * checkedBarGap + 2 * input.phiStirrup + 2 * (result.ok ? result.cT : input.c);
+    const checkedWidth = checkedBarCount * checkedBarDiameter + (checkedBarCount - 1) * checkedBarGap + 2 * input.phiStirrup + input.cLeft + input.cRight;
     const checkedWidthLimit = adoptedB || result.B;
     const checkedWidthOk = checkedWidth <= checkedWidthLimit;
+    // ingombro delle barre compresse (superiori), se presenti
+    const checkedGapC = Math.max(adoptedCompressionPhi, 20);
+    const checkedWidthC = adoptedCompressionBars > 0
+        ? adoptedCompressionBars * adoptedCompressionPhi + (adoptedCompressionBars - 1) * checkedGapC + 2 * input.phiStirrup + input.cLeft + input.cRight
+        : 0;
+    const checkedWidthCOk = checkedWidthC <= checkedWidthLimit;
     const drawingResult = result.ok ? {
         ...result,
         h: adoptedH,
-        d: Math.max(1, adoptedH - input.c),
-        X: result.d > 0 ? result.X * Math.max(1, adoptedH - input.c) / result.d : result.X,
+        d: Math.max(1, adoptedH - result.cT),
+        // asse neutro secondo l'ipotesi di progetto (x = ξ·d), salvo il caso
+        // "B e h" senza armatura compressa in cui x viene dall'equilibrio
+        X: result.xFromXi ? result.xi * Math.max(1, adoptedH - result.cT) : result.X,
         nBars: adoptedTensionBars,
         nBarsPrime: adoptedCompressionBars,
         phi: adoptedTensionPhi,
@@ -179,10 +187,10 @@ export default function SectionDesignTool() {
     const setNumber = (f) => (v) => setInput((p) => ({ ...p, [f]: Number(v) || 0 }));
     const setAdoptedD = (value) => setAdoptedDimensions((p) => value === ""
         ? { ...p, d: "", h: "" }
-        : { ...p, d: value, h: String(Number(value) + input.c) });
+        : { ...p, d: value, h: String(Number(value) + input.dInf) });
     const setAdoptedH = (value) => setAdoptedDimensions((p) => value === ""
         ? { ...p, d: "", h: "" }
-        : { ...p, h: value, d: String(Number(value) - input.c) });
+        : { ...p, h: value, d: String(Number(value) - input.dInf) });
 
     return (
         <div className="grid grid-cols-1 gap-6 xl:grid-cols-[380px_minmax(0,1fr)]">
@@ -209,8 +217,17 @@ export default function SectionDesignTool() {
                         {input.mode === "fixBH"
                             ? <NumberField label="Altezza h" unit="mm" value={input.h} onChange={setNumber("h")} />
                             : <NumberField label="β = A's/As" value={input.beta} step="0.05" onChange={setNumber("beta")} />}
-                        <NumberField label="Copriferro c' (compr.)" unit="mm" value={input.cPrime} onChange={setNumber("cPrime")} />
-                        <NumberField label="Copriferro c (teso)" unit="mm" value={input.c} onChange={setNumber("c")} />
+                    </div>
+                    <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                        <p className="mb-2 text-xs font-semibold text-slate-600">Copriferri</p>
+                        <div className="grid grid-cols-2 gap-3">
+                            <NumberField label="d'" hint="verticale inferiore" unit="mm" value={input.dInf} onChange={setNumber("dInf")} />
+                            <NumberField label="d''" hint="verticale superiore" unit="mm" value={input.dSup} onChange={setNumber("dSup")} />
+                            <NumberField label="c" hint="orizzontale sinistro" unit="mm" value={input.cLeft} onChange={setNumber("cLeft")} />
+                            <NumberField label="c'" hint="orizzontale destro" unit="mm" value={input.cRight} onChange={setNumber("cRight")} />
+                        </div>
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-3">
                         <NumberField label="Momento M_Ed" unit="kNm" value={input.MEd} onChange={setNumber("MEd")} />
                         <NumberField label="Sforzo normale N_Ed" unit="kN" value={input.NEd} onChange={setNumber("NEd")} />
                     </div>
@@ -251,7 +268,6 @@ export default function SectionDesignTool() {
 
                 <CollapsibleCard title="Dettagli avanzati" defaultOpen={false} command={cardCommand}>
                         <div className="grid grid-cols-2 gap-3">
-                            <NumberField label="Copriferro laterale" unit="mm" value={input.cLat} onChange={setNumber("cLat")} />
                             <NumberField label="Arrotond. d" unit="mm" value={input.dRound} onChange={setNumber("dRound")} />
                             <NumberField label="α_cc" value={input.alphaCc} step="0.05" onChange={setNumber("alphaCc")} />
                             <NumberField label="γ_c" value={input.gammaC} step="0.05" onChange={setNumber("gammaC")} />
@@ -279,17 +295,17 @@ export default function SectionDesignTool() {
                     <>
                         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                             <BigResult title="Larghezza B" titleSuffix="richiesta" value={fmt(result.mode === "fixH" ? result.Breq : result.B, result.mode === "fixH" ? 1 : 0)} unit="mm"
-                                {...(result.mode === "fixH" || result.mode === "fixBH" ? { onReset: () => setAdoptedDimensions((p) => ({ ...p, B: "" })), resetLabel: "Ripristina larghezza richiesta" } : {})}>
-                                {(result.mode === "fixH" || result.mode === "fixBH") && <NumberField label="Larghezza adottata B" unit="mm" value={adoptedDimensions.B ?? ""} onChange={(v) => setAdoptedDimensions((p) => ({ ...p, B: v }))} />}
+                                {...(result.mode === "fixH" || result.mode === "fixBH" ? { onReset: () => setAdoptedDimensions((p) => ({ ...p, B: undefined })), resetLabel: "Ripristina larghezza richiesta" } : {})}>
+                                {(result.mode === "fixH" || result.mode === "fixBH") && <NumberField label="Larghezza adottata B" unit="mm" value={adoptedDimensions.B ?? String(calculatedB)} onChange={(v) => setAdoptedDimensions((p) => ({ ...p, B: v }))} />}
                             </BigResult>
-                            <BigResult title="Altezza h" titleSuffix="richiesta" value={fmt(result.mode === "fixB" ? result.dReq + input.c : result.h, result.mode === "fixB" ? 1 : 0)} unit="mm"
-                                {...(result.mode === "fixB" || result.mode === "fixBH" ? { onReset: () => setAdoptedDimensions((p) => ({ ...p, d: "", h: "" })), resetLabel: "Ripristina altezza richiesta" } : {})}>
-                                {result.mode === "fixB" && <NumberField label="Altezza adottata h" unit="mm" value={adoptedDimensions.h ?? ""} onChange={setAdoptedH} />}
-                                {result.mode === "fixBH" && <NumberField label="Altezza adottata h" unit="mm" value={adoptedDimensions.h ?? ""} onChange={setAdoptedH} />}
+                            <BigResult title="Altezza h" titleSuffix="richiesta" value={fmt(result.mode === "fixB" ? result.dReq + result.cT : result.h, result.mode === "fixB" ? 1 : 0)} unit="mm"
+                                {...(result.mode === "fixB" || result.mode === "fixBH" ? { onReset: () => setAdoptedDimensions((p) => ({ ...p, d: undefined, h: undefined })), resetLabel: "Ripristina altezza richiesta" } : {})}>
+                                {result.mode === "fixB" && <NumberField label="Altezza adottata h" unit="mm" value={adoptedDimensions.h ?? String(calculatedH)} onChange={setAdoptedH} />}
+                                {result.mode === "fixBH" && <NumberField label="Altezza adottata h" unit="mm" value={adoptedDimensions.h ?? String(calculatedH)} onChange={setAdoptedH} />}
                             </BigResult>
                             <BigResult title="Altezza utile d" titleSuffix="richiesta" value={fmt(result.mode === "fixB" ? result.dReq : result.d, result.mode === "fixB" ? 1 : 0)} unit="mm"
-                                {...(result.mode === "fixB" ? { onReset: () => setAdoptedDimensions((p) => ({ ...p, d: "", h: "" })), resetLabel: "Ripristina altezza utile richiesta" } : {})}>
-                                {result.mode === "fixB" && <NumberField label="Altezza utile adottata d" unit="mm" value={adoptedDimensions.d ?? ""} onChange={setAdoptedD} />}
+                                {...(result.mode === "fixB" ? { onReset: () => setAdoptedDimensions((p) => ({ ...p, d: undefined, h: undefined })), resetLabel: "Ripristina altezza utile richiesta" } : {})}>
+                                {result.mode === "fixB" && <NumberField label="Altezza utile adottata d" unit="mm" value={adoptedDimensions.d ?? String(calculatedH - result.cT)} onChange={setAdoptedD} />}
                             </BigResult>
                         </div>
 
@@ -303,18 +319,18 @@ export default function SectionDesignTool() {
                                             <RotateCcw size={15} />
                                         </button>
                                     </div>
-                                    <p className="mt-1 flex flex-wrap items-baseline gap-x-2 text-2xl font-bold text-slate-900">{result.nBars} φ {result.phi}<span className="text-sm font-medium text-slate-500">{fmt(result.AsProvided, 0)} mm²</span></p>
+                                    <p className="mt-1 flex flex-wrap items-baseline gap-x-1.5 text-2xl font-bold text-slate-900">{fmt(result.As, 1)}<span className="text-sm font-medium text-slate-500">mm²</span></p>
                                     <div className="mt-3 grid grid-cols-2 gap-3">
                                         <NumberField label="Numero adottato" value={adoptedReinforcement.tensionBars ?? String(result.nBars)} onChange={(v) => setAdoptedReinforcement((p) => ({ ...p, tensionBars: v }))} onBlur={(v) => setAdoptedReinforcement((p) => ({ ...p, tensionBars: v === "" ? "" : String(Math.max(2, Math.trunc(Number(v) || 0))) }))} min="2" step="1" />
                                         <SelectField label="Diametro adottato" value={adoptedReinforcement.tensionPhi || String(result.phi)} onChange={(v) => setAdoptedReinforcement((p) => ({ ...p, tensionPhi: v }))} options={[{ value: "", label: "Seleziona" }, ...BAR_DIAMETERS.map((d) => ({ value: d, label: `φ ${d}` }))]} />
                                     </div>
                                     <p className="mt-2 flex items-center justify-between gap-2 text-sm font-semibold text-slate-700">
-                                        <span>As <span className="text-[10px] font-medium normal-case tracking-normal text-slate-400">adottata</span> = {adoptedTensionArea ? `${fmt(adoptedTensionArea, 0)} mm²` : "—"}</span>
-                                        {adoptedTensionArea !== null && (adoptedTensionArea >= result.AsProvided
+                                        <span>A<sub>s</sub> <span className="text-[10px] font-medium normal-case tracking-normal text-slate-400">adottata</span> = {adoptedTensionArea ? `${adoptedTensionBars} φ ${adoptedTensionPhi} = ${fmt(adoptedTensionArea, 0)} mm²` : "—"}</span>
+                                        {adoptedTensionArea !== null && (adoptedTensionArea >= result.As
                                             ? <CheckCircle2 size={16} className="shrink-0 text-emerald-600" aria-label="Armatura adottata verificata" role="img" />
                                             : <AlertTriangle size={16} className="shrink-0 text-amber-500" aria-label="Armatura adottata inferiore a quella richiesta" role="img" />)}
                                     </p>
-                                    <AdoptionUtilization adopted={adoptedTensionArea} required={result.AsProvided} />
+                                    <AdoptionUtilization adopted={adoptedTensionArea} required={result.As} />
                                 </div>
                                 {result.AsPrime > 0 && (
                                     <div className="rounded-xl bg-sky-50 p-4">
@@ -324,23 +340,24 @@ export default function SectionDesignTool() {
                                                 <RotateCcw size={15} />
                                             </button>
                                         </div>
-                                        <p className="mt-1 flex flex-wrap items-baseline gap-x-2 text-2xl font-bold text-slate-900">{result.nBarsPrime} φ {result.phi}<span className="text-sm font-medium text-slate-500">{fmt(result.AsPrimeProvided, 0)} mm²</span></p>
+                                        <p className="mt-1 flex flex-wrap items-baseline gap-x-1.5 text-2xl font-bold text-slate-900">{fmt(result.AsPrime, 1)}<span className="text-sm font-medium text-slate-500">mm²</span></p>
                                         <div className="mt-3 grid grid-cols-2 gap-3">
                                             <NumberField label="Numero adottato" value={adoptedReinforcement.compressionBars ?? String(result.nBarsPrime)} onChange={(v) => setAdoptedReinforcement((p) => ({ ...p, compressionBars: v }))} onBlur={(v) => setAdoptedReinforcement((p) => ({ ...p, compressionBars: v === "" ? "" : String(Math.max(2, Math.trunc(Number(v) || 0))) }))} min="2" step="1" />
                                             <SelectField label="Diametro adottato" value={adoptedReinforcement.compressionPhi || String(result.phi)} onChange={(v) => setAdoptedReinforcement((p) => ({ ...p, compressionPhi: v }))} options={[{ value: "", label: "Seleziona" }, ...BAR_DIAMETERS.map((d) => ({ value: d, label: `φ ${d}` }))]} />
                                         </div>
                                         <p className="mt-2 flex items-center justify-between gap-2 text-sm font-semibold text-slate-700">
-                                            <span>A'<sub>s</sub> <span className="text-[10px] font-medium normal-case tracking-normal text-slate-400">adottata</span> = {adoptedCompressionArea ? `${fmt(adoptedCompressionArea, 0)} mm²` : "—"}</span>
-                                            {adoptedCompressionArea !== null && (adoptedCompressionArea >= result.AsPrimeProvided
+                                            <span>A'<sub>s</sub> <span className="text-[10px] font-medium normal-case tracking-normal text-slate-400">adottata</span> = {adoptedCompressionArea ? `${adoptedCompressionBars} φ ${adoptedCompressionPhi} = ${fmt(adoptedCompressionArea, 0)} mm²` : "—"}</span>
+                                            {adoptedCompressionArea !== null && (adoptedCompressionArea >= result.AsPrime
                                                 ? <CheckCircle2 size={16} className="shrink-0 text-emerald-600" aria-label="Armatura adottata verificata" role="img" />
                                                 : <AlertTriangle size={16} className="shrink-0 text-amber-500" aria-label="Armatura adottata inferiore a quella richiesta" role="img" />)}
                                         </p>
-                                        <AdoptionUtilization adopted={adoptedCompressionArea} required={result.AsPrimeProvided} />
+                                        <AdoptionUtilization adopted={adoptedCompressionArea} required={result.AsPrime} />
                                     </div>
                                 )}
                             </div>
                             <div className="mt-3 space-y-2">
-                                <CheckRow ok={checkedWidthOk} label={`Ingombro barre${selectedTensionBars >= 2 || selectedTensionPhi > 0 ? " adottate" : ""}: ${fmt(checkedWidth, 0)} mm ≤ B = ${fmt(checkedWidthLimit, 0)} mm`} reference={{ ntc: "§4.1.6.1.3", ec2: "§8.2" }} />
+                                <CheckRow ok={checkedWidthOk} label={`Ingombro barre tese${selectedTensionBars >= 2 || selectedTensionPhi > 0 ? " adottate" : ""}: ${fmt(checkedWidth, 0)} mm ${checkedWidthOk ? "≤" : ">"} B = ${fmt(checkedWidthLimit, 0)} mm`} reference={{ ntc: "§4.1.6.1.3", ec2: "§8.2" }} />
+                                {adoptedCompressionBars > 0 && <CheckRow ok={checkedWidthCOk} label={`Ingombro barre compresse adottate: ${fmt(checkedWidthC, 0)} mm ${checkedWidthCOk ? "≤" : ">"} B = ${fmt(checkedWidthLimit, 0)} mm`} reference={{ ntc: "§4.1.6.1.3", ec2: "§8.2" }} />}
                                 <CheckRow ok={checkedTensionArea >= result.AsMin} warn label={`${checkedTensionAreaIsAdopted ? "A_s adottata" : "A_s calcolata"} ${checkedTensionArea >= result.AsMin ? "≥" : "<"} A_s,min (${fmt(checkedTensionArea, 0)} / ${fmt(result.AsMin, 0)} mm²)`} reference={{ ntc: "§4.1.6.1.1", ec2: "§9.2.1.1(1)" }} />
                                 <CheckRow ok={checkedTensionArea <= result.AsMax} label={`${checkedTensionAreaIsAdopted ? "A_s adottata" : "A_s calcolata"} ${checkedTensionArea <= result.AsMax ? "≤" : ">"} A_s,max (${fmt(checkedTensionArea, 0)} / ${fmt(result.AsMax, 0)} mm²)`} reference={{ ntc: "§4.1.6.1.1", ec2: "§9.2.1.1(3)" }} />
                                 {result.beta > 0 && (
@@ -382,7 +399,7 @@ export default function SectionDesignTool() {
                             </div>
                             {exportMessage && <p role="status" className="mb-2 text-right text-xs text-slate-500">{exportMessage}</p>}
                             <div className="mx-auto max-w-[480px]">
-                                <DesignDrawing result={drawingResult} B={adoptedB} cPrime={input.cPrime} phiStirrup={input.phiStirrup} cLat={input.cLat} moment={input.MEd} mode="fixBH" unit={drawUnit} svgRef={drawingSvgRef} />
+                                <DesignDrawing result={drawingResult} B={adoptedB} dSup={input.dSup} phiStirrup={input.phiStirrup} cLeft={input.cLeft} cRight={input.cRight} moment={input.MEd} mode="fixBH" unit={drawUnit} svgRef={drawingSvgRef} />
                             </div>
                         </Card>
 
@@ -428,9 +445,9 @@ export default function SectionDesignTool() {
                                         <ResultRow label="x_lim / d" value={fmt(result.xiLim, 3)} />
                                     </>
                                 ) : (
-                                    <ResultRow label="ξ = X/d" value={fmt(result.xi, 4)} />
+                                    <ResultRow label="ξ = X/d" value={fmt(result.xi, 6)} />
                                 )}
-                                <ResultRow label="ψ / λ (cls)" value={`${fmt(result.psi, 3)} / ${fmt(result.kG, 3)}`} />
+                                <ResultRow label="ψ / λ (cls)" value={`${fmt(result.psi, 5)} / ${fmt(result.kG, 3)}`} />
                                 <ResultRow label="X (asse neutro)" value={fmt(result.X, 1)} unit="mm" />
                                 <ResultRow label="z (braccio)" value={fmt(result.z, 1)} unit="mm" />
                                 {result.mode === "fixH" && <ResultRow label="B richiesta" value={fmt(result.Breq, 0)} unit="mm" />}
@@ -459,7 +476,10 @@ export default function SectionDesignTool() {
                             </div>
                             <AnimatedPanel isOpen={showSteps}>
                                 <div ref={reportRef}>
-                                <CalcReport result={result} input={input} commercial={result.ok ? {
+                                <CalcReport result={result} input={input}
+                                    sectionDrawing={<DesignDrawing result={drawingResult} B={adoptedB} dSup={input.dSup} phiStirrup={input.phiStirrup} cLeft={input.cLeft} cRight={input.cRight} moment={input.MEd} mode="fixBH" unit={drawUnit} bare />}
+                                    forcesDrawing={<SideForcesDiagram result={result} unit={drawUnit} bare />}
+                                    commercial={result.ok ? {
                                     B: adoptedB, h: adoptedH, d: adoptedH - result.cT,
                                     nT: checkedBarCount, phiT: checkedBarDiameter, AsT: checkedBarCount * Math.PI * checkedBarDiameter ** 2 / 4,
                                     nC: adoptedCompressionBars, phiC: adoptedCompressionPhi, AsC: adoptedCompressionBars * Math.PI * adoptedCompressionPhi ** 2 / 4,
@@ -562,7 +582,7 @@ function PdfPreview({ html, title, onClose }) {
 }
 
 // -------- Foglio dei passaggi di calcolo (formule in LaTeX) --------
-function CalcReport({ result, input, commercial }) {
+function CalcReport({ result, input, commercial, sectionDrawing, forcesDrawing }) {
     const r = result;
     const { fck, fyk, alphaCc, gammaC, gammaS, beta, phiStirrup } = input;
     const mm = "\\ \\text{mm}";
@@ -577,10 +597,13 @@ function CalcReport({ result, input, commercial }) {
         bilinear: "\\varepsilon_{c3}=1{,}75\\text{‰}",
     }[input.concreteModel] ?? "\\varepsilon_{c2}=2\\text{‰}";
     const hasCompr = r.AsPrime > 0;
-    const c = r.cT, cp = r.cC; // c = d' (lato teso), c' = d'' (lato compresso)
+    const c = r.cT, cp = r.cC; // copriferri verticali lato teso / lato compresso [mm]
+    // simboli: d' / d'' verticali inferiore / superiore, c / c' orizzontali
+    // sinistro / destro; con M_Ed < 0 il lato teso è quello superiore
+    const sT = r.tensionTop ? "d''" : "d'", sC = r.tensionTop ? "d'" : "d''";
     // tensione dell'acciaio teso: f_yd (elasto-plastico) oppure f_s (incrudente, a 10‰)
     const ts = Math.abs(r.fs - r.fyd) < 1e-9 ? "f_{yd}" : "f_s";
-    const Ps = T(r.psi, 4), Lm = T(r.kG, 3), fcd = T(r.fcd, 2), fyd = T(r.fyd, 1), fsv = T(r.fs, 1);
+    const Ps = T(r.psi, 5), Lm = T(r.kG, 3), Xi = T(r.xi, 6), fcd = T(r.fcd, 2), fyd = T(r.fyd, 1), fsv = T(r.fs, 1);
     const Nnum = Math.abs(r.NEd) < 1 ? "0" : `${T(r.NEd / 1000, 1)}\\cdot 10^{3}`; // N
     const Mnum = `${T(r.MEd / 1e6, 1)}\\cdot 10^{6}`;                                // N·mm
     const h2 = T(r.h / 2, 1);
@@ -597,8 +620,8 @@ function CalcReport({ result, input, commercial }) {
     const X1 = T(r.X, 1);
 
     const symSystem = hasCs
-        ? `\\begin{cases}C_c+C_s'-T_s=N_{Ed}\\\\[6pt]C_c\\Big(\\tfrac{h}{2}-\\lambda x\\Big)+C_s'\\Big(\\tfrac{h}{2}-c'\\Big)+T_s\\Big(\\tfrac{h}{2}-c\\Big)=M_{Ed}\\end{cases}`
-        : `\\begin{cases}C_c-T_s=N_{Ed}\\\\[6pt]C_c\\Big(\\tfrac{h}{2}-\\lambda x\\Big)+T_s\\Big(\\tfrac{h}{2}-c\\Big)=M_{Ed}\\end{cases}`;
+        ? `\\begin{cases}C_c+C_s'-T_s=N_{Ed}\\\\[6pt]C_c\\Big(\\tfrac{h}{2}-\\lambda x\\Big)+C_s'\\Big(\\tfrac{h}{2}-${sC}\\Big)+T_s\\Big(\\tfrac{h}{2}-${sT}\\Big)=M_{Ed}\\end{cases}`
+        : `\\begin{cases}C_c-T_s=N_{Ed}\\\\[6pt]C_c\\Big(\\tfrac{h}{2}-\\lambda x\\Big)+T_s\\Big(\\tfrac{h}{2}-${sT}\\Big)=M_{Ed}\\end{cases}`;
     const cases = (eqN, eqM) => `\\begin{cases}${eqN}\\\\[6pt]${eqM}\\end{cases}`;
 
     // righe delle forze: { lhs, sym, num?, val }
@@ -609,20 +632,20 @@ function CalcReport({ result, input, commercial }) {
 
     let forceRows, armItems, numSystem, unknowns;
     if (r.mode === "fixB") {
-        // x = xi·d e h = d + c: forze e bracci lineari in d
+        // x = xi·d e h = d + d_T: forze e bracci lineari in d
         const kCd = r.psi * r.B * r.xi * r.fcd;
         const armC = lin(0.5 - r.kG * r.xi, "d", c / 2);
         const armS = lin(0.5, "d", c / 2 - cp, 1);
         const armT = lin(0.5, "d", -c / 2, 1);
         forceRows = [
-            { lhs: "C_c", sym: "\\Psi\\,B\\,x\\,f_{cd}", num: `${Ps}\\cdot ${T(r.B, 0)}\\cdot 0{,}2593\\,d\\cdot ${fcd}`, val: `${T(kCd, 1)}\\,d` },
+            { lhs: "C_c", sym: "\\Psi\\,B\\,x\\,f_{cd}", num: `${Ps}\\cdot ${T(r.B, 0)}\\cdot ${Xi}\\,d\\cdot ${fcd}`, val: `${T(kCd, 1)}\\,d` },
             hasCs ? rowCs : null,
             rowTs,
         ];
         armItems = [
-            `\\tfrac{h}{2}-\\lambda x=\\tfrac{d+${T(c, 0)}}{2}-${Lm}\\cdot 0{,}2593\\,d=${armC}`,
-            hasCs ? `\\tfrac{h}{2}-c'=${armS}` : null,
-            `\\tfrac{h}{2}-c=${armT}`,
+            `\\tfrac{h}{2}-\\lambda x=\\tfrac{d+${T(c, 0)}}{2}-${Lm}\\cdot ${Xi}\\,d=${armC}`,
+            hasCs ? `\\tfrac{h}{2}-${sC}=${armS}` : null,
+            `\\tfrac{h}{2}-${sT}=${armT}`,
         ];
         const steel = !hasCs ? [`${fsv}\\,A_s\\,(${armT})`]
             : sameArm ? [`${T(kS + kT, 2)}\\,A_s\\,(${armT})`]
@@ -641,8 +664,8 @@ function CalcReport({ result, input, commercial }) {
         ];
         armItems = [
             `\\tfrac{h}{2}-\\lambda x=${h2}-${Lm}\\cdot ${X1}=${T(r.aCc, 1)}`,
-            hasCs ? `\\tfrac{h}{2}-c'=${T(r.aCs, 1)}` : null,
-            `\\tfrac{h}{2}-c=${T(r.aTs, 1)}`,
+            hasCs ? `\\tfrac{h}{2}-${sC}=${T(r.aCs, 1)}` : null,
+            `\\tfrac{h}{2}-${sT}=${T(r.aTs, 1)}`,
         ];
         numSystem = cases(
             `${T(kCB, 2)}\\,B-${T(hasCs ? kT - kS : kT, 2)}\\,A_s=${Nnum}`,
@@ -657,8 +680,8 @@ function CalcReport({ result, input, commercial }) {
         ];
         armItems = [
             `\\tfrac{h}{2}-\\lambda x=${h2}-${Lm}\\cdot ${X1}=${T(r.aCc, 1)}`,
-            `\\tfrac{h}{2}-c'=${T(r.aCs, 1)}`,
-            `\\tfrac{h}{2}-c=${T(r.aTs, 1)}`,
+            `\\tfrac{h}{2}-${sC}=${T(r.aCs, 1)}`,
+            `\\tfrac{h}{2}-${sT}=${T(r.aTs, 1)}`,
         ];
         numSystem = cases(
             `${T(r.Cc / 1000, 1)}\\cdot 10^{3}+${fyd}\\,A_s'-${fsv}\\,A_s=${Nnum}`,
@@ -673,12 +696,34 @@ function CalcReport({ result, input, commercial }) {
         ];
         armItems = [
             `\\tfrac{h}{2}-\\lambda x=${h2}-${Lm}\\,x`,
-            `\\tfrac{h}{2}-c=${T(r.aTs, 1)}`,
+            `\\tfrac{h}{2}-${sT}=${T(r.aTs, 1)}`,
         ];
         numSystem = cases(
             `${T(kCx, 1)}\\,x-${fsv}\\,A_s=${Nnum}`,
             `${T(kCx, 1)}\\,x\\,(${h2}-${Lm}\\,x)+${T(kT * r.aTs, 1)}\\,A_s=${Mnum}`);
         unknowns = "incognite x e A_s";
+    }
+
+    // ---- "Ottengo": risultati in colonna ----
+    // Le incognite del sistema si riportano con il solo risultato; le grandezze
+    // che ne dipendono (h = d + d_T, A's = β A_s) con formula, numeri e risultato.
+    const res = (lhs, v, unit) => ({ tex: `${lhs}=${T(v, 1)}${unit}` });
+    // fissa B o h: A's = β·A_s sempre esplicitato (anche con β = 0)
+    const asPrimeRow = { lhs: "A_s'", sym: "\\beta\\,A_s", num: `${T(beta, 2)}\\cdot ${T(r.As, 1)}`, val: `${T(r.AsPrime, 1)}${mm2}` };
+    const solve = [];
+    if (r.mode === "fixB") {
+        solve.push(
+            res("d", r.dReq, mm),
+            { lhs: "h", sym: `d+${sT}`, num: `${T(r.dReq, 1)}+${T(c, 0)}`, val: `${T(r.h, 1)}${mm}` },
+            res("A_s", r.As, mm2),
+            asPrimeRow,
+        );
+    } else if (r.mode === "fixH") {
+        solve.push(res("B", r.Breq, mm), res("A_s", r.As, mm2), asPrimeRow);
+    } else if (r.xFromXi) {
+        solve.push(res("A_s", r.As, mm2), res("A_s'", r.AsPrime, mm2));
+    } else {
+        solve.push(res("x", r.X, mm), res("A_s", r.As, mm2), { tex: "A_s'=0" });
     }
 
     // riga di più grandezze che va a capo da sola quando lo spazio non basta
@@ -705,8 +750,10 @@ function CalcReport({ result, input, commercial }) {
                 <Row items={[
                     r.mode !== "fixH" ? `B=${T(r.B, 0)}${mm}` : null,
                     r.mode !== "fixB" ? `h=${T(r.h, 0)}${mm}` : null,
-                    `c=d'=${T(c, 0)}${mm}`,
-                    `c'=d''=${T(cp, 0)}${mm}`,
+                    `d'=${T(input.dInf, 0)}${mm}`,
+                    `d''=${T(input.dSup, 0)}${mm}`,
+                    `c=${T(input.cLeft, 0)}${mm}`,
+                    `c'=${T(input.cRight, 0)}${mm}`,
                     r.mode !== "fixBH" ? `\\beta=${T(beta, 2)}` : null,
                 ]} />
                 <p className="text-xs font-semibold text-slate-500">Materiali:</p>
@@ -750,20 +797,20 @@ function CalcReport({ result, input, commercial }) {
                     (ε_c = 3,5‰, ε_s = 10‰). Si ipotizza inoltre che le armature al lembo compresso siano snervate (σ'_s = f_yd).
                 </Sym></p>
                 <p className="text-xs font-semibold text-slate-500">In questo modo si ha:</p>
-                <Row items={[`\\Psi=${Ps}`, `\\lambda=${Lm}`, `x=0{,}2593\\cdot d${r.mode === "fixB" ? "" : `=0{,}2593\\cdot ${T(r.d, 1)}=${T(xiX(r), 1)}${mm}`}`]} />
+                <Row items={[`\\Psi=${Ps}`, `\\lambda=${Lm}`, `x=${Xi}\\cdot d${r.mode === "fixB" ? "" : `=${Xi}\\cdot ${T(r.d, 1)}=${T(xiX(r), 1)}${mm}`}`]} />
             </Step>
 
             <Step n="3" title="Equazioni di equilibrio">
                 {r.mode === "fixBH" && !r.xFromXi && (
                     <p className="text-xs text-amber-600">
-                        <Sym>Con x = 0,2593·d risulterebbe A's &lt; 0: l'armatura compressa non è necessaria. Si pone A's = 0 e si ricava x dall'equilibrio.</Sym>
+                        <Sym>Con x = 0,259259·d risulterebbe A's &lt; 0: l'armatura compressa non è necessaria. Si pone A's = 0 e si ricava x dall'equilibrio.</Sym>
                     </p>
                 )}
                 {/* risultanti, bracci e sistemi allineati a sinistra */}
                 <div className="tex-left space-y-1.5">
                     <p className="text-xs font-semibold text-slate-500">Risultanti delle forze [N]:</p>
-                    {forceRows.filter(Boolean).map((f) => <Eq key={f.lhs} breakLine={false} lhs={f.lhs} sym={f.sym} num={f.num} val={f.val} />)}
-                    <p className="text-xs font-semibold text-slate-500">Bracci rispetto al baricentro (h/2){r.mode === "fixB" ? ", con h = d + c" : ""} [mm]:</p>
+                    <Tex display>{eqBlock(forceRows.filter(Boolean))}</Tex>
+                    <p className="text-xs font-semibold text-slate-500">Bracci rispetto al baricentro (h/2){r.mode === "fixB" ? `, con h = d + ${sT}` : ""} [mm]:</p>
                     {/* bracci in colonna, "=" allineati, primo membro tra parentesi */}
                     <Tex display>{`\\begin{aligned}${armItems.filter(Boolean).map((s) => {
                         const i = s.indexOf("=");
@@ -775,10 +822,12 @@ function CalcReport({ result, input, commercial }) {
                     <Tex display>{numSystem}</Tex>
                 </div>
                 <p className="text-xs font-semibold text-slate-500">Ottengo:</p>
-                {r.mode === "fixB" && <Row items={[`d=${T(r.dReq, 1)}${mm}`, `h=d+c=${T(r.h, 1)}${mm}`]} />}
-                {r.mode === "fixH" && <Row items={[`B=${T(r.Breq, 1)}${mm}`]} />}
-                {r.mode === "fixBH" && !r.xFromXi && <Row items={[`x=${T(r.X, 1)}${mm}`]} />}
-                <Row items={[`A_s=${T(r.As, 0)}${mm2}`, `A_s'=${r.mode === "fixBH" ? "" : `\\beta\\,A_s=`}${T(r.AsPrime, 0)}${mm2}`]} />
+                {/* risultati in colonna, in un unico blocco allineato sull'"=" */}
+                <div className="tex-left">
+                    <Tex display>{`\\begin{aligned}${solve.map((it) => (it.tex
+                        ? it.tex.replace("=", "&=")
+                        : `${it.lhs}&=${it.sym}=${it.num}=${it.val}`)).join("\\\\[4pt]")}\\end{aligned}`}</Tex>
+                </div>
             </Step>
 
             {cm && (
@@ -792,18 +841,47 @@ function CalcReport({ result, input, commercial }) {
             )}
 
             {cm && (
-                <Step n="5" title="Verifica distanza barre">
-                    <p className="text-xs text-slate-400">Le barre devono essere distanziate di almeno {T(cm.gap, 0)} mm:</p>
-                    <Eq
-                        lhs="L"
-                        sym={`n_{barre}\\,\\Phi_{barre}+(n_{barre}-1)\\cdot ${T(cm.gap, 0)}+2\\,\\Phi_{staffa}+2\\,d'`}
-                        num={`${cm.nT}\\cdot ${T(cm.phiT, 0)}+${cm.nT - 1}\\cdot ${T(cm.gap, 0)}+2\\cdot ${T(phiStirrup, 0)}+2\\cdot ${T(c, 0)}`}
-                        val={`${T(cm.width, 0)}${mm}\\;${cm.widthOk ? "\\le" : ">"}\\;B=${T(cm.widthLimit, 0)}${mm}`} />
-                    <Outcome ok={cm.widthOk}>{cm.widthOk ? "Verificato." : "Non verificato: aumentare B o ridurre il numero di barre."}</Outcome>
+                <Step n="5" title="Sezione progettata e forze interne">
+                    <div className="space-y-4">
+                        <div className="rounded-xl border border-slate-200 bg-white p-3">
+                            <p className="mb-2 text-xs font-semibold text-slate-600">Sezione progettata</p>
+                            <div className="mx-auto max-w-[440px]">{sectionDrawing}</div>
+                        </div>
+                        <div className="rounded-xl border border-slate-200 bg-white p-3">
+                            <p className="mb-2 text-xs font-semibold text-slate-600">Forze interne (sezione di lato)</p>
+                            <div className="mx-auto max-w-[480px]">{forcesDrawing}</div>
+                        </div>
+                    </div>
                 </Step>
             )}
 
-            <Step n={cm ? "6" : "4"} title="Verifica armature">
+            {cm && (
+                <Step n="6" title="Verifica distanza barre">
+                    {[
+                        { key: "t", title: "Armatura tesa A_s:", lhs: "L", n: cm.nT, phi: cm.phiT },
+                        cm.nC > 0 ? { key: "c", title: "Armatura compressa A's:", lhs: "L'", n: cm.nC, phi: cm.phiC } : null,
+                    ].filter(Boolean).map((b) => {
+                        // interferro minimo: max(φ, 20 mm); ingombro con i copriferri laterali c, c'
+                        const gap = Math.max(b.phi, 20);
+                        const width = b.n * b.phi + (b.n - 1) * gap + 2 * phiStirrup + input.cLeft + input.cRight;
+                        const ok = width <= cm.widthLimit;
+                        return (
+                            <div key={b.key} className="space-y-1.5">
+                                <p className="text-xs font-semibold text-slate-500">{sub(b.title)}</p>
+                                <p className="text-xs text-slate-400">Le barre devono essere distanziate di almeno {T(gap, 0)} mm:</p>
+                                <Eq
+                                    lhs={b.lhs}
+                                    sym={`n_{barre}\\,\\Phi_{barre}+(n_{barre}-1)\\cdot ${T(gap, 0)}+2\\,\\Phi_{staffa}+c+c'`}
+                                    num={`${b.n}\\cdot ${T(b.phi, 0)}+${b.n - 1}\\cdot ${T(gap, 0)}+2\\cdot ${T(phiStirrup, 0)}+${T(input.cLeft, 0)}+${T(input.cRight, 0)}`}
+                                    val={`${T(width, 0)}${mm}\\;${ok ? "\\le" : ">"}\\;B=${T(cm.widthLimit, 0)}${mm}`} />
+                                <Outcome ok={ok}>{ok ? "Verificato." : "Non verificato: aumentare B o ridurre il numero di barre."}</Outcome>
+                            </div>
+                        );
+                    })}
+                </Step>
+            )}
+
+            <Step n={cm ? "7" : "4"} title="Verifica armature">
                 <Eq lhs="A_{s,min}" sym="\max\!\Big(0{,}26\tfrac{f_{ctm}}{f_{yk}}Bd,\;0{,}0013\,Bd\Big)" val={`${T(r.AsMin, 0)}${mm2}`} />
                 <Eq lhs="A_{s,max}" sym="0{,}04\,B\,h" val={`${T(r.AsMax, 0)}${mm2}`} />
                 <Tex display>{`A_{s,min}=${T(r.AsMin, 0)}\\;${minOk ? "\\le" : ">"}\\;A_s=${T(areaT, 0)}\\;${maxOk ? "\\le" : ">"}\\;A_{s,max}=${T(r.AsMax, 0)}${mm2}`}</Tex>
@@ -815,7 +893,7 @@ function CalcReport({ result, input, commercial }) {
                 {hasCompr && (
                     <>
                         <p className="mt-1 text-xs font-semibold text-slate-500">Ipotesi di snervamento dell'armatura compressa:</p>
-                        <Eq breakLine={false} lhs="\varepsilon_s'" sym="\varepsilon_{cu}\Big(1-\dfrac{c'}{x}\Big)" num={`3{,}5\\big(1-${T(cp, 0)}/${T(r.X, 1)}\\big)`} val={`${T(r.epsSc * 1000, 2)}\\text{‰}\\;${r.comprYield ? "\\ge" : "<"}\\;\\varepsilon_{yd}=${T(r.epsYd * 1000, 2)}\\text{‰}`} />
+                        <Eq breakLine={false} lhs="\varepsilon_s'" sym={`\\varepsilon_{cu}\\Big(1-\\dfrac{${sC}}{x}\\Big)`} num={`3{,}5\\big(1-${T(cp, 0)}/${T(r.X, 1)}\\big)`} val={`${T(r.epsSc * 1000, 2)}\\text{‰}\\;${r.comprYield ? "\\ge" : "<"}\\;\\varepsilon_{yd}=${T(r.epsYd * 1000, 2)}\\text{‰}`} />
                         <Outcome ok={r.comprYield} warn>
                             {sub(r.comprYield ? "Ipotesi verificata: l'armatura compressa è snervata." : "Ipotesi NON verificata: A's non snervata (σ's < f_yd), risultato approssimato.")}
                         </Outcome>
@@ -824,6 +902,13 @@ function CalcReport({ result, input, commercial }) {
             </Step>
         </div>
     );
+}
+
+// Più equazioni { lhs, sym, num?, val } in un unico blocco allineato sull'"=",
+// così le righe restano vicine.
+function eqBlock(rows) {
+    const line = (r) => [`${r.lhs}&=${r.sym}`, r.num, r.val].filter((x) => x != null && x !== "").join("=");
+    return `\\begin{aligned}${rows.map(line).join("\\\\[4pt]")}\\end{aligned}`;
 }
 
 // Esito di una verifica nel foglio: icona (check / avviso) + testo colorato.
@@ -890,20 +975,23 @@ function ModeToggle({ value, onChange }) {
 }
 
 // Quota verticale con frecce alle due estremita' e linee di estensione.
-function HDim({ dimY, xA, xB, edgeY, label, color = "#64748b" }) {
+function HDim({ dimY, xA, xB, edgeY, label, color = "#64748b", fontSize = 11, bold = true, labelAbove = false }) {
     const mid = (xA + xB) / 2;
+    // quota corta: frecce all'esterno, rivolte verso l'interno
+    const tight = xB - xA < 20;
+    const a = tight ? -6 : 6;
     return (
         <g stroke={color} fill={color}>
             {/* linee di estensione dal bordo della sezione alla linea di quota */}
             <line x1={xA} y1={edgeY} x2={xA} y2={dimY} strokeWidth="0.5" strokeDasharray="2 2" />
             <line x1={xB} y1={edgeY} x2={xB} y2={dimY} strokeWidth="0.5" strokeDasharray="2 2" />
             {/* linea di quota */}
-            <line x1={xA} y1={dimY} x2={xB} y2={dimY} strokeWidth="1" />
+            <line x1={tight ? xA - 9 : xA} y1={dimY} x2={tight ? xB + 9 : xB} y2={dimY} strokeWidth="1" />
             {/* frecce */}
-            <polygon points={`${xA},${dimY} ${xA + 6},${dimY - 2.5} ${xA + 6},${dimY + 2.5}`} stroke="none" />
-            <polygon points={`${xB},${dimY} ${xB - 6},${dimY - 2.5} ${xB - 6},${dimY + 2.5}`} stroke="none" />
+            <polygon points={`${xA},${dimY} ${xA + a},${dimY - 2.5} ${xA + a},${dimY + 2.5}`} stroke="none" />
+            <polygon points={`${xB},${dimY} ${xB - a},${dimY - 2.5} ${xB - a},${dimY + 2.5}`} stroke="none" />
             {/* etichetta */}
-            <text x={mid} y={dimY + 12} fontSize="11" fontWeight="bold" textAnchor="middle" stroke="none">{label}</text>
+            <text x={mid} y={labelAbove ? dimY - 4 : dimY + fontSize + 1} fontSize={fontSize} fontWeight={bold ? "bold" : "normal"} textAnchor="middle" stroke="none">{label}</text>
         </g>
     );
 }
@@ -939,10 +1027,10 @@ const BOX_H = 360;
 const SIDE_BOX_W = 520;
 const SIDE_BOX_H = 300;
 
-function DesignDrawing({ result, B, cPrime, phiStirrup = 8, cLat = 30, moment = 0, mode = "fixB", unit = "mm", svgRef }) {
+function DesignDrawing({ result, B, dSup, phiStirrup = 8, cLeft = 30, cRight = 30, moment = 0, mode = "fixB", unit = "mm", svgRef, bare = false }) {
     const { h, d, X, phi, phiPrime = phi, nBars, nBarsPrime, beta } = result;
-    const cP = cPrime ?? 40;
-    const c = h - d; // copriferro all'asse arm. tesa (dal lembo teso)
+    const cP = dSup ?? 40; // d'': copriferro verticale superiore (all'asse delle barre)
+    const c = h - d; // d': copriferro verticale inferiore (all'asse delle barre tese)
 
     // Colore delle quote B/h: grigio = dato di input, nero = valore calcolato.
     // fixB → B input, h calcolata; fixH → h input, B calcolata; fixBH → entrambe input.
@@ -952,7 +1040,7 @@ function DesignDrawing({ result, B, cPrime, phiStirrup = 8, cLat = 30, moment = 
     const hColor = mode === "fixB" ? CALC_COLOR : INPUT_COLOR;
 
     // Comandi di visibilità (staffa / armature / quote)
-    const [show, setShow] = useState({ stirrup: true, bars: true, moment: true, dims: true });
+    const [show, setShow] = useState({ stirrup: true, bars: true, axes: true, moment: true, dims: true });
     const toggle = (k) => setShow((s) => ({ ...s, [k]: !s[k] }));
 
     // Unità di misura delle quote del disegno (valori memorizzati in mm).
@@ -969,7 +1057,7 @@ function DesignDrawing({ result, B, cPrime, phiStirrup = 8, cLat = 30, moment = 
     const mL = 72;
     const mR = 64;
     const mT = 24;
-    const mB = 86;
+    const mB = 104;
     const availW = BOX_W - mL - mR;
     const availH = BOX_H - mT - mB;
 
@@ -986,39 +1074,45 @@ function DesignDrawing({ result, B, cPrime, phiStirrup = 8, cLat = 30, moment = 
     const yOf = (depth) => secTop + depth * scale;
 
     // Posizione orizzontale delle barre: l'asse delle barre d'angolo è a
-    // (cLat + phi_st + phi/2) dal bordo, così poggiano dentro la staffa.
-    const lat = Math.min(cLat + phiStirrup + phi / 2, B / 2 - phi / 2); // asse barra d'angolo dal bordo [mm]
-    const barsAt = (n, depthY, barLat = lat) => {
+    // (c + phi_st + phi/2) dal bordo sinistro e (c' + phi_st + phi/2) dal bordo
+    // destro, così poggiano dentro la staffa.
+    const latL = (p) => Math.min(cLeft + phiStirrup + p / 2, B / 2 - p / 2);  // asse barra d'angolo sx dal bordo [mm]
+    const latR = (p) => Math.min(cRight + phiStirrup + p / 2, B / 2 - p / 2); // asse barra d'angolo dx dal bordo [mm]
+    const barsAt = (n, depthY, p) => {
         const arr = [];
+        const xL = latL(p), xR = B - latR(p);
         for (let i = 0; i < n; i++) {
-            const pos = n === 1 ? B / 2 : barLat + ((B - 2 * barLat) * i) / (n - 1);
+            const pos = n === 1 ? B / 2 : xL + ((xR - xL) * i) / (n - 1);
             arr.push({ x: secLeft + pos * scale, y: yOf(depthY) });
         }
         return arr;
     };
     const barR = Math.max(2.5, (phi * scale) / 2);
     const barRPrime = Math.max(2.5, (phiPrime * scale) / 2);
-    const latPrime = Math.min(cLat + phiStirrup + phiPrime / 2, B / 2 - phiPrime / 2);
-    const tensionBars = barsAt(nBars, d);
-    const comprBars = nBarsPrime > 0 ? barsAt(nBarsPrime, cP, latPrime) : [];
+    const tensionBars = barsAt(nBars, d, phi);
+    const comprBars = nBarsPrime > 0 ? barsAt(nBarsPrime, cP, phiPrime) : [];
 
-    // Staffa TANGENTE alle armature: l'asse della staffa è distante
-    // (phi/2 + phi_st/2) dall'asse delle barre, così la faccia interna tocca
-    // le barre. Lati sx/dx tangenti alle barre d'angolo; lato inferiore
-    // tangente alle barre tese; lato superiore tangente alle barre compresse
-    // (se presenti), altrimenti al copriferro laterale.
-    const off = phi / 2 + phiStirrup / 2; // distanza asse staffa - asse barra [mm]
-    const offPrime = phiPrime / 2 + phiStirrup / 2;
-    const xLeftA = nBarsPrime > 0 ? Math.min(lat - phi / 2, latPrime - phiPrime / 2) - phiStirrup / 2 : lat - off;
-    const xRightA = nBarsPrime > 0 ? Math.max(B - lat + phi / 2, B - latPrime + phiPrime / 2) + phiStirrup / 2 : B - lat + off;
-    const yBotA = Math.min(d + off, h - (cLat + phiStirrup / 2)); // depth asse inferiore
-    const yTopA = nBarsPrime > 0 ? Math.max(cP - offPrime, cLat + phiStirrup / 2) : cLat + phiStirrup / 2;
-    const stX = secLeft + xLeftA * scale;
-    const stY = secTop + yTopA * scale;
-    const stW = (xRightA - xLeftA) * scale;
-    const stH = (yBotA - yTopA) * scale;
-    const stR = Math.max(2, 6 * scale);
+    // Staffa sempre TANGENTE alle barre, senza che le barre la sovrastino:
+    // l'asse della staffa dista (phi/2 + phi_st/2) dal centro delle barre
+    // d'angolo, calcolato in pixel e mai meno di raggio disegnato della barra +
+    // metà spessore disegnato della staffa (raggi e spessori hanno un minimo
+    // visivo). Lato inferiore tangente alle barre tese, superiore alle barre
+    // compresse (se assenti, a quota d'' come per i reggistaffa); gli angoli
+    // della staffa avvolgono le barre d'angolo.
     const stWidth = Math.max(1.4, phiStirrup * scale * 0.8); // spessore visivo staffa
+    const offPx = Math.max((phi / 2 + phiStirrup / 2) * scale, barR + stWidth / 2);
+    const offPxPrime = Math.max((phiPrime / 2 + phiStirrup / 2) * scale, barRPrime + stWidth / 2);
+    const cornerBars = [tensionBars[0], tensionBars[tensionBars.length - 1]].filter(Boolean);
+    const cornerBarsPrime = [comprBars[0], comprBars[comprBars.length - 1]].filter(Boolean);
+    const stLeft = Math.min(...cornerBars.map((b) => b.x - offPx), ...cornerBarsPrime.map((b) => b.x - offPxPrime));
+    const stRight = Math.max(...cornerBars.map((b) => b.x + offPx), ...cornerBarsPrime.map((b) => b.x + offPxPrime));
+    const stBottom = yOf(d) + offPx;
+    const stTop = yOf(cP) - (nBarsPrime > 0 ? offPxPrime : offPx);
+    const stX = stLeft;
+    const stY = stTop;
+    const stW = stRight - stLeft;
+    const stH = stBottom - stTop;
+    const stR = Math.min(offPx, nBarsPrime > 0 ? offPxPrime : offPx);
     const stirrupFits = stW > 8 && stH > 8;
     const showStirrup = show.stirrup && stirrupFits;
 
@@ -1041,13 +1135,14 @@ function DesignDrawing({ result, B, cPrime, phiStirrup = 8, cLat = 30, moment = 
 
     return (
         <div>
-            {/* comandi di visibilità dentro il box */}
-            <div className="mb-2 flex flex-wrap items-center justify-center gap-2">
+            {/* comandi di visibilità dentro il box (non nel foglio dei passaggi) */}
+            {!bare && <div className="mb-2 flex flex-wrap items-center justify-center gap-2">
                 <Toggle k="stirrup" label="Staffa" color="#dc2626" />
                 <Toggle k="bars" label="Armature" color="#0f172a" />
+                <Toggle k="axes" label="Linea media barre" color="#d97706" />
                 <Toggle k="moment" label="Momento" color="#16a34a" />
                 <Toggle k="dims" label="Quote" color="#64748b" />
-            </div>
+            </div>}
 
             <svg ref={svgRef} width="100%" viewBox={`0 0 ${BOX_W} ${BOX_H}`} role="img" aria-label="Sezione progettata quotata">
                 {/* zona compressa + contorno */}
@@ -1092,28 +1187,38 @@ function DesignDrawing({ result, B, cPrime, phiStirrup = 8, cLat = 30, moment = 
                 {show.bars && tensionBars.map((b, i) => <circle key={`t${i}`} cx={b.x} cy={b.y} r={barR} fill="#0f172a" />)}
                 {show.bars && comprBars.map((b, i) => <circle key={`c${i}`} cx={b.x} cy={b.y} r={barRPrime} fill="#64748b" />)}
 
+                {/* linea media delle barre: punto geometrico di calcolo delle armature (a d e a d'') */}
+                {show.axes && nBars > 0 && <line x1={secLeft} y1={yOf(d)} x2={secRight} y2={yOf(d)} stroke="#d97706" strokeWidth="1" strokeDasharray="8 3 2 3" />}
+                {show.axes && nBarsPrime > 0 && <line x1={secLeft} y1={yOf(cP)} x2={secRight} y2={yOf(cP)} stroke="#d97706" strokeWidth="1" strokeDasharray="8 3 2 3" />}
+
                 {/* quote */}
                 {show.dims && (
                     <>
-                        {/* a sinistra: x (asse neutro) e la colonna d + c (= h) */}
-                        <VDim dimX={secLeft - 16} yA={yOf(0)} yB={yOf(X)} edgeX={secLeft} label={`x=${fmtU(X)}`} color="#0284c7" />
+                        {/* a sinistra: x (asse neutro) e la colonna d + d' (= h) */}
+                        <VDim dimX={secLeft - 16} yA={yOf(0)} yB={yOf(X)} edgeX={secLeft} label="x" color="#0284c7" />
                         <VDim dimX={secLeft - 38} yA={yOf(0)} yB={yOf(d)} edgeX={secLeft} label={`d=${fmtU(d)}`} color="#334155" />
-                        <VDim dimX={secLeft - 38} yA={yOf(d)} yB={yOf(h)} edgeX={secLeft} label={`c=${fmtU(c)}`} color="#64748b" />
-                        {/* a destra: c' (lembo compresso -> As') e h */}
-                        <VDim dimX={secRight + 16} yA={yOf(0)} yB={yOf(cP)} edgeX={secRight} label={`c'=${fmtU(cP)}`} color="#64748b" />
+                        <VDim dimX={secLeft - 38} yA={yOf(d)} yB={yOf(h)} edgeX={secLeft} label={`d'=${fmtU(c)}`} color="#64748b" />
+                        {/* a destra: d'' (lembo superiore -> As') e h */}
+                        <VDim dimX={secRight + 16} yA={yOf(0)} yB={yOf(cP)} edgeX={secRight} label={`d''=${fmtU(cP)}`} color="#64748b" />
                         <VDim dimX={secRight + 38} yA={yOf(0)} yB={yOf(h)} edgeX={secRight} label={`h=${fmtU(h)}`} color={hColor} />
                     </>
                 )}
 
+                {/* copriferri orizzontali c (sinistro) e c' (destro): bordo - faccia esterna della staffa, tra il disegno e B */}
+                {show.dims && <>
+                    <HDim dimY={secTop + ht + 12} xA={secLeft} xB={secLeft + cLeft * scale} edgeY={secTop + ht} label={`c=${fmtU(cLeft)}`} fontSize={9} bold={false} />
+                    <HDim dimY={secTop + ht + 12} xA={secRight - cRight * scale} xB={secRight} edgeY={secTop + ht} label={`c'=${fmtU(cRight)}`} fontSize={9} bold={false} />
+                </>}
+
                 {/* base: quota con frecce (se le quote sono attive) altrimenti etichetta */}
                 {show.dims ? (
-                    <HDim dimY={secTop + ht + 16} xA={secLeft} xB={secRight} edgeY={secTop + ht} label={`B = ${fmtU(B)}`} color={bColor} />
+                    <HDim dimY={secTop + ht + 34} xA={secLeft} xB={secRight} edgeY={secTop + ht} label={`B = ${fmtU(B)}`} color={bColor} />
                 ) : (
                     <text x={secLeft + w / 2} y={secTop + ht + 20} textAnchor="middle" fontSize="11" fill={bColor}>B = {fmtU(B)}</text>
                 )}
-                {showStirrup && <text x={secLeft + w / 2} y={secTop + ht + 45} textAnchor="middle" fontSize="10" fill="#dc2626">staffa φ{fmt(phiStirrup, 0)} (c = {fmtU(cLat)} {unit})</text>}
-                {show.bars && nBars > 0 && <text x={secLeft + w / 2} y={secTop + ht + 56} textAnchor="middle" fontSize="10" fill="#0f172a">armatura tesa φ{fmt(phi, 0)}</text>}
-                {show.bars && nBarsPrime > 0 && <text x={secLeft + w / 2} y={secTop + ht + 67} textAnchor="middle" fontSize="10" fill="#64748b">armatura compressa φ{fmt(phiPrime, 0)}</text>}
+                {showStirrup && <text x={secLeft + w / 2} y={secTop + ht + (show.dims ? 63 : 45)} textAnchor="middle" fontSize="10" fill="#dc2626">staffa φ{fmt(phiStirrup, 0)}</text>}
+                {show.bars && nBars > 0 && <text x={secLeft + w / 2} y={secTop + ht + (show.dims ? 74 : 56)} textAnchor="middle" fontSize="10" fill="#0f172a">armatura tesa φ{fmt(phi, 0)}</text>}
+                {show.bars && nBarsPrime > 0 && <text x={secLeft + w / 2} y={secTop + ht + (show.dims ? 85 : 67)} textAnchor="middle" fontSize="10" fill="#64748b">armatura compressa φ{fmt(phiPrime, 0)}</text>}
             </svg>
             {show.dims && (
                 <p className="mt-1 flex items-center justify-center gap-3 text-[11px] text-slate-400">
@@ -1127,12 +1232,33 @@ function DesignDrawing({ result, B, cPrime, phiStirrup = 8, cLat = 30, moment = 
 
 // -------- Sezione di profilo con le risultanti delle forze interne --------
 // Mostra la sezione vista di lato (profondità verticale) con l'asse neutro a X,
-// la zona compressa e le risultanti: C_c (cls, compressione), C_s (acciaio
+// la zona compressa e le risultanti: C_c (cls, compressione), C's (acciaio
 // compresso, solo doppia armatura) e T_s (acciaio teso). Flessione semplice.
-function SideForcesDiagram({ result, unit = "mm", svgRef }) {
-    const { h, d, X, kG, fcd, cC, cT, Cc, Cs, Ts, aCc, aCs, aTs, NEd: Ned, MEdSigned, tensionTop, sigmaSc, concreteModel = "rectangular" } = result;
+// Testo SVG con pedici: parts = [["C"], ["c", true], [" = Ψ·B·x·f"], ["cd", true]]
+// (true = pedice, abbassato con dy e poi riportato in linea).
+function svgSubText(parts) {
+    let low = false;
+    return parts.map(([t, isSub], i) => {
+        const dy = isSub && !low ? 2 : !isSub && low ? -2 : 0;
+        low = !!isSub;
+        return <tspan key={i} dy={dy || undefined} fontSize={isSub ? 8 : undefined}>{t}</tspan>;
+    });
+}
+
+function SideForcesDiagram({ result, unit = "mm", svgRef, bare = false }) {
+    const { h, d, X, kG, cC, cT, aCc, aCs, aTs, NEd: Ned, MEdSigned, tensionTop, concreteModel = "rectangular" } = result;
     const hasCompr = result.AsPrime > 0;
+    // forze interne in forma simbolica (in fase di progetto x non è noto)
+    const fSteel = Math.abs(result.fs - result.fyd) < 1e-9 ? "yd" : "s";
+    const lblCcParts = [["C"], ["c", true], [" = Ψ·B·x·f"], ["cd", true]];
+    const lblCsParts = result.mode === "fixBH"
+        ? [["C'"], ["s", true], [" = A'"], ["s", true], ["·f"], ["yd", true]]
+        : [["C'"], ["s", true], [" = β·A"], ["s", true], ["·f"], ["yd", true]];
+    const lblTsParts = [["T"], ["s", true], [" = A"], ["s", true], ["·f"], [fSteel, true]];
     const hasN = Math.abs(Ned) > 1000; // > 1 kN
+    // In fase di progetto x e i bracci dipendono dalle incognite: le quote sono
+    // simboliche (d' / d'' copriferri verticali inferiore / superiore).
+    const symT = tensionTop ? "d''" : "d'", symC = tensionTop ? "d'" : "d''";
     const [show, setShow] = useState({ law: true, forces: true, dims: true, moment: true });
     const toggle = (k) => setShow((s) => ({ ...s, [k]: !s[k] }));
 
@@ -1217,12 +1343,12 @@ function SideForcesDiagram({ result, unit = "mm", svgRef }) {
 
     return (
         <div>
-            <div className="mb-2 flex flex-wrap items-center justify-center gap-2">
+            {!bare && <div className="mb-2 flex flex-wrap items-center justify-center gap-2">
                 <Toggle k="law" label="Legame σc" color={col} />
                 <Toggle k="forces" label="Forze" color={RED} />
                 <Toggle k="dims" label="Quote" color="#64748b" />
                 <Toggle k="moment" label="Momento" color={MCOL} />
-            </div>
+            </div>}
 
             <svg ref={svgRef} width="100%" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Legame costitutivo adottato e risultanti delle forze interne">
                 <defs>
@@ -1263,13 +1389,13 @@ function SideForcesDiagram({ result, unit = "mm", svgRef }) {
                     {/* C_c (compressione → verso la sezione, destra) */}
                     <line x1={xTail} y1={yCc} x2={xHead} y2={yCc} stroke={RED} strokeWidth="2.2" markerEnd="url(#sf-red)" />
                     {lblCc !== yCc && <line x1={labX + 3} y1={yCc} x2={labX + 3} y2={lblCc} stroke={RED} strokeWidth="0.6" />}
-                    <text x={labX} y={lblCc + 3.5} textAnchor="end" fontSize="11" fill={RED}>C<tspan fontSize="8" dy="2">c</tspan><tspan dy="-2"> = {kN(Cc)} kN</tspan></text>
+                    <text x={labX} y={lblCc + 3.5} textAnchor="end" fontSize="11" fill={RED}>{svgSubText(lblCcParts)}</text>
 
                     {hasCompr && <>
                         {show.dims && <line x1={xTail} y1={yCs} x2={qCs} y2={yCs} stroke="#94a3b8" strokeWidth="1" strokeDasharray="3 3" />}
                         <line x1={xTail} y1={yCs} x2={xHead} y2={yCs} stroke={RED} strokeWidth="2.2" markerEnd="url(#sf-red)" />
                         {lblCs !== yCs && <line x1={labX + 3} y1={yCs} x2={labX + 3} y2={lblCs} stroke={RED} strokeWidth="0.6" />}
-                        <text x={labX} y={lblCs + 3.5} textAnchor="end" fontSize="11" fill={RED}>C<tspan fontSize="8" dy="2">s</tspan><tspan dy="-2"> = {kN(Cs)} kN</tspan></text>
+                        <text x={labX} y={lblCs + 3.5} textAnchor="end" fontSize="11" fill={RED}>{svgSubText(lblCsParts)}</text>
                     </>}
 
                     {/* N_Ed al baricentro: compressione → destra, trazione → sinistra */}
@@ -1282,7 +1408,7 @@ function SideForcesDiagram({ result, unit = "mm", svgRef }) {
                     {/* T_s (trazione → via dalla sezione, sinistra) */}
                     {show.dims && <line x1={xTail} y1={yTs} x2={qTs} y2={yTs} stroke="#94a3b8" strokeWidth="1" strokeDasharray="3 3" />}
                     <line x1={xHead} y1={yTs} x2={xTail} y2={yTs} stroke={GREEN} strokeWidth="2.2" markerEnd="url(#sf-green)" />
-                    <text x={labX} y={yTs + 3.5} textAnchor="end" fontSize="11" fill={GREEN}>T<tspan fontSize="8" dy="2">s</tspan><tspan dy="-2"> = {kN(Ts)} kN</tspan></text>
+                    <text x={labX} y={yTs + 3.5} textAnchor="end" fontSize="11" fill={GREEN}>{svgSubText(lblTsParts)}</text>
                 </>}
 
                 {/* quote: x (asse neutro) e bracci rispetto al baricentro (h/2) */}
@@ -1290,14 +1416,14 @@ function SideForcesDiagram({ result, unit = "mm", svgRef }) {
                     {/* asse baricentrico h/2 */}
                     <line x1={xCut} y1={yN} x2={xRight + 120} y2={yN} stroke="#94a3b8" strokeWidth="0.8" strokeDasharray="4 3" />
                     <text x={xCut + 4} y={yN - 3} textAnchor="start" fontSize="8" fill="#94a3b8">baricentro (h/2)</text>
-                    <VDim dimX={qX} yA={yEdge0} yB={yNA} edgeX={xRight} label={`x=${fmtU(X)}`} color={NA_COL} />
-                    <VDim dimX={qCc} yA={yN} yB={yCc} edgeX={xRight} label={fmtU(Math.abs(aCc))} color="#475569" />
+                    <VDim dimX={qX} yA={yEdge0} yB={yNA} edgeX={xRight} label="x" color={NA_COL} />
+                    <VDim dimX={qCc} yA={yN} yB={yCc} edgeX={xRight} label="h/2 − λx" color="#475569" />
                     <text x={qCc + 11} y={(yN + yCc) / 2} textAnchor="middle" fontSize="10" fill="#94a3b8" transform={`rotate(-90 ${qCc + 11} ${(yN + yCc) / 2})`}>br. C<tspan fontSize="7" dy="2">c</tspan></text>
                     {hasCompr && <>
-                        <VDim dimX={qCs} yA={yN} yB={yCs} edgeX={xRight} label={fmtU(Math.abs(aCs))} color="#475569" />
+                        <VDim dimX={qCs} yA={yN} yB={yCs} edgeX={xRight} label={`h/2 − ${symC}`} color="#475569" />
                         <text x={qCs + 11} y={(yN + yCs) / 2} textAnchor="middle" fontSize="10" fill="#94a3b8" transform={`rotate(-90 ${qCs + 11} ${(yN + yCs) / 2})`}>br. C'<tspan fontSize="7" dy="2">s</tspan></text>
                     </>}
-                    <VDim dimX={qTs} yA={yN} yB={yTs} edgeX={xRight} label={fmtU(Math.abs(aTs))} color="#475569" />
+                    <VDim dimX={qTs} yA={yN} yB={yTs} edgeX={xRight} label={`h/2 − ${symT}`} color="#475569" />
                     <text x={qTs + 11} y={(yN + yTs) / 2} textAnchor="middle" fontSize="10" fill="#94a3b8" transform={`rotate(-90 ${qTs + 11} ${(yN + yTs) / 2})`}>br. T<tspan fontSize="7" dy="2">s</tspan></text>
                 </>}
 
@@ -1307,11 +1433,11 @@ function SideForcesDiagram({ result, unit = "mm", svgRef }) {
                     <text x={xMlab} y={yMlab} textAnchor="middle" fontSize="11" fill={MCOL}>M<tspan fontSize="8" dy="2">Ed</tspan><tspan dy="-2"> = {fmtNum(MEdSigned / 1e6, 1)} kNm</tspan></text>
                 </>}
             </svg>
-            <p className="mt-1 text-center text-[11px] leading-tight text-slate-400"><Sym>
-                C_c cade nel baricentro G del diagramma σ_c; i bracci sono misurati dall'asse baricentrico (h/2).
-                Equilibrio: C_c{hasCompr ? " + C's" : ""} − T_s = N_Ed ({kN(Ned)} kN); momento = M_Ed.
-                {tensionTop ? " M_Ed < 0: lato teso in alto." : ""}
-            </Sym></p>
+            <div className="mt-1 text-center text-[11px] leading-tight text-slate-400">
+                <p><Sym>C_c cade nel baricentro G del diagramma σ_c.</Sym></p>
+                <p>I bracci sono misurati dall'asse baricentrico (h/2).</p>
+                {tensionTop && <p><Sym>M_Ed &lt; 0: lato teso in alto.</Sym></p>}
+            </div>
         </div>
     );
 }
@@ -1474,14 +1600,16 @@ function ResultRow({ label, value, unit, strong }) {
         </div>
     );
 }
-function NumberField({ label, unit, value, onChange, onBlur, min, step = "1" }) {
+function NumberField({ label, hint, unit, value, onChange, onBlur, min, step = "1" }) {
     return (
         <label className="block">
             <span className="mb-1 block text-xs font-semibold text-slate-500">
                 {sub(label)}{unit && <span className="ml-1 text-slate-400">[{unit}]</span>}
+                {/* sottotitolo sotto l'etichetta */}
+                {hint && <span className="block text-[10px] font-normal text-slate-400">{hint}</span>}
             </span>
             <input type="number" value={value} min={min} step={step} onChange={(e) => onChange(e.target.value)} onBlur={onBlur ? (e) => onBlur(e.target.value) : undefined}
-                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100" />
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100" />
         </label>
     );
 }
