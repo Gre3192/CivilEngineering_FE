@@ -4,6 +4,7 @@
 
 import { useId } from "react";
 import Sym from "../Sym";
+import { fmtNum } from "../Tex";
 import useCenteredViewBox from "./useCenteredViewBox";
 
 const EPS_CU = 0.0035;
@@ -18,8 +19,7 @@ const COLOR = {
     bilinear: "#ca8a04",
 };
 
-const permille = (e) =>
-    (e * 1000).toLocaleString("it-IT", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const permille = (e) => fmtNum(e * 1000, 2);
 
 export default function ConcreteDiagram({ fcd, model }) {
     // id univoco del marker: lo stesso grafico può comparire più volte nella pagina
@@ -28,10 +28,10 @@ export default function ConcreteDiagram({ fcd, model }) {
     const H = 186;
     const ox = 50; // origine X
     const oy = H - 44; // origine Y
-    const plotW = W - ox - 26; // larghezza fino a eps_cu
-    const plotH = oy - 26; // altezza fino a f_cd
+    const plotW = W - ox - 34; // larghezza fino a eps_cu
+    const plotH = oy - 34; // altezza fino a f_cd
     const col = COLOR[model] || "#0284c7";
-    const fcdTxt = fcd.toLocaleString("it-IT", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const fcdTxt = fmtNum(fcd, 2);
     const [svgRef, viewBox] = useCenteredViewBox(W, H, [fcdTxt, model]);
 
     const sx = (e) => ox + (e / EPS_CU) * plotW;
@@ -81,12 +81,12 @@ export default function ConcreteDiagram({ fcd, model }) {
                 <line x1={sx(knee)} y1={oy} x2={sx(knee)} y2={yF} stroke="#cbd5e1" strokeWidth="0.75" strokeDasharray="2 2" />
 
                 {/* assi a freccia */}
-                <line x1={ox} y1={oy} x2={W - 8} y2={oy} stroke="#334155" strokeWidth="1.2" markerEnd={`url(#${arrowId})`} />
+                <line x1={ox} y1={oy} x2={W - 22} y2={oy} stroke="#334155" strokeWidth="1.2" markerEnd={`url(#${arrowId})`} />
                 <line x1={ox} y1={oy} x2={ox} y2={10} stroke="#334155" strokeWidth="1.2" markerEnd={`url(#${arrowId})`} />
 
                 {/* etichette assi */}
-                <text x={ox - 5} y={18} textAnchor="end" fontSize="12" fill="#334155"><tspan fontStyle="italic">σ</tspan><tspan fontSize="9"> (MPa)</tspan></text>
-                <text x={W - 10} y={oy + 16} textAnchor="middle" fontSize="12" fontStyle="italic" fill="#334155">ε</text>
+                <text x={ox + 8} y={14} textAnchor="start" fontSize="12" fill="#334155"><tspan fontStyle="italic">σ</tspan><tspan fontSize="9"> (MPa)</tspan></text>
+                <text x={W - 11} y={oy + 4} textAnchor="start" fontSize="12" fontStyle="italic" fill="#334155">ε</text>
 
                 {/* f_cd sull'asse */}
                 <text x={ox - 6} y={yF + 3} textAnchor="end" fontSize="10" fill="#334155">

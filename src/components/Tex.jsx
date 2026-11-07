@@ -33,18 +33,21 @@ export function Eq({ lhs, sym, num, val, breakLine = true }) {
     return <Tex display>{body}</Tex>;
 }
 
-// Formatta un numero per LaTeX (virgola decimale protetta, senza separatori di
-// migliaia): 14.17 -> "14{,}17".
-export function texNum(v, dec = 2) {
+// Formatta un numero in italiano con dec decimali, senza separatori di migliaia.
+// Un valore che arrotondato è intero si scrive senza decimali ("8" e non "8,0";
+// "0" e non "0,00" né "-0,0"). Usato nei fogli di calcolo e nei grafici.
+export function fmtNum(v, dec = 2) {
     if (v === undefined || v === null || Number.isNaN(v) || !Number.isFinite(v)) return "-";
-    // un valore che arrotondato è intero si scrive senza decimali ("8" e non
-    // "8,0"; "0" e non "0,00" né "-0,0")
     const rounded = Number(Number(v).toFixed(dec));
     if (Number.isInteger(rounded)) return String(rounded === 0 ? 0 : rounded);
-    const s = Number(v).toLocaleString("it-IT", {
+    return Number(v).toLocaleString("it-IT", {
         minimumFractionDigits: dec,
         maximumFractionDigits: dec,
         useGrouping: false,
     });
-    return s.replace(",", "{,}");
+}
+
+// Come fmtNum, per LaTeX (virgola decimale protetta): 14.17 -> "14{,}17".
+export function texNum(v, dec = 2) {
+    return fmtNum(v, dec).replace(",", "{,}");
 }

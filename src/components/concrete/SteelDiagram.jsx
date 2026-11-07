@@ -4,14 +4,14 @@
 
 import { useId } from "react";
 import { sub } from "../Sym";
+import { fmtNum } from "../Tex";
 import useCenteredViewBox from "./useCenteredViewBox";
 
 const ES = 200000; // MPa
 const EPS_UD = 0.0675; // deformazione ultima di progetto (B450C)
 const COLOR = "#4f46e5"; // indaco
 
-const permille = (e) =>
-    (e * 1000).toLocaleString("it-IT", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const permille = (e) => fmtNum(e * 1000, 2);
 
 export default function SteelDiagram({ fyd, model = "ep", ks = 1.15 }) {
     // id univoco del marker: lo stesso grafico può comparire più volte nella pagina
@@ -20,8 +20,8 @@ export default function SteelDiagram({ fyd, model = "ep", ks = 1.15 }) {
     const H = 186;
     const ox = 50;
     const oy = H - 44;
-    const plotW = W - ox - 26;
-    const plotH = oy - 26;
+    const plotW = W - ox - 34;
+    const plotH = oy - 34;
 
     const hardening = model === "hardening";
     const ftd = ks * fyd; // tensione all'estremo (incrudente)
@@ -46,8 +46,8 @@ export default function SteelDiagram({ fyd, model = "ep", ks = 1.15 }) {
     const curve = `M${ox},${oy} L${xYd},${yYd} L${xUd},${yTop}`;
     const area = `${curve} L${xUd},${oy} Z`;
 
-    const fydTxt = fyd.toLocaleString("it-IT", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    const ftdTxt = ftd.toLocaleString("it-IT", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const fydTxt = fmtNum(fyd, 2);
+    const ftdTxt = fmtNum(ftd, 2);
     const [svgRef, viewBox] = useCenteredViewBox(W, H, [fydTxt, ftdTxt, model]);
 
     return (
@@ -69,14 +69,14 @@ export default function SteelDiagram({ fyd, model = "ep", ks = 1.15 }) {
                 {hardening && <line x1={ox} y1={yTop} x2={xUd} y2={yTop} stroke="#94a3b8" strokeWidth="0.5" strokeDasharray="3 3" />}
 
                 {/* assi a freccia */}
-                <line x1={ox} y1={oy} x2={W - 8} y2={oy} stroke="#334155" strokeWidth="1.2" markerEnd={`url(#${arrowId})`} />
+                <line x1={ox} y1={oy} x2={W - 22} y2={oy} stroke="#334155" strokeWidth="1.2" markerEnd={`url(#${arrowId})`} />
                 <line x1={ox} y1={oy} x2={ox} y2={10} stroke="#334155" strokeWidth="1.2" markerEnd={`url(#${arrowId})`} />
                 {/* marcatore di interruzione di scala sull'asse ε */}
                 <path d={`M${xYd + 2},${oy + 4} l5,-8 M${xYd + 7},${oy + 4} l5,-8`} stroke="#334155" strokeWidth="1" fill="none" />
 
                 {/* etichette assi */}
-                <text x={ox - 5} y={18} textAnchor="end" fontSize="12" fill="#334155"><tspan fontStyle="italic">σ</tspan><tspan fontSize="9"> (MPa)</tspan></text>
-                <text x={W - 10} y={oy + 16} textAnchor="middle" fontSize="12" fontStyle="italic" fill="#334155">ε</text>
+                <text x={ox + 8} y={14} textAnchor="start" fontSize="12" fill="#334155"><tspan fontStyle="italic">σ</tspan><tspan fontSize="9"> (MPa)</tspan></text>
+                <text x={W - 11} y={oy + 4} textAnchor="start" fontSize="12" fontStyle="italic" fill="#334155">ε</text>
 
                 {/* f_yd */}
                 <text x={ox - 6} y={yYd + 3} textAnchor="end" fontSize="10" fill="#334155">

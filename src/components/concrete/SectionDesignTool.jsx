@@ -14,7 +14,7 @@ import {
     STEEL_MODELS,
     DEFAULT_INPUT,
 } from "../../lib/concrete/sectionDesign";
-import Tex, { Eq, texNum as T } from "../Tex";
+import Tex, { Eq, fmtNum, texNum as T } from "../Tex";
 import Sym, { sub } from "../Sym";
 import ConcreteDiagram from "./ConcreteDiagram";
 import SteelDiagram from "./SteelDiagram";
@@ -568,6 +568,8 @@ function CalcReport({ result, input, commercial }) {
     const mm = "\\ \\text{mm}";
     const mm2 = "\\ \\text{mm}^2";
     const MPa = "\\ \\text{MPa}";
+    // righe di formule allineate sull'"=", con la stessa spaziatura verticale
+    const matRows = (rows) => `\\begin{aligned}${rows.join("\\\\[10pt]")}\\end{aligned}`;
     // deformazione a cui il cls raggiunge f_cd, secondo il legame adottato
     const epsKnee = {
         rectangular: "\\varepsilon_{c4}=0{,}70\\text{‰}",
@@ -711,16 +713,22 @@ function CalcReport({ result, input, commercial }) {
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                     <div className="min-w-0 rounded-xl border border-slate-200 bg-white p-3">
                         <p className="text-xs font-semibold text-slate-600">Calcestruzzo {CONCRETE_CLASSES.find((m) => m.fck === fck)?.id}</p>
-                        <div className="text-[0.8em]"><Tex display>{`f_{ck}=${T(fck, 0)}${MPa}`}</Tex></div>
-                        <div className="text-[0.8em]"><Eq breakLine={false} lhs="f_{cd}" sym="\dfrac{\alpha_{cc}\,f_{ck}}{\gamma_c}" num={`\\dfrac{${T(alphaCc, 2)}\\cdot ${T(fck, 0)}}{${T(gammaC, 2)}}`} val={`${T(r.fcd, 2)}${MPa}`} /></div>
-                        <div className="text-[0.8em]"><Tex display>{`${epsKnee}\\qquad \\varepsilon_{cu}=3{,}5\\text{‰}`}</Tex></div>
+                        {/* formule in un unico blocco allineato: stessa spaziatura nei due box */}
+                        <div className="tex-left text-[0.8em]"><Tex display>{matRows([
+                            `f_{ck}&=${T(fck, 0)}${MPa}`,
+                            `f_{cd}&=\\dfrac{\\alpha_{cc}\\,f_{ck}}{\\gamma_c}=\\dfrac{${T(alphaCc, 2)}\\cdot ${T(fck, 0)}}{${T(gammaC, 2)}}=${T(r.fcd, 2)}${MPa}`,
+                            epsKnee.replace("=", "&="),
+                            `\\varepsilon_{cu}&=3{,}5\\text{‰}`,
+                        ])}</Tex></div>
                     </div>
                     <div className="min-w-0 rounded-xl border border-slate-200 bg-white p-3">
                         <p className="text-xs font-semibold text-slate-600">Acciaio {STEEL_GRADES.find((m) => m.fyk === fyk)?.id}</p>
-                        <div className="text-[0.8em]"><Tex display>{`f_{yk}=${T(fyk, 0)}${MPa}`}</Tex></div>
-                        <div className="text-[0.8em]"><Eq breakLine={false} lhs="f_{yd}" sym="\dfrac{f_{yk}}{\gamma_s}" num={`\\dfrac{${T(fyk, 0)}}{${T(gammaS, 2)}}`} val={`${T(r.fyd, 2)}${MPa}`} /></div>
-                        <div className="text-[0.8em]"><Eq breakLine={false} lhs="\varepsilon_{yd}" sym="\dfrac{f_{yd}}{E_s}" num={`\\dfrac{${T(r.fyd, 2)}}{200\\,000}`} val={`${T(r.epsYd * 1000, 2)}\\text{‰}`} /></div>
-                        <div className="text-[0.8em]"><Tex display>{`\\varepsilon_{ud}=67{,}5\\text{‰}`}</Tex></div>
+                        <div className="tex-left text-[0.8em]"><Tex display>{matRows([
+                            `f_{yk}&=${T(fyk, 0)}${MPa}`,
+                            `f_{yd}&=\\dfrac{f_{yk}}{\\gamma_s}=\\dfrac{${T(fyk, 0)}}{${T(gammaS, 2)}}=${T(r.fyd, 2)}${MPa}`,
+                            `\\varepsilon_{yd}&=\\dfrac{f_{yd}}{E_s}=\\dfrac{${T(r.fyd, 2)}}{200\\,000}=${T(r.epsYd * 1000, 2)}\\text{‰}`,
+                            `\\varepsilon_{ud}&=67{,}5\\text{‰}`,
+                        ])}</Tex></div>
                     </div>
                 </div>
                 <p className="text-xs font-semibold text-slate-500">Legami costitutivi adottati:</p>
@@ -791,7 +799,7 @@ function CalcReport({ result, input, commercial }) {
                         sym={`n_{barre}\\,\\Phi_{barre}+(n_{barre}-1)\\cdot ${T(cm.gap, 0)}+2\\,\\Phi_{staffa}+2\\,d'`}
                         num={`${cm.nT}\\cdot ${T(cm.phiT, 0)}+${cm.nT - 1}\\cdot ${T(cm.gap, 0)}+2\\cdot ${T(phiStirrup, 0)}+2\\cdot ${T(c, 0)}`}
                         val={`${T(cm.width, 0)}${mm}\\;${cm.widthOk ? "\\le" : ">"}\\;B=${T(cm.widthLimit, 0)}${mm}`} />
-                    <p className={`text-xs ${cm.widthOk ? "text-emerald-600" : "text-red-600"}`}>{cm.widthOk ? "Verificato." : "Non verificato: aumentare B o ridurre il numero di barre."}</p>
+                    <Outcome ok={cm.widthOk}>{cm.widthOk ? "Verificato." : "Non verificato: aumentare B o ridurre il numero di barre."}</Outcome>
                 </Step>
             )}
 
@@ -799,17 +807,34 @@ function CalcReport({ result, input, commercial }) {
                 <Eq lhs="A_{s,min}" sym="\max\!\Big(0{,}26\tfrac{f_{ctm}}{f_{yk}}Bd,\;0{,}0013\,Bd\Big)" val={`${T(r.AsMin, 0)}${mm2}`} />
                 <Eq lhs="A_{s,max}" sym="0{,}04\,B\,h" val={`${T(r.AsMax, 0)}${mm2}`} />
                 <Tex display>{`A_{s,min}=${T(r.AsMin, 0)}\\;${minOk ? "\\le" : ">"}\\;A_s=${T(areaT, 0)}\\;${maxOk ? "\\le" : ">"}\\;A_{s,max}=${T(r.AsMax, 0)}${mm2}`}</Tex>
+                <Outcome ok={minOk && maxOk}>
+                    {sub(minOk && maxOk ? "Verificato."
+                        : !minOk ? "Non verificato: A_s < A_s,min, aumentare l'armatura tesa."
+                            : "Non verificato: A_s > A_s,max, aumentare la sezione.")}
+                </Outcome>
                 {hasCompr && (
                     <>
                         <p className="mt-1 text-xs font-semibold text-slate-500">Ipotesi di snervamento dell'armatura compressa:</p>
                         <Eq breakLine={false} lhs="\varepsilon_s'" sym="\varepsilon_{cu}\Big(1-\dfrac{c'}{x}\Big)" num={`3{,}5\\big(1-${T(cp, 0)}/${T(r.X, 1)}\\big)`} val={`${T(r.epsSc * 1000, 2)}\\text{‰}\\;${r.comprYield ? "\\ge" : "<"}\\;\\varepsilon_{yd}=${T(r.epsYd * 1000, 2)}\\text{‰}`} />
-                        <p className={`text-xs ${r.comprYield ? "text-emerald-600" : "text-amber-600"}`}>
+                        <Outcome ok={r.comprYield} warn>
                             {sub(r.comprYield ? "Ipotesi verificata: l'armatura compressa è snervata." : "Ipotesi NON verificata: A's non snervata (σ's < f_yd), risultato approssimato.")}
-                        </p>
+                        </Outcome>
                     </>
                 )}
             </Step>
         </div>
+    );
+}
+
+// Esito di una verifica nel foglio: icona (check / avviso) + testo colorato.
+function Outcome({ ok, warn = false, children }) {
+    const Icon = ok ? CheckCircle2 : AlertTriangle;
+    const color = ok ? "text-emerald-600" : warn ? "text-amber-600" : "text-red-600";
+    return (
+        <p className={`flex items-start gap-1.5 text-xs ${color}`}>
+            <Icon size={14} aria-hidden="true" className="mt-px shrink-0" />
+            <span>{children}</span>
+        </p>
     );
 }
 
@@ -1118,7 +1143,7 @@ function SideForcesDiagram({ result, unit = "mm", svgRef }) {
         if (!Number.isFinite(v)) return "-";
         return v.toLocaleString("it-IT", { minimumFractionDigits: 0, maximumFractionDigits: U_DEC[unit] });
     };
-    const kN = (N) => fmt(N / 1000, 1);
+    const kN = (N) => fmtNum(N / 1000, 1);
 
     // Geometria SPECCHIATA: la sezione di taglio è a sinistra del corpo trave, che
     // prosegue a destra; σ_c e le risultanti sono a sinistra del taglio.
@@ -1279,7 +1304,7 @@ function SideForcesDiagram({ result, unit = "mm", svgRef }) {
                 {/* azione applicata: M_Ed (blu) arco curvo che incrocia la freccia di N_Ed */}
                 {show.moment && <>
                     <path d={momPath} fill="none" stroke={MCOL} strokeWidth="2.2" markerEnd="url(#sf-ind)" />
-                    <text x={xMlab} y={yMlab} textAnchor="middle" fontSize="11" fill={MCOL}>M<tspan fontSize="8" dy="2">Ed</tspan><tspan dy="-2"> = {fmt(MEdSigned / 1e6, 1)} kNm</tspan></text>
+                    <text x={xMlab} y={yMlab} textAnchor="middle" fontSize="11" fill={MCOL}>M<tspan fontSize="8" dy="2">Ed</tspan><tspan dy="-2"> = {fmtNum(MEdSigned / 1e6, 1)} kNm</tspan></text>
                 </>}
             </svg>
             <p className="mt-1 text-center text-[11px] leading-tight text-slate-400"><Sym>
