@@ -1657,14 +1657,23 @@ function AdoptionUtilization({ adopted, required, label = "Sfruttamento barre", 
     return (
         <div className="mt-2">
             <p className="mb-1 text-[11px] font-medium normal-case tracking-normal text-slate-500">
-                {label}{!meetsRequirement && <span className="ml-1 font-semibold text-red-600">({errorText})</span>}
+                {label}
             </p>
-            <div className="flex items-center gap-3" aria-label={`${label} ${fmt(shown, 1)} per cento`}>
-                <div className="h-2 min-w-0 flex-1 overflow-hidden rounded-full bg-slate-200" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={shown} aria-valuetext={`${fmt(shown, 1)}%`}>
-                    <div className={`h-full rounded-full transition-[width] duration-300 ${meetsRequirement ? "bg-emerald-500" : "bg-red-500"}`} style={{ width: `${shown}%` }} />
+            {/* se insufficiente il messaggio d'errore prende il posto della barra
+                (stessa altezza: i box non cambiano dimensione) */}
+            {meetsRequirement ? (
+                <div className="flex h-4 items-center gap-3" aria-label={`${label} ${fmt(shown, 1)} per cento`}>
+                    <div className="h-2 min-w-0 flex-1 overflow-hidden rounded-full bg-slate-200" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={shown} aria-valuetext={`${fmt(shown, 1)}%`}>
+                        <div className="h-full rounded-full bg-emerald-500 transition-[width] duration-300" style={{ width: `${shown}%` }} />
+                    </div>
+                    <span className="shrink-0 text-xs font-semibold tabular-nums text-emerald-700">{fmt(shown, 1)}%</span>
                 </div>
-                <span className={`shrink-0 text-xs font-semibold tabular-nums ${meetsRequirement ? "text-emerald-700" : "text-red-600"}`}>{fmt(shown, 1)}%</span>
-            </div>
+            ) : (
+                <p role="alert" className="flex h-4 items-center gap-1 text-xs font-semibold normal-case tracking-normal text-red-600">
+                    <AlertTriangle size={13} aria-hidden="true" className="shrink-0" />
+                    {errorText.charAt(0).toUpperCase() + errorText.slice(1)}
+                </p>
+            )}
         </div>
     );
 }
