@@ -1964,7 +1964,44 @@ function BigResult({ title, titleSuffix, value, unit, note, children, onReset, r
         </div>
     );
 }
-function NumberField({ label, hint, unit, value, onChange, onBlur, min, step = "1", disabled = false }) {
+function formatNumericFieldValue(value) {
+    return value == null ? "" : String(value).replace(".", ",");
+}
+
+function NumberField({ label, hint, unit, value, onChange, onBlur, min, step = "any", disabled = false }) {
+    const [displayValue, setDisplayValue] = useState(() => formatNumericFieldValue(value));
+    const focusedRef = useRef(false);
+    const lastValueRef = useRef(value);
+
+    useEffect(() => {
+        if (Object.is(value, lastValueRef.current)) return;
+        lastValueRef.current = value;
+        if (!focusedRef.current) setDisplayValue(formatNumericFieldValue(value));
+    }, [value]);
+
+    const handleChange = (e) => {
+        const rawValue = e.target.value;
+        const normalizedValue = rawValue.replace(",", ".");
+        if (!/^[+-]?\d*\.?\d*$/.test(normalizedValue)) {
+            e.target.value = displayValue;
+            return;
+        }
+        setDisplayValue(normalizedValue.replace(".", ","));
+        onChange(normalizedValue);
+    };
+
+    const handleBlur = (e) => {
+        focusedRef.current = false;
+        let normalizedValue = e.target.value.replace(",", ".");
+        if (step === "1" && normalizedValue !== "" && Number.isFinite(Number(normalizedValue))) {
+            const wholeValue = Math.trunc(Number(normalizedValue));
+            normalizedValue = String(min == null ? wholeValue : Math.max(Number(min), wholeValue));
+            if (normalizedValue !== e.target.value.replace(",", ".")) onChange(normalizedValue);
+        }
+        onBlur?.(normalizedValue);
+        setDisplayValue(formatNumericFieldValue(lastValueRef.current));
+    };
+
     return (
         <label className="block">
             <span className="mb-1 block text-xs font-semibold text-slate-500">
@@ -1972,7 +2009,8 @@ function NumberField({ label, hint, unit, value, onChange, onBlur, min, step = "
                 {/* sottotitolo sotto l'etichetta */}
                 {hint && <span className="block text-[10px] font-normal text-slate-400">{hint}</span>}
             </span>
-            <input type="number" value={value} min={min} step={step} disabled={disabled} onChange={(e) => onChange(e.target.value)} onBlur={onBlur ? (e) => onBlur(e.target.value) : undefined}
+            <input type="text" inputMode="decimal" value={displayValue} disabled={disabled}
+                onFocus={() => { focusedRef.current = true; }} onChange={handleChange} onBlur={handleBlur}
                 className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400" />
         </label>
     );
