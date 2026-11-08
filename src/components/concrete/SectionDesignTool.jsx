@@ -3,7 +3,8 @@
 // Strumento: Progetto (dimensionamento) a flessione (SLU) di una sezione
 // rettangolare in c.a. — metodo degli appunti (X = 0.2593 d).
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { CheckCircle2, AlertTriangle, Info, RotateCcw, ChevronDown, Copy, Download, Check, FileDown, Eye, X as XIcon } from "lucide-react";
 import {
     designSection,
@@ -604,27 +605,64 @@ function InfoButton({ label, onClick }) {
     );
 }
 
+function useModalTransition(onClose) {
+    const [isVisible, setIsVisible] = useState(false);
+    const closeTimeoutRef = useRef(null);
+    const onCloseRef = useRef(onClose);
+    const isClosingRef = useRef(false);
+
+    useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
+    useEffect(() => {
+        let secondFrame;
+        const firstFrame = requestAnimationFrame(() => {
+            secondFrame = requestAnimationFrame(() => setIsVisible(true));
+        });
+        return () => {
+            cancelAnimationFrame(firstFrame);
+            if (secondFrame !== undefined) cancelAnimationFrame(secondFrame);
+            if (closeTimeoutRef.current !== null) window.clearTimeout(closeTimeoutRef.current);
+        };
+    }, []);
+
+    const close = useCallback(() => {
+        if (isClosingRef.current) return;
+        isClosingRef.current = true;
+        setIsVisible(false);
+        const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+        closeTimeoutRef.current = window.setTimeout(() => onCloseRef.current(), reducedMotion ? 0 : 400);
+    }, []);
+
+    const finishClose = useCallback((event) => {
+        if (isVisible || !isClosingRef.current || (event && (event.target !== event.currentTarget || event.propertyName !== "opacity"))) return;
+        if (closeTimeoutRef.current !== null) window.clearTimeout(closeTimeoutRef.current);
+        onCloseRef.current();
+    }, [isVisible]);
+
+    return { isVisible, close, finishClose };
+}
+
 // Modal con la tabella delle classi di calcestruzzo o degli acciai (NTC 2018 /
 // EC2), con la riga della classe in uso evidenziata.
 function MaterialInfoModal({ kind, fck, steelGrade, onClose }) {
+    const { isVisible, close, finishClose } = useModalTransition(onClose);
     useEffect(() => {
-        const onKey = (e) => { if (e.key === "Escape") onClose(); };
+        const onKey = (e) => { if (e.key === "Escape") close(); };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [onClose]);
+    }, [close]);
     const isConcrete = kind === "concrete";
     const th = "whitespace-nowrap border-b border-slate-200 px-2 py-1.5 text-center align-bottom font-semibold text-slate-600 first:text-left";
     const td = "whitespace-nowrap px-2 py-1 text-center tabular-nums first:text-left";
     const rowCls = (on) => (on ? "bg-sky-100 font-semibold text-slate-900" : "odd:bg-white even:bg-slate-50 text-slate-600");
-    return (
-        <div role="dialog" aria-modal="true" aria-label={isConcrete ? "Classi di calcestruzzo" : "Acciai da cemento armato"} className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/60 p-2 sm:p-6" onClick={onClose}>
-            <div className="w-full max-w-5xl overflow-hidden rounded-2xl bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
+    return createPortal((
+        <div role="dialog" aria-modal="true" aria-label={isConcrete ? "Classi di calcestruzzo" : "Acciai da cemento armato"} className={`fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/60 p-2 transition-opacity duration-300 ease-in-out motion-reduce:transition-none ${isVisible ? "opacity-100" : "opacity-0"} sm:p-6`} onClick={close} onTransitionEnd={finishClose}>
+            <div className={`w-full max-w-5xl overflow-hidden rounded-2xl bg-white shadow-2xl transition-transform duration-300 ease-in-out motion-reduce:transition-none ${isVisible ? "translate-y-0 scale-100" : "translate-y-2 scale-[0.98]"}`} onClick={(e) => e.stopPropagation()}>
                 <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
                     <div className="min-w-0">
                         <p className="text-sm font-bold text-slate-800">{isConcrete ? "Classi di resistenza del calcestruzzo" : "Acciai per cemento armato"}</p>
                         <p className="text-[11px] text-slate-400">{isConcrete ? "NTC 2018 §4.1.2.1, §11.2.10 · EC2 Tab. 3.1" : "NTC 2018 §11.3.2 (Tab. 11.3.Ia / 11.3.Ib) · EC2 §3.2"}</p>
                     </div>
-                    <button type="button" onClick={onClose} aria-label="Chiudi" className="rounded-full p-1.5 text-slate-500 transition hover:bg-slate-100 hover:text-slate-800">
+                    <button type="button" onClick={close} aria-label="Chiudi" className="rounded-full p-1.5 text-slate-500 transition hover:bg-slate-100 hover:text-slate-800">
                         <XIcon size={18} />
                     </button>
                 </div>
@@ -720,20 +758,21 @@ function MaterialInfoModal({ kind, fck, steelGrade, onClose }) {
                 </div>
             </div>
         </div>
-    );
+    ), document.getElementById("modal-root"));
 }
 
 // Anteprima del PDF: il documento di stampa in una finestra sopra la pagina.
 function PdfPreview({ html, title, onClose }) {
     const frameRef = useRef(null);
+    const { isVisible, close, finishClose } = useModalTransition(onClose);
     useEffect(() => {
-        const onKey = (e) => { if (e.key === "Escape") onClose(); };
+        const onKey = (e) => { if (e.key === "Escape") close(); };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [onClose]);
-    return (
-        <div role="dialog" aria-modal="true" aria-label="Anteprima PDF" className="fixed inset-0 z-50 flex flex-col bg-slate-900/60 p-2 sm:p-6" onClick={onClose}>
-            <div className="mx-auto flex min-h-0 w-full max-w-5xl flex-1 flex-col overflow-hidden rounded-2xl bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
+    }, [close]);
+    return createPortal((
+        <div role="dialog" aria-modal="true" aria-label="Anteprima PDF" className={`fixed inset-0 z-50 flex flex-col bg-slate-900/60 p-2 transition-opacity duration-300 ease-in-out motion-reduce:transition-none ${isVisible ? "opacity-100" : "opacity-0"} sm:p-6`} onClick={close} onTransitionEnd={finishClose}>
+            <div className={`mx-auto flex min-h-0 w-full max-w-5xl flex-1 flex-col overflow-hidden rounded-2xl bg-white shadow-2xl transition-transform duration-300 ease-in-out motion-reduce:transition-none ${isVisible ? "translate-y-0 scale-100" : "translate-y-2 scale-[0.98]"}`} onClick={(e) => e.stopPropagation()}>
                 <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
                     <p className="min-w-0 truncate text-sm font-bold text-slate-800">Anteprima PDF</p>
                     <div className="flex shrink-0 items-center gap-2">
@@ -741,7 +780,7 @@ function PdfPreview({ html, title, onClose }) {
                             <FileDown size={14} />
                             Salva PDF
                         </button>
-                        <button type="button" onClick={onClose} aria-label="Chiudi anteprima" className="rounded-full p-1.5 text-slate-500 transition hover:bg-slate-100 hover:text-slate-800">
+                        <button type="button" onClick={close} aria-label="Chiudi anteprima" className="rounded-full p-1.5 text-slate-500 transition hover:bg-slate-100 hover:text-slate-800">
                             <XIcon size={18} />
                         </button>
                     </div>
@@ -749,7 +788,7 @@ function PdfPreview({ html, title, onClose }) {
                 <iframe ref={frameRef} title="Anteprima PDF dei passaggi di calcolo" srcDoc={html} className="min-h-0 w-full flex-1 bg-slate-200" />
             </div>
         </div>
-    );
+    ), document.getElementById("modal-root"));
 }
 
 // -------- Foglio dei passaggi di calcolo (formule in LaTeX) --------
@@ -1939,13 +1978,16 @@ function NumberField({ label, hint, unit, value, onChange, onBlur, min, step = "
     );
 }
 function SelectField({ label, value, onChange, options, labelExtra }) {
+    const selectId = useId();
     return (
-        <label className="block">
-            <span className="mb-1 flex items-center gap-1 text-xs font-semibold text-slate-500">{sub(label)}{labelExtra}</span>
-            <select value={value} onChange={(e) => onChange(e.target.value)}
+        <div className="block">
+            <div className="mb-1 flex items-center gap-1 text-xs font-semibold text-slate-500">
+                <label htmlFor={selectId}>{sub(label)}</label>{labelExtra}
+            </div>
+            <select id={selectId} value={value} onChange={(e) => onChange(e.target.value)}
                 className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100">
                 {options.map((opt) => <option key={String(opt.value) + opt.label} value={opt.value}>{opt.label}</option>)}
             </select>
-        </label>
+        </div>
     );
 }
