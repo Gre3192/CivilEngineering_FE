@@ -602,7 +602,6 @@ export default function SectionDesignTool() {
                             </AnimatedPanel>
                         </Card>
 
-                        <AssumptionsBox />
                         {previewHtml && <PdfPreview html={previewHtml} title={REPORT_TITLE} onClose={closePreview} />}
                     </>
                 )}
@@ -1848,6 +1847,8 @@ function SideForcesDiagram({ result, unit = "mm", svgRef, bare = false }) {
     const xStressL = xCut - stressW;       // σ_c a sinistra del taglio
     const yOf = (depth) => tensionTop ? secBot - depth * scale : secTop + depth * scale;
     const yNA = yOf(X), yEdge0 = yOf(0), yN = yOf(result.yG ?? h / 2); // baricentro G (h/2 se rettangolare)
+    // T: attacco ala-anima (l'ala è sul lembo superiore; profondità dal lembo compresso)
+    const yFl = result.isT ? yOf(tensionTop ? h - result.hf : result.hf) : null;
 
     const yCc = yOf(result.yc ?? kG * X), yCs = yOf(cC), yTs = yOf(d);
     let lblCc = yCc, lblCs = yCs;
@@ -1932,6 +1933,20 @@ function SideForcesDiagram({ result, unit = "mm", svgRef, bare = false }) {
                 <line x1={xCut} y1={secTop} x2={xCut} y2={secBot} stroke="#334155" strokeWidth="2" />
                 <path d={`M${xRight - 1},${secTop + 5} l6,-10 M${xRight + 6},${secTop + 5} l6,-10`} stroke="#334155" strokeWidth="1.3" fill="none" />
                 <path d={`M${xRight - 1},${secBot + 5} l6,-10 M${xRight + 6},${secBot + 5} l6,-10`} stroke="#334155" strokeWidth="1.3" fill="none" />
+
+                {/* sezione a T: attacco ala-anima (dove arriva l'ala), prolungato sul diagramma σ_c */}
+                {yFl !== null && <>
+                    {/* ombra sotto l'ala (sfumata verso il basso) */}
+                    <defs>
+                        <linearGradient id="sf-flange-shadow" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0" stopColor="#0f172a" stopOpacity="0.22" />
+                            <stop offset="1" stopColor="#0f172a" stopOpacity="0" />
+                        </linearGradient>
+                    </defs>
+                    <rect x={xCut} y={yFl} width={xRight - xCut} height={12} fill="url(#sf-flange-shadow)" />
+                    <line x1={xCut} y1={yFl} x2={xRight} y2={yFl} stroke="#334155" strokeWidth="1.2" />
+                    <line x1={xStressL} y1={yFl} x2={xCut} y2={yFl} stroke="#94a3b8" strokeWidth="0.8" strokeDasharray="3 3" />
+                </>}
 
                 {/* armature longitudinali continue (verso destra) */}
                 {hasCompr && <line x1={xCut} y1={yCs} x2={xRight + 6} y2={yCs} stroke="#64748b" strokeWidth="2.6" strokeLinecap="round" />}
@@ -2057,28 +2072,6 @@ function AdoptionUtilization({ adopted, required, label = "Sfruttamento barre", 
                     {errorText.charAt(0).toUpperCase() + errorText.slice(1)}
                 </p>
             )}
-        </div>
-    );
-}
-
-function AssumptionsBox() {
-    return (
-        <div className="flex items-start gap-3 rounded-2xl bg-slate-50 p-4 text-sm text-slate-500">
-            <Info size={18} className="mt-0.5 shrink-0 text-slate-400" />
-            <div>
-                <p className="font-semibold text-slate-600">Metodo di dimensionamento</p>
-                <p className="mt-1 leading-6"><Sym>
-                    SLU, pressoflessione. Convenzioni: M_Ed &gt; 0
-                    tende le fibre inferiori, N_Ed &gt; 0 compressione (M_Ed &lt; 0 → sezione ribaltata). La risultante del
-                    cls è C_c = ψ·B·x·f_cd con baricentro a λ·x; ψ e λ dipendono dal diagramma
-                    (rettangolo 0,80/0,40; parabola-rettangolo 0,81/0,416; triangolo-rettangolo
-                    0,75/0,389). Le due equazioni di equilibrio rispetto al baricentro (h/2) —
-                    traslazione C_c + C's − T_s = N_Ed e momento = M_Ed — forniscono le incognite:
-                    A_s (e A's) in «B e h», oppure la geometria (d o B, con rapporto β = A's/A_s)
-                    negli altri casi. Si adotta la geometria arrotondata e si scelgono le barre
-                    verificando l'ingombro.
-                </Sym></p>
-            </div>
         </div>
     );
 }
