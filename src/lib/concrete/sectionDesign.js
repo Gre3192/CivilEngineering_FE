@@ -169,7 +169,7 @@ export function designSection(input) {
         dTNom: r.tensionTop ? input.dSup : input.dInf,     // lato teso
         dCNom: r.tensionTop ? input.dInf : input.dSup,     // lato compresso
         reqWidth: layT.width,                              // ingombro della fila più piena
-        widthOk: layT.width <= r.B,
+        widthOk: layT.width <= (r.isT ? r.bw : r.B), // nella T le barre stanno nell'anima
     };
 }
 

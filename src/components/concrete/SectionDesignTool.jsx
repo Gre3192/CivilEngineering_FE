@@ -241,6 +241,16 @@ export default function SectionDesignTool() {
 
     const setField = (f) => (v) => setInput((p) => ({ ...p, [f]: v }));
     const setNumber = (f) => (v) => setInput((p) => ({ ...p, [f]: Number(v) || 0 }));
+    // Cambio del tipo di sezione: valori predefiniti che verificano la sezione e,
+    // per la T, ne mostrano bene la forma (ala 600×80, anima 300, h ≈ 300 mm).
+    const changeSectionType = (type) => {
+        if (type === (input.sectionType ?? "rect")) return;
+        setInput((p) => (type === "T"
+            ? { ...p, sectionType: "T", B: 600, bw: 300, hf: 80, h: 300, MEd: 100, NEd: 0 }
+            : { ...p, sectionType: "rect", B: DEFAULT_INPUT.B, h: DEFAULT_INPUT.h, MEd: DEFAULT_INPUT.MEd, NEd: DEFAULT_INPUT.NEd }));
+        setAdoptedDimensions({});
+        setAdoptedReinforcement({});
+    };
     const setAdoptedD = (value) => setAdoptedDimensions((p) => value === ""
         ? { ...p, d: "", h: "" }
         : { ...p, d: value, h: String(+(Number(value) + coverT).toFixed(1)) });
@@ -272,7 +282,7 @@ export default function SectionDesignTool() {
                 <CollapsibleCard title="Dati di progetto" command={cardCommand}>
                     <div className="mb-3">
                         <span className="mb-1 block text-xs font-semibold text-slate-500">Sezione</span>
-                        <SegmentedToggle value={input.sectionType ?? "rect"} onChange={setField("sectionType")}
+                        <SegmentedToggle value={input.sectionType ?? "rect"} onChange={changeSectionType}
                             options={[{ id: "rect", label: "Rettangolare" }, { id: "T", label: "a T" }]} />
                     </div>
                     <div className="mb-3">
@@ -1472,7 +1482,6 @@ function HDim({ dimY, xA, xB, edgeY, label, color = "#64748b", fontSize = 11, bo
 
 function VDim({ dimX, yA, yB, edgeX, label, color = "#475569" }) {
     const mid = (yA + yB) / 2;
-    const tooShort = Math.abs(yB - yA) < 16;
     return (
         <g stroke={color} fill={color}>
             {/* linee di estensione dal bordo/feature alla linea di quota */}
@@ -1483,12 +1492,8 @@ function VDim({ dimX, yA, yB, edgeX, label, color = "#475569" }) {
             {/* frecce */}
             <polygon points={`${dimX},${yA} ${dimX - 2.5},${yA + 6} ${dimX + 2.5},${yA + 6}`} stroke="none" />
             <polygon points={`${dimX},${yB} ${dimX - 2.5},${yB - 6} ${dimX + 2.5},${yB - 6}`} stroke="none" />
-            {/* etichetta */}
-            {tooShort ? (
-                <text x={dimX - 5} y={mid + 3} fontSize="11" fontWeight="bold" textAnchor="end" stroke="none">{label}</text>
-            ) : (
-                <text x={dimX - 4} y={mid} fontSize="11" fontWeight="bold" textAnchor="middle" stroke="none" transform={`rotate(-90 ${dimX - 4} ${mid})`}>{label}</text>
-            )}
+            {/* etichetta sempre verticale, lungo la linea di quota (anche se la quota è corta) */}
+            <text x={dimX - 4} y={mid} fontSize="11" fontWeight="bold" textAnchor="middle" stroke="none" transform={`rotate(-90 ${dimX - 4} ${mid})`}>{label}</text>
         </g>
     );
 }
@@ -1764,10 +1769,10 @@ function DesignDrawing({ result, B, layT, layC, hanger = null, dTNom = 40, dCNom
                 {/* base: quota con frecce (se le quote sono attive) altrimenti etichetta */}
                 {show.dims ? (
                     isT
-                        ? <HDim dimY={secTop + ht + 34} xA={webLeft} xB={webRight} edgeY={secTop + ht} label={`b_w = ${fmtU(bwT)}`} />
+                        ? <HDim dimY={secTop + ht + 34} xA={webLeft} xB={webRight} edgeY={secTop + ht} label={svgSubText([["b"], ["w", true], [` = ${fmtU(bwT)}`]])} />
                         : <HDim dimY={secTop + ht + 34} xA={secLeft} xB={secRight} edgeY={secTop + ht} label={`B = ${fmtU(B)}`} color={bColor} />
                 ) : (
-                    <text x={secLeft + w / 2} y={secTop + ht + 20} textAnchor="middle" fontSize="11" fill={isT ? INPUT_COLOR : bColor}>{isT ? `b_w = ${fmtU(bwT)}` : `B = ${fmtU(B)}`}</text>
+                    <text x={secLeft + w / 2} y={secTop + ht + 20} textAnchor="middle" fontSize="11" fill={isT ? INPUT_COLOR : bColor}>{isT ? svgSubText([["b"], ["w", true], [` = ${fmtU(bwT)}`]]) : `B = ${fmtU(B)}`}</text>
                 )}
                 {showStirrup && <text x={secLeft + w / 2} y={secTop + ht + labelY[0]} textAnchor="middle" fontSize="10" fill={STIRRUP_COL}>staffa φ{fmt(phiStirrup, 0)}</text>}
                 {show.bars && nBars > 0 && <text x={secLeft + w / 2} y={secTop + ht + labelY[1]} textAnchor="middle" fontSize="10" fill="#0f172a">armatura tesa φ{fmt(phi, 0)}</text>}
