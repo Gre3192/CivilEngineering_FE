@@ -246,7 +246,7 @@ export default function SectionDesignTool() {
                             : <NumberField label="Larghezza B" unit="mm" value={input.B} onChange={setNumber("B")} />}
                         {input.mode === "fixBH"
                             ? <NumberField label="Altezza h" unit="mm" value={input.h} onChange={setNumber("h")} />
-                            : <NumberField label="β = A's/As" value={input.beta} step="0.05" onChange={setNumber("beta")} disabled={topGiven} hint={topGiven ? "non usato: A's assegnata" : undefined} />}
+                            : <NumberField label={<>β = A's/As{topGiven && <span className="ml-1 font-normal text-slate-400">(A's assegnata)</span>}</>} value={input.beta} step="0.05" onChange={setNumber("beta")} disabled={topGiven} />}
                     </div>
                     <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
                         <p className="mb-2 text-xs font-semibold text-slate-600">Copriferri</p>
@@ -300,13 +300,13 @@ export default function SectionDesignTool() {
                     </div>
                     <label className="mt-3 flex cursor-pointer items-start gap-2 text-xs font-semibold text-slate-600">
                         <input type="checkbox" checked={!!input.hangerBars} onChange={(e) => setField("hangerBars")(e.target.checked)} className="mt-0.5 h-4 w-4 accent-sky-600" />
-                        <span>Barre superiori costruttive (2 reggistaffa)<span className="block text-[10px] font-normal text-slate-400">per ancorare la staffa se il calcolo non richiede armatura compressa</span></span>
+                        <span>Barre {input.MEd < 0 ? "inferiori" : "superiori"} costruttive (2 reggistaffa)<span className="block text-[10px] font-normal text-slate-400">per ancorare la staffa se il calcolo non richiede armatura compressa</span></span>
                     </label>
                     {input.hangerBars && (
                         <div className="mt-3 space-y-3 border-l-2 border-slate-100 pl-3">
                             <label className="flex cursor-pointer items-start gap-2 text-xs font-semibold text-slate-600">
                                 <input type="checkbox" checked={!!input.hangerInCalc} onChange={(e) => setField("hangerInCalc")(e.target.checked)} className="mt-0.5 h-4 w-4 accent-sky-600" />
-                                <span>Considera le barre superiori nel calcolo<span className="block text-[10px] font-normal text-slate-400">A's assegnata (si sceglie nel box Armatura compressa); sostituisce β</span></span>
+                                <span>Considera le barre {input.MEd < 0 ? "inferiori" : "superiori"} nel calcolo<span className="block text-[10px] font-normal text-slate-400">A's assegnata (si sceglie nel box Armatura compressa); sostituisce β</span></span>
                             </label>
                             {!input.hangerInCalc && (
                                 <div className="grid grid-cols-2 gap-3">
@@ -462,7 +462,7 @@ export default function SectionDesignTool() {
                                 </div>
                             </div>
                             {exportMessage && <p role="status" className="mb-2 text-right text-xs text-slate-500">{exportMessage}</p>}
-                            <div className="mx-auto max-w-[480px]">
+                            <div className="mx-auto max-w-[560px]">
                                 <DesignDrawing result={drawingResult} B={adoptedB} layT={adoptedLayT} layC={adoptedLayC} hanger={hanger} dTNom={result.dTNom} dCNom={result.dCNom} phiStirrup={input.phiStirrup} cLeft={input.cLeft} cRight={input.cRight} moment={input.MEd} mode="fixBH" unit={drawUnit} svgRef={drawingSvgRef} />
                             </div>
                         </Card>
@@ -1107,7 +1107,7 @@ function CalcReport({ result, input, commercial, sectionDrawing, forcesDrawing }
                     <div className="space-y-4">
                         <div className="rounded-xl border border-slate-200 bg-white p-3">
                             <p className="mb-2 text-xs font-semibold text-slate-600">Sezione progettata</p>
-                            <div className="mx-auto max-w-[440px]">{sectionDrawing}</div>
+                            <div className="mx-auto max-w-[560px]">{sectionDrawing}</div>
                         </div>
                         <div className="rounded-xl border border-slate-200 bg-white p-3">
                             <p className="mb-2 text-xs font-semibold text-slate-600">Forze interne (sezione di lato)</p>
@@ -1295,7 +1295,7 @@ function VDim({ dimX, yA, yB, edgeX, label, color = "#475569" }) {
 // -------- Disegno della sezione progettata con quote --------
 // Il box (viewBox) ha dimensioni FISSE: la sezione viene scalata per entrare
 // nell'area di disegno mantenendo le proporzioni, e centrata.
-const BOX_W = 440;
+const BOX_W = 520;
 const BOX_H = 360;
 const SIDE_BOX_W = 520;
 const SIDE_BOX_H = 300;
@@ -1314,8 +1314,13 @@ function DesignDrawing({ result, B, layT, layC, hanger = null, dTNom = 40, dCNom
     const rowsC = hangerOnly ? [hanger.n] : layC?.rows?.length && nBarsPrime > 0 ? layC.rows : nBarsPrime > 0 ? [nBarsPrime] : [];
     const hasTop = rowsC.length > 0;
     const multiT = rowsT.length > 1, multiC = rowsC.length > 1;
-    const cP = dCNom + (layC?.delta || 0); // d'' (efficace): dal lembo superiore al baricentro delle barre compresse
-    const c = h - d; // d' (efficace): dal lembo inferiore al baricentro delle barre tese
+    // Le profondità sono misurate dal lembo COMPRESSO (riferimento di progetto).
+    // Con M_Ed < 0 il lembo compresso è quello inferiore: il disegno si ribalta
+    // (barre tese in alto) e i copriferri cambiano nome (d'' lato teso, d' lato compresso).
+    const flip = !!result.tensionTop;
+    const symT = flip ? "d''" : "d'", symC = flip ? "d'" : "d''";
+    const cP = dCNom + (layC?.delta || 0); // copriferro efficace lato compresso (al baricentro delle barre compresse)
+    const c = h - d; // copriferro efficace lato teso (al baricentro delle barre tese)
 
     // Colore delle quote B/h: grigio = dato di input, nero = valore calcolato.
     // fixB → B input, h calcolata; fixH → h input, B calcolata; fixBH → entrambe input.
@@ -1339,8 +1344,8 @@ function DesignDrawing({ result, B, layT, layC, hanger = null, dTNom = 40, dCNom
     };
 
     // Margini per le quote (fissi) e area utile di disegno
-    const mL = 72;
-    const mR = 64;
+    const mL = 160; // spazio per le quote e per le azioni M_Ed / N_Ed
+    const mR = mL; // margini uguali: la sezione resta sempre centrata nel disegno
     const mT = 24;
     const mB = 104;
     const availW = BOX_W - mL - mR;
@@ -1353,10 +1358,18 @@ function DesignDrawing({ result, B, layT, layC, hanger = null, dTNom = 40, dCNom
     const secLeft = mL + (availW - w) / 2;
     const secTop = mT + (availH - ht) / 2;
     const secRight = secLeft + w;
-    const momentX = secLeft - 62;
-    const momentRadius = Math.min(55, ht * 0.3);
-    const momentCurveWidth = momentRadius * 0.9;
-    const yOf = (depth) => secTop + depth * scale;
+    // azioni M_Ed / N_Ed a sinistra delle quote (x, d), alla quota h/2
+    const ACT_COL = "#2563eb";
+    const actHasN = Math.abs(result.NEd || 0) > 0.5; // N_Ed diverso da zero
+    const actY = secTop + ht / 2;
+    const actHead = secLeft - 56, actTail = actHead - 50;  // freccia di N_Ed
+    const actCross = actTail + 16, actBw = 24, actMr = 26; // arco di M_Ed (come nel disegno delle forze)
+    const actXa = actCross + actBw;
+    const actMomPath = result.tensionTop
+        ? `M${actXa},${actY - actMr} C${actCross},${actY - actMr * 0.5} ${actCross},${actY + actMr * 0.5} ${actXa},${actY + actMr}`
+        : `M${actXa},${actY + actMr} C${actCross},${actY + actMr * 0.5} ${actCross},${actY - actMr * 0.5} ${actXa},${actY - actMr}`;
+    const actMlabY = result.tensionTop ? actY + actMr + 14 : actY - actMr - 8;
+    const yOf = (depth) => (flip ? secTop + (h - depth) * scale : secTop + depth * scale);
 
     // Posizione orizzontale delle barre: l'asse delle barre d'angolo è a
     // (c + phi_st + phi/2) dal bordo sinistro e (c' + phi_st + phi/2) dal bordo
@@ -1400,8 +1413,11 @@ function DesignDrawing({ result, B, layT, layC, hanger = null, dTNom = 40, dCNom
     const cornerL = (p) => secLeft + latL(p) * scale, cornerR = (p) => secLeft + (B - latR(p)) * scale;
     const stLeft = Math.min(cornerL(phi) - offPx, hasTop ? cornerL(phiPrime) - offPxPrime : Infinity);
     const stRight = Math.max(cornerR(phi) + offPx, hasTop ? cornerR(phiPrime) + offPxPrime : -Infinity);
-    const stBottom = yOf(yRowT(0)) + offPx;
-    const stTop = yOf(dCNom) - (hasTop ? offPxPrime : offPx);
+    const sgnT = flip ? -1 : 1; // verso (in y) dal centro della sezione al lato teso
+    const stEdgeT = yOf(yRowT(0)) + sgnT * offPx;
+    const stEdgeC = yOf(dCNom) - sgnT * (hasTop ? offPxPrime : offPx);
+    const stBottom = Math.max(stEdgeT, stEdgeC);
+    const stTop = Math.min(stEdgeT, stEdgeC);
     const stX = stLeft;
     const stY = stTop;
     const stW = stRight - stLeft;
@@ -1443,13 +1459,13 @@ function DesignDrawing({ result, B, layT, layC, hanger = null, dTNom = 40, dCNom
                 <Toggle k="stirrup" label="Staffa" color={STIRRUP_COL} />
                 <Toggle k="bars" label="Armature" color="#0f172a" />
                 <Toggle k="axes" label="Linea media barre" color="#d97706" />
-                <Toggle k="moment" label="Momento" color="#16a34a" />
+                <Toggle k="moment" label="Azioni" color="#2563eb" />
                 <Toggle k="dims" label="Quote" color="#64748b" />
             </div>}
 
             <svg ref={svgRef} width="100%" viewBox={`0 ${vbY} ${BOX_W} ${vbH}`} role="img" aria-label="Sezione progettata quotata">
                 {/* zona compressa + contorno */}
-                <rect x={secLeft} y={secTop} width={w} height={Math.min(X * scale, ht)} fill="#e0f2fe" />
+                <rect x={secLeft} y={flip ? secTop + ht - Math.min(X * scale, ht) : secTop} width={w} height={Math.min(X * scale, ht)} fill="#e0f2fe" />
                 <rect x={secLeft} y={secTop} width={w} height={ht} fill="none" stroke="#334155" strokeWidth="2" />
 
                 {/* staffa (tangente alle armature) */}
@@ -1470,19 +1486,20 @@ function DesignDrawing({ result, B, layT, layC, hanger = null, dTNom = 40, dCNom
                     <line x1={secLeft} y1={yOf(X)} x2={secRight} y2={yOf(X)} stroke="#0284c7" strokeWidth="1.5" strokeDasharray="6 4" />
                 )}
 
-                {/* verso del momento flettente */}
+                {/* azioni applicate (come nel disegno delle forze interne): M_Ed arco che
+                    incrocia la freccia di N_Ed a h/2, a sinistra delle quote; i valori sono
+                    in modulo, il segno è dato dal verso delle frecce */}
                 {show.moment && (
                     <g>
                         <defs>
-                            <marker id="moment-arrowhead" markerWidth="7" markerHeight="7" refX="5.5" refY="3.5" orient="auto" markerUnits="userSpaceOnUse">
-                                <path d="M0,0 L7,3.5 L0,7 Z" fill="#16a34a" />
-                            </marker>
+                            <marker id="dd-ind" markerUnits="userSpaceOnUse" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill={ACT_COL} /></marker>
                         </defs>
-                        <path
-                            d={`M ${momentX} ${secTop + ht / 2 + momentRadius} C ${momentX - momentCurveWidth} ${secTop + ht / 2 + momentRadius * 0.7}, ${momentX - momentCurveWidth} ${secTop + ht / 2 - momentRadius * 0.7}, ${momentX} ${secTop + ht / 2 - momentRadius}`}
-                            fill="none" stroke="#16a34a" strokeWidth="2" markerEnd="url(#moment-arrowhead)"
-                        />
-                        <text x={momentX - momentCurveWidth} y={secTop + ht / 2 + 4} textAnchor="middle" fontSize="12" fontWeight="bold" fill="#16a34a">M</text>
+                        <path d={actMomPath} fill="none" stroke={ACT_COL} strokeWidth="2.2" markerEnd="url(#dd-ind)" />
+                        <text x={actHead - 2} y={actMlabY} textAnchor="end" fontSize="11" fill={ACT_COL}>M<tspan fontSize="8" dy="2">Ed</tspan><tspan dy="-2"> = {fmtNum(Math.abs(result.MEdSigned ?? moment * 1e6) / 1e6, 1)} kNm</tspan></text>
+                        {actHasN && (result.NEd > 0
+                            ? <line x1={actTail} y1={actY} x2={actHead} y2={actY} stroke={ACT_COL} strokeWidth="2.2" markerEnd="url(#dd-ind)" />
+                            : <line x1={actHead} y1={actY} x2={actTail} y2={actY} stroke={ACT_COL} strokeWidth="2.2" markerEnd="url(#dd-ind)" />)}
+                        {actHasN && <text x={actCross - 6} y={actY + 16} textAnchor="end" fontSize="11" fill={ACT_COL}>N<tspan fontSize="8" dy="2">Ed</tspan><tspan dy="-2"> = {fmtNum(Math.abs(result.NEd) / 1000, 1)} kN</tspan></text>}
                     </g>
                 )}
 
@@ -1497,12 +1514,12 @@ function DesignDrawing({ result, B, layT, layC, hanger = null, dTNom = 40, dCNom
                 {/* quote */}
                 {show.dims && (
                     <>
-                        {/* a sinistra: x (asse neutro) e la colonna d + d' (= h) */}
+                        {/* a sinistra: x (asse neutro) e la colonna d + copriferro lato teso (= h), dal lembo compresso */}
                         <VDim dimX={secLeft - 16} yA={yOf(0)} yB={yOf(X)} edgeX={secLeft} label="x" color="#0284c7" />
                         <VDim dimX={secLeft - 38} yA={yOf(0)} yB={yOf(d)} edgeX={secLeft} label={`d=${fmtU(d)}`} color="#334155" />
-                        <VDim dimX={secLeft - 38} yA={yOf(d)} yB={yOf(h)} edgeX={secLeft} label={multiT ? svgSubText([["d'"], ["eff", true], [`=${fmtU(c)}`]]) : `d'=${fmtU(c)}`} color="#64748b" />
-                        {/* a destra: d'' (lembo superiore -> As') e h */}
-                        <VDim dimX={secRight + 16} yA={yOf(0)} yB={yOf(cP)} edgeX={secRight} label={multiC ? svgSubText([["d''"], ["eff", true], [`=${fmtU(cP)}`]]) : `d''=${fmtU(cP)}`} color="#64748b" />
+                        <VDim dimX={secLeft - 38} yA={yOf(d)} yB={yOf(h)} edgeX={secLeft} label={multiT ? svgSubText([[symT], ["eff", true], [`=${fmtU(c)}`]]) : `${symT}=${fmtU(c)}`} color="#64748b" />
+                        {/* a destra: copriferro lato compresso (-> As') e h */}
+                        <VDim dimX={secRight + 16} yA={yOf(0)} yB={yOf(cP)} edgeX={secRight} label={multiC ? svgSubText([[symC], ["eff", true], [`=${fmtU(cP)}`]]) : `${symC}=${fmtU(cP)}`} color="#64748b" />
                         <VDim dimX={secRight + 38} yA={yOf(0)} yB={yOf(h)} edgeX={secRight} label={`h=${fmtU(h)}`} color={hColor} />
                     </>
                 )}
@@ -1559,7 +1576,7 @@ function SideForcesDiagram({ result, unit = "mm", svgRef, bare = false }) {
         ? [["C'"], ["s", true], [" = A'"], ["s", true], ["·f"], ["yd", true]]
         : [["C'"], ["s", true], [" = β·A"], ["s", true], ["·f"], ["yd", true]];
     const lblTsParts = [["T"], ["s", true], [" = A"], ["s", true], ["·f"], [fSteel, true]];
-    const hasN = Math.abs(Ned) > 1000; // > 1 kN
+    const hasN = Math.abs(Ned) > 0.5; // N_Ed diverso da zero
     // In fase di progetto x e i bracci dipendono dalle incognite: le quote sono
     // simboliche (d' / d'' copriferri verticali inferiore / superiore).
     const symT = tensionTop ? "d''" : "d'", symC = tensionTop ? "d'" : "d''";
@@ -1708,7 +1725,8 @@ function SideForcesDiagram({ result, unit = "mm", svgRef, bare = false }) {
                     {hasN && (Ned > 0
                         ? <line x1={xTail} y1={yN} x2={xHead} y2={yN} stroke={NCOL} strokeWidth="2.2" markerEnd="url(#sf-ind)" />
                         : <line x1={xHead} y1={yN} x2={xTail} y2={yN} stroke={NCOL} strokeWidth="2.2" markerEnd="url(#sf-ind)" />)}
-                    {hasN && <text x={xcross - 6} y={yN + 16} textAnchor="end" fontSize="11" fill={NCOL}>N<tspan fontSize="8" dy="2">Ed</tspan><tspan dy="-2"> = {kN(Ned)} kN</tspan></text>}
+                    {/* valori in modulo: il segno è dato dal verso delle frecce */}
+                    {hasN && <text x={xcross - 6} y={yN + 16} textAnchor="end" fontSize="11" fill={NCOL}>N<tspan fontSize="8" dy="2">Ed</tspan><tspan dy="-2"> = {kN(Math.abs(Ned))} kN</tspan></text>}
 
                     {/* T_s (trazione → via dalla sezione, sinistra) */}
                     {show.dims && <line x1={xTail} y1={yTs} x2={qTs} y2={yTs} stroke="#94a3b8" strokeWidth="1" strokeDasharray="3 3" />}
@@ -1735,7 +1753,7 @@ function SideForcesDiagram({ result, unit = "mm", svgRef, bare = false }) {
                 {/* azione applicata: M_Ed (blu) arco curvo che incrocia la freccia di N_Ed */}
                 {show.moment && <>
                     <path d={momPath} fill="none" stroke={MCOL} strokeWidth="2.2" markerEnd="url(#sf-ind)" />
-                    <text x={xMlab} y={yMlab} textAnchor="middle" fontSize="11" fill={MCOL}>M<tspan fontSize="8" dy="2">Ed</tspan><tspan dy="-2"> = {fmtNum(MEdSigned / 1e6, 1)} kNm</tspan></text>
+                    <text x={xMlab} y={yMlab} textAnchor="middle" fontSize="11" fill={MCOL}>M<tspan fontSize="8" dy="2">Ed</tspan><tspan dy="-2"> = {fmtNum(Math.abs(MEdSigned) / 1e6, 1)} kNm</tspan></text>
                 </>}
             </svg>
             <div className="mt-1 text-center text-[11px] leading-tight text-slate-400">
