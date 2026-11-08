@@ -60,6 +60,9 @@ export const DEFAULT_INPUT = {
     multiLayer: false, // consente di disporre le barre su più file se non entrano in una
     maxLayersBot: 2, // numero massimo di file inferiori
     maxLayersTop: 2, // numero massimo di file superiori
+    hangerBars: true, // 2 barre costruttive (reggistaffa) sul lato compresso se A's non serve
+    phiHanger: 12, // diametro delle barre costruttive [mm]
+    hangerInCalc: false, // considera le barre superiori nel calcolo (A's assegnata)
 };
 
 export const DESIGN_MODES = [
@@ -147,8 +150,8 @@ export function designSection(input) {
         r = designSectionCore({ ...input, dInf: input.dInf + addInf, dSup: input.dSup + addSup });
         if (!r.ok) return r;
         const common = { phi: r.phi, B: r.B, cLeft: r.cLeft, cRight: r.cRight, phiStirrup: input.phiStirrup };
-        layInf = barRows({ ...common, n: r.tensionTop ? r.nBarsPrime : r.nBars, maxRows: maxRows(input.maxLayersBot) });
-        laySup = barRows({ ...common, n: r.tensionTop ? r.nBars : r.nBarsPrime, maxRows: maxRows(input.maxLayersTop) });
+        layInf = barRows({ ...common, ...(r.tensionTop ? { phi: r.phiPrime } : {}), n: r.tensionTop ? r.nBarsPrime : r.nBars, maxRows: maxRows(input.maxLayersBot) });
+        laySup = barRows({ ...common, ...(r.tensionTop ? {} : { phi: r.phiPrime }), n: r.tensionTop ? r.nBars : r.nBarsPrime, maxRows: maxRows(input.maxLayersTop) });
         if (Math.abs(layInf.delta - addInf) < 1e-9 && Math.abs(laySup.delta - addSup) < 1e-9) break;
         addInf = layInf.delta;
         addSup = laySup.delta;
@@ -220,14 +223,20 @@ function designSectionCore(input) {
         concreteModel = "rectangular",
         steelModel = "ep",
         ks = 1.15,
+        AsPrimeGiven = 0,
+        nBarsPrimeGiven = 0,
+        phiPrimeGiven = 0,
     } = input;
+    // armatura compressa ASSEGNATA (barre superiori scelte dall'utente e
+    // considerate nel calcolo): C's = A's f_yd noto, β non si usa
+    const given = AsPrimeGiven > 0;
 
     const errors = [];
     if (mode !== "fixH" && !(Bin > 0)) errors.push("La larghezza B deve essere positiva.");
     if (mode !== "fixB" && !(hIn > Math.max(dInf, dSup))) errors.push("L'altezza h deve essere maggiore dei copriferri.");
     if (!(Math.abs(MEd_kNm) > 0)) errors.push("Il momento M_Ed deve essere diverso da zero.");
     if (!(fck > 0)) errors.push("Selezionare una classe di calcestruzzo.");
-    if (mode !== "fixBH" && !(beta >= 0 && beta < 0.95)) errors.push("beta = A's/A_s deve essere 0 ≤ β < 0,95.");
+    if (!given && mode !== "fixBH" && !(beta >= 0 && beta < 0.95)) errors.push("beta = A's/A_s deve essere 0 ≤ β < 0,95.");
     if (errors.length > 0) return { ok: false, errors };
 
     const fcd = (alphaCc * fck) / gammaC;
@@ -286,9 +295,46 @@ function designSectionCore(input) {
     let coeff1 = null, coeff2 = null, AsDesignRaw = null, M1 = null, M2 = null;
     let epsSc = null, sigmaSc = null, comprYield = true;
     let xFromXi = true; // x = xi*d (ipotesi campo 2-3); false se x ricavato dall'equilibrio
-    const betaEff = mode === "fixBH" ? 0 : beta;
+    const betaEff = mode === "fixBH" || given ? 0 : beta;
 
-    if (mode === "fixBH") {
+    if (given) {
+        // Armatura compressa assegnata: C's = A's f_yd. Le due equazioni si
+        // combinano nell'equilibrio alla rotazione attorno all'armatura tesa:
+        //   C_c (d - kG x) + C's (d - d_C) = M_Ed + N_Ed (h/2 - d_T)
+        // e A_s = (C_c + C's - N_Ed) / f_s dalla traslazione.
+        sigmaSc = sigmaScDes;
+        const Csg = AsPrimeGiven * sigmaSc;
+        AsPrime = AsPrimeGiven;
+        doubleReinf = true;
+        if (mode === "fixBH") {
+            // B, h note: incognite x e A_s
+            B = Bin; h = hIn; d = h - cT;
+            const Ms = Mabs + Ned * (h / 2 - cT) - Csg * (d - cC);
+            const P = psi * fcd * B;
+            const disc = d * d - (4 * kG * Ms) / P;
+            X = disc >= 0 ? (d - Math.sqrt(disc)) / (2 * kG) : d / (2 * kG);
+            X = Math.max(X, 1e-3);
+            xFromXi = false;
+        } else if (mode === "fixH") {
+            // h nota, x = xi d: incognite B e A_s
+            h = hIn; d = h - cT; X = xi * d;
+            const Cc = (Mabs + Ned * (h / 2 - cT) - Csg * (d - cC)) / (d - kG * X);
+            Breq = Cc / (psi * X * fcd);
+            B = Math.max(Breq, 1);
+        } else {
+            // B nota, x = xi d, h = d + d_T: equazione di 2° grado in d
+            //   a d² + (C's - N/2) d - (C's d_C + M - N d_T / 2) = 0
+            B = Bin;
+            const a = psi * fcd * B * xi * (1 - kG * xi);
+            const b = Csg - Ned / 2, c0 = Csg * cC + Mabs - (Ned * cT) / 2;
+            dReq = (-b + Math.sqrt(b * b + 4 * a * c0)) / (2 * a);
+            d = dReq; h = d + cT; X = xi * d;
+        }
+        const Cc = psi * fcd * B * X;
+        As = Math.max((Cc + Csg - Ned) / fs, 0);
+        epsSc = epsScOf(X);
+        comprYield = epsSc >= epsYd;
+    } else if (mode === "fixBH") {
         // B e h assegnate: x = xi*d, incognite A_s e A's dalle due equazioni:
         //   C_c + A's f_yd - A_s f_s = N_Ed
         //   C_c (h/2 - kG x) + A's f_yd (h/2 - c') + A_s f_s (h/2 - c) = M_Ed
@@ -375,7 +421,10 @@ function designSectionCore(input) {
     const AsProvided = nBars * areaPhi;
     let nBarsPrime = 0;
     let AsPrimeProvided = 0;
-    if (AsPrime > 0) {
+    if (given) {
+        nBarsPrime = nBarsPrimeGiven;
+        AsPrimeProvided = AsPrimeGiven;
+    } else if (AsPrime > 0) {
         nBarsPrime = Math.max(2, Math.ceil(AsPrime / areaPhi));
         AsPrimeProvided = nBarsPrime * areaPhi;
     }
@@ -453,6 +502,8 @@ function designSectionCore(input) {
         sigmaSc,
         comprYield,
         phi,
+        phiPrime: given ? phiPrimeGiven : phi,
+        givenTop: given,
         areaPhi,
         nBars,
         AsProvided,
