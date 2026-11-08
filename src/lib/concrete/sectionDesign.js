@@ -63,6 +63,10 @@ export const DEFAULT_INPUT = {
     hangerBars: true, // 2 barre costruttive (reggistaffa) sul lato compresso se A's non serve
     phiHanger: 12, // diametro delle barre costruttive [mm]
     hangerInCalc: false, // considera le barre superiori nel calcolo (A's assegnata)
+    sectionType: "rect", // "rect" rettangolare | "T" a T (ala sul lembo superiore)
+    bw: 300, // larghezza dell'anima della sezione a T [mm]
+    hf: 120, // spessore s dell'ala della sezione a T [mm]
+    flangeMethod: "simplified", // ala compressa: "simplified" (ali a f_cd) | "exact" (integrazione σ-ε)
 };
 
 export const DESIGN_MODES = [
@@ -149,7 +153,7 @@ export function designSection(input) {
     for (let it = 0; it < 12; it++) {
         r = designSectionCore({ ...input, dInf: input.dInf + addInf, dSup: input.dSup + addSup });
         if (!r.ok) return r;
-        const common = { phi: r.phi, B: r.B, cLeft: r.cLeft, cRight: r.cRight, phiStirrup: input.phiStirrup };
+        const common = { phi: r.phi, B: r.isT ? r.bw : r.B, cLeft: r.cLeft, cRight: r.cRight, phiStirrup: input.phiStirrup };
         layInf = barRows({ ...common, ...(r.tensionTop ? { phi: r.phiPrime } : {}), n: r.tensionTop ? r.nBarsPrime : r.nBars, maxRows: maxRows(input.maxLayersBot) });
         laySup = barRows({ ...common, ...(r.tensionTop ? {} : { phi: r.phiPrime }), n: r.tensionTop ? r.nBars : r.nBarsPrime, maxRows: maxRows(input.maxLayersTop) });
         if (Math.abs(layInf.delta - addInf) < 1e-9 && Math.abs(laySup.delta - addSup) < 1e-9) break;
@@ -226,7 +230,13 @@ function designSectionCore(input) {
         AsPrimeGiven = 0,
         nBarsPrimeGiven = 0,
         phiPrimeGiven = 0,
+        sectionType = "rect",
+        bw: bwIn = 300,
+        hf: hfIn = 120,
+        flangeMethod = "simplified",
     } = input;
+    const isT = sectionType === "T";
+    const tBw = Number(bwIn) || 0, tS = Number(hfIn) || 0; // anima e spessore dell'ala
     // armatura compressa ASSEGNATA (barre superiori scelte dall'utente e
     // considerate nel calcolo): C's = A's f_yd noto, β non si usa
     const given = AsPrimeGiven > 0;
@@ -237,6 +247,12 @@ function designSectionCore(input) {
     if (!(Math.abs(MEd_kNm) > 0)) errors.push("Il momento M_Ed deve essere diverso da zero.");
     if (!(fck > 0)) errors.push("Selezionare una classe di calcestruzzo.");
     if (!given && mode !== "fixBH" && !(beta >= 0 && beta < 0.95)) errors.push("beta = A's/A_s deve essere 0 ≤ β < 0,95.");
+    if (isT) {
+        if (!(tBw > 0)) errors.push("La larghezza dell'anima b_w deve essere positiva.");
+        if (!(tS > 0)) errors.push("Lo spessore dell'ala s deve essere positivo.");
+        if (mode !== "fixH" && Bin > 0 && tBw > Bin) errors.push("La larghezza dell'ala B deve essere maggiore o uguale a b_w.");
+        if (mode !== "fixB" && hIn > 0 && !(hIn > tS)) errors.push("L'altezza h deve essere maggiore dello spessore dell'ala s.");
+    }
     if (errors.length > 0) return { ok: false, errors };
 
     const fcd = (alphaCc * fck) / gammaC;
@@ -291,13 +307,132 @@ function designSectionCore(input) {
         return { X: xS, As: Math.max((Cc - Ned) / fs, 0) };
     };
 
+    // --- Sezione a T (ala sul lembo superiore) ---------------------------------
+    // Profondità y misurate dal lembo COMPRESSO: con M_Ed > 0 è quello superiore
+    // (ala compressa), con M_Ed < 0 quello inferiore (anima compressa, ala tesa).
+    // Tensione nel cls alla profondità y (ε = ε_cu (x − y)/x) secondo il legame:
+    const sigmaC = (y, x) => {
+        const e = (EPS_CU * (x - y)) / x;
+        if (e <= 0) return 0;
+        if (concreteModel === "rectangular") return y <= 0.8 * x ? fcd : 0; // stress-block λ = 0,8
+        if (concreteModel === "bilinear") return e >= EPS_C3 ? fcd : (fcd * e) / EPS_C3;
+        return e >= EPS_C2 ? fcd : fcd * (1 - Math.pow(1 - e / EPS_C2, 2));
+    };
+    // ∫σ dy e ∫σ·y dy su [a, b] (Simpson), spezzando nei punti in cui il legame
+    // cambia andamento (fine dello stress-block o ginocchio), così è esatto/regolare
+    const intSigma = (a, b, x) => {
+        if (!(b > a)) return { F: 0, M: 0 };
+        const kink = concreteModel === "rectangular" ? 0.8 * x
+            : x * (1 - (concreteModel === "bilinear" ? EPS_C3 : EPS_C2) / EPS_CU);
+        const pts = kink > a && kink < b ? [a, kink, b] : [a, b];
+        let F = 0, M = 0;
+        for (let k = 0; k < pts.length - 1; k++) {
+            const p0 = pts[k], p1 = pts[k + 1], n = 200, hh = (p1 - p0) / n;
+            // valuta σ leggermente all'interno del tratto per non cadere sulla discontinuità
+            const sig = (y) => sigmaC(Math.min(Math.max(y, p0 + 1e-9 * hh), p1 - 1e-9 * hh), x);
+            let f = 0, m = 0;
+            for (let i = 0; i <= n; i++) {
+                const y = p0 + i * hh, w = i === 0 || i === n ? 1 : i % 2 ? 4 : 2, sv = sig(y);
+                f += w * sv; m += w * sv * y;
+            }
+            F += (f * hh) / 3; M += (m * hh) / 3;
+        }
+        return { F, M };
+    };
+    // Risultante del cls compresso: C_c, profondità y_c del suo punto di
+    // applicazione, quota d'anima e d'ali (sbalzi B − b_w) e posizione dell'asse neutro.
+    const concreteRes = (x, Bg, hg) => {
+        if (!isT) return { Cc: psi * fcd * Bg * x, yc: kG * x, CcW: psi * fcd * Bg * x, CcF: 0, inFlange: true };
+        const ov = Math.max(Bg - tBw, 0); // sbalzi dell'ala
+        if (!tensionTop && flangeMethod !== "exact") {
+            // metodo semplificato: asse neutro "nell'ala" se Ψx ≤ s (rettangolo B),
+            // altrimenti anima Ψ b_w x f_cd (a λx) + sbalzi (B − b_w) s f_cd (a s/2)
+            if (psi * x <= tS) return { Cc: psi * fcd * Bg * x, yc: kG * x, CcW: psi * fcd * tBw * x, CcF: psi * fcd * ov * x, inFlange: true };
+            const CcW = psi * fcd * tBw * x, CcF = ov * tS * fcd;
+            return { Cc: CcW + CcF, yc: (CcW * kG * x + CcF * tS / 2) / (CcW + CcF), CcW, CcF, inFlange: false };
+        }
+        if (tensionTop && flangeMethod !== "exact" && psi * x <= hg - tS) {
+            // anima compressa: rettangolo di larghezza b_w
+            return { Cc: psi * fcd * tBw * x, yc: kG * x, CcW: psi * fcd * tBw * x, CcF: 0, inFlange: true };
+        }
+        // integrazione del diagramma σ-ε sull'area compressa reale
+        const xa = Math.min(x, hg);
+        const web = intSigma(0, xa, x);
+        const fl = tensionTop ? intSigma(hg - tS, xa, x) : intSigma(0, Math.min(tS, xa), x);
+        const CcW = tBw * web.F, CcF = ov * fl.F, Cc = CcW + CcF;
+        return { Cc, yc: (tBw * web.M + ov * fl.M) / Cc, CcW, CcF, inFlange: tensionTop ? xa <= hg - tS : xa <= tS };
+    };
+    // baricentro della sezione (profondità dal lembo compresso)
+    const centroid = (Bg, hg) => {
+        if (!isT) return hg / 2;
+        const top = (Bg * tS * tS / 2 + tBw * (hg - tS) * (hg + tS) / 2) / (Bg * tS + tBw * (hg - tS));
+        return tensionTop ? hg - top : top;
+    };
+    let flangeNotNeeded = false;
+
     let B, h, d, X, z, As, AsPrime, dReq = null, Breq = null, doubleReinf = false;
     let coeff1 = null, coeff2 = null, AsDesignRaw = null, M1 = null, M2 = null;
     let epsSc = null, sigmaSc = null, comprYield = true;
     let xFromXi = true; // x = xi*d (ipotesi campo 2-3); false se x ricavato dall'equilibrio
     const betaEff = mode === "fixBH" || given ? 0 : beta;
 
-    if (given) {
+    if (isT) {
+        // Sezione a T: soluzione numerica delle stesse equazioni di equilibrio,
+        // rispetto al baricentro y_G della sezione:
+        //   C_c + C's − T_s = N_Ed
+        //   C_c (y_G − y_c) + C's (y_G − d_C) + T_s (d − y_G) = M_Ed
+        // (equivalente: C_c (d − y_c) + C's (d − d_C) = M_Ed + N_Ed (d − y_G)).
+        sigmaSc = sigmaScDes;
+        const Csg = given ? AsPrimeGiven * sigmaSc : 0;
+        // A_s dalla traslazione (β oppure A's assegnata)
+        const asOf = (Cc) => (given ? (Cc + Csg - Ned) / fs : (Cc - Ned) / (fs - beta * sigmaSc));
+        const resid = (Bg, hg, dg, x) => {
+            const { Cc, yc } = concreteRes(x, Bg, hg);
+            const yG = centroid(Bg, hg), As_ = asOf(Cc), Cs = given ? Csg : beta * sigmaSc * As_;
+            return Cc * (yG - yc) + Cs * (yG - cC) + As_ * fs * (dg - yG) - Mabs;
+        };
+        const bisect = (fn, lo, hi) => {
+            for (let i = 0; i < 120; i++) { const mid = (lo + hi) / 2; if (fn(lo) * fn(mid) <= 0) hi = mid; else lo = mid; }
+            return (lo + hi) / 2;
+        };
+        if (mode === "fixB") {
+            B = Bin;
+            const fn = (dT) => resid(B, dT + cT, dT, xi * dT);
+            let lo = Math.max(cT, cC, tS) + 2, hi = lo + 4;
+            while (fn(lo) * fn(hi) > 0 && hi < 8000) hi += 4;
+            dReq = bisect(fn, lo, hi);
+            d = dReq; h = d + cT; X = xi * d;
+        } else if (mode === "fixH") {
+            h = hIn; d = h - cT; X = xi * d;
+            const fn = (Bg) => resid(Bg, h, d, X);
+            if (fn(tBw) >= 0) { Breq = tBw; flangeNotNeeded = true; } // basta l'anima
+            else { let hi = tBw * 2; while (fn(hi) < 0 && hi < 1e6) hi *= 2; Breq = bisect(fn, tBw, hi); }
+            B = Math.max(Breq, 1);
+        } else {
+            B = Bin; h = hIn; d = h - cT;
+            const yG = centroid(B, h), target = Mabs + Ned * (d - yG);
+            const solveX = (Cs) => bisect((x) => { const r = concreteRes(x, B, h); return r.Cc * (d - r.yc) + Cs * (d - cC) - target; }, 1e-3, d);
+            if (given) {
+                X = solveX(Csg); xFromXi = false; AsPrime = AsPrimeGiven; doubleReinf = true;
+            } else {
+                X = xi * d;
+                const r0 = concreteRes(X, B, h);
+                const Cs = (target - r0.Cc * (d - r0.yc)) / (d - cC);
+                if (Cs > 0) { AsPrime = Cs / sigmaSc; doubleReinf = true; }
+                else { X = solveX(0); xFromXi = false; AsPrime = 0; doubleReinf = false; }
+            }
+        }
+        const Ccf = concreteRes(X, B, h).Cc;
+        if (mode === "fixBH") {
+            As = Math.max((Ccf + AsPrime * sigmaSc - Ned) / fs, 0);
+        } else {
+            As = Math.max(asOf(Ccf), 0);
+            AsPrime = given ? AsPrimeGiven : Math.max(beta * As, 0);
+            doubleReinf = AsPrime > 0;
+        }
+        epsSc = epsScOf(X);
+        comprYield = epsSc >= epsYd;
+    } else if (given) {
         // Armatura compressa assegnata: C's = A's f_yd. Le due equazioni si
         // combinano nell'equilibrio alla rotazione attorno all'armatura tesa:
         //   C_c (d - kG x) + C's (d - d_C) = M_Ed + N_Ed (h/2 - d_T)
@@ -408,11 +543,16 @@ function designSectionCore(input) {
         doubleReinf = AsPrime > 0;
     }
 
-    z = d - kG * X;
+    const cr = concreteRes(X, B, h);   // risultante del cls
+    const yG = centroid(B, h);          // baricentro della sezione (h/2 per il rettangolo)
+    z = d - cr.yc;
 
     // --- Armature minime e massime (NTC2018 4.1.6.1.1) ---
-    const AsMin = Math.max(0.26 * (fctm(fck) / fyk) * B * d, 0.0013 * B * d);
-    const AsMax = 0.04 * B * h;
+    // b_t = larghezza media della zona tesa (T: anima se l'ala è compressa)
+    const bt = isT ? (tensionTop ? B : tBw) : B;
+    const Ac = isT ? B * tS + tBw * (h - tS) : B * h;
+    const AsMin = Math.max(0.26 * (fctm(fck) / fyk) * bt * d, 0.0013 * bt * d);
+    const AsMax = 0.04 * Ac;
     const AsAdopt = Math.max(As, AsMin);
 
     // --- Scelta barre ---
@@ -431,15 +571,15 @@ function designSectionCore(input) {
 
     const gap = Math.max(phi, 20);
     const reqWidth = nBars * phi + (nBars - 1) * gap + 2 * phiStirrup + cLeft + cRight; // n·φ + (n-1)·i + 2·φ_st + c + c'
-    const widthOk = reqWidth <= B;
+    const widthOk = reqWidth <= (isT ? tBw : B); // le barre stanno nell'anima
 
     // --- Risultanti delle forze e bracci rispetto all'asse baricentrico (h/2) ---
-    const Cc = psi * fcd * B * X;          // compressione cls [N]
+    const Cc = cr.Cc;                      // compressione cls [N]
     const Cs = AsPrime * (sigmaSc || 0);   // compressione acciaio [N]
     const Ts = As * fs;                    // trazione acciaio [N]
-    const aCc = h / 2 - kG * X;            // braccio di C_c
-    const aCs = h / 2 - cC;                // braccio di C's
-    const aTs = h / 2 - cT;                // braccio di T_s
+    const aCc = yG - cr.yc;                // braccio di C_c
+    const aCs = yG - cC;                   // braccio di C's
+    const aTs = h - cT - yG;               // braccio di T_s
     const eqN = Cc + Cs - Ts;              // dovrebbe = N_Ed
     const eqM = Cc * aCc + Cs * aCs + Ts * aTs; // dovrebbe = M (frame di progetto)
 
@@ -504,6 +644,19 @@ function designSectionCore(input) {
         phi,
         phiPrime: given ? phiPrimeGiven : phi,
         givenTop: given,
+        isT,
+        sectionType: isT ? "T" : "rect",
+        bw: isT ? tBw : B,
+        hf: isT ? tS : 0,
+        flangeMethod,
+        flangeNotNeeded,
+        yG,
+        yc: cr.yc,
+        CcW: cr.CcW,
+        CcF: cr.CcF,
+        inFlange: cr.inFlange,
+        bt,
+        Ac,
         areaPhi,
         nBars,
         AsProvided,

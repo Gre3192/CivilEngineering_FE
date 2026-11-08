@@ -1,7 +1,7 @@
 // src/components/concrete/SectionDesignTool.jsx
 //
 // Strumento: Progetto (dimensionamento) a flessione (SLU) di una sezione
-// rettangolare in c.a. — metodo degli appunti (X = 0.2593 d).
+// rettangolare o a T in c.a. — metodo degli appunti (X = 0.2593 d).
 
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -21,6 +21,7 @@ import Sym, { sub } from "../Sym";
 import { concreteTable, STEEL_TABLE } from "../../lib/concrete/materialTables";
 import ConcreteDiagram from "./ConcreteDiagram";
 import SteelDiagram from "./SteelDiagram";
+import { buildSectionDxf } from "../../lib/concrete/sectionDxf";
 
 const BAR_DIAMETERS = [10, 12, 14, 16, 18, 20, 24, 26];
 const STIRRUP_DIAMETERS = [6, 8, 10, 12];
@@ -45,14 +46,17 @@ export default function SectionDesignTool() {
     const forcesSvgRef = useRef(null);
     const copiedTimer = useRef(null);
     const savedTimer = useRef(null);
+    const dxfSavedTimer = useRef(null);
     const copiedTimerF = useRef(null);
     const savedTimerF = useRef(null);
     const [exportMessage, setExportMessage] = useState("");
     const [isCopied, setIsCopied] = useState(false);
     const [isSaved, setIsSaved] = useState(false);
+    const [isDxfSaved, setIsDxfSaved] = useState(false);
     const [isCopiedF, setIsCopiedF] = useState(false);
     const [isSavedF, setIsSavedF] = useState(false);
 
+    const isTsec = input.sectionType === "T";
     // barre superiori considerate nel calcolo: A's assegnata dal box "Armatura compressa"
     const topGiven = !!(input.hangerBars && input.hangerInCalc);
     const givenN = topGiven ? Math.max(2, Math.trunc(Number(adoptedReinforcement.compressionBars)) || 2) : 0;
@@ -176,10 +180,10 @@ export default function SectionDesignTool() {
     const checkedBarCount = selectedTensionBars >= 2 ? selectedTensionBars : result.nBars;
     const checkedBarDiameter = selectedTensionPhi > 0 ? selectedTensionPhi : result.phi;
     const checkedBarGap = Math.max(checkedBarDiameter, 20);
-    const checkedWidthLimit = adoptedB || result.B;
+    const checkedWidthLimit = result.isT ? result.bw : adoptedB || result.B; // le barre stanno nell'anima della T
     // disposizione delle barre adottate su una o più file (stesso criterio del calcolo)
     const rowsMax = (top) => (input.multiLayer ? Math.max(1, Math.trunc(top ? input.maxLayersTop : input.maxLayersBot) || 1) : 1);
-    const rowArgs = { B: checkedWidthLimit, cLeft: input.cLeft, cRight: input.cRight, phiStirrup: input.phiStirrup };
+    const rowArgs = { B: result.isT ? result.bw : checkedWidthLimit, cLeft: input.cLeft, cRight: input.cRight, phiStirrup: input.phiStirrup };
     const adoptedLayT = barRows({ ...rowArgs, n: adoptedTensionBars, phi: adoptedTensionPhi, maxRows: rowsMax(result.tensionTop) });
     const adoptedLayC = barRows({ ...rowArgs, n: adoptedCompressionBars, phi: adoptedCompressionPhi, maxRows: rowsMax(!result.tensionTop) });
     // ingombro della fila più numerosa
@@ -205,6 +209,35 @@ export default function SectionDesignTool() {
         phi: adoptedTensionPhi,
         phiPrime: adoptedCompressionPhi,
     } : result;
+
+    const saveSectionDxf = () => {
+        try {
+            const dxf = buildSectionDxf({
+                result: drawingResult,
+                B: adoptedB,
+                layT: adoptedLayT,
+                layC: adoptedLayC,
+                hanger,
+                dTNom: result.dTNom,
+                dCNom: result.dCNom,
+                phiStirrup: input.phiStirrup,
+                cLeft: input.cLeft,
+                cRight: input.cRight,
+            });
+            const url = URL.createObjectURL(new Blob([dxf], { type: "application/dxf" }));
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = "sezione-progettata-1-1mm.dxf";
+            link.click();
+            window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+            setExportMessage("");
+            setIsDxfSaved(true);
+            window.clearTimeout(dxfSavedTimer.current);
+            dxfSavedTimer.current = window.setTimeout(() => setIsDxfSaved(false), 1600);
+        } catch {
+            setExportMessage("Esportazione DXF non riuscita");
+        }
+    };
 
     const setField = (f) => (v) => setInput((p) => ({ ...p, [f]: v }));
     const setNumber = (f) => (v) => setInput((p) => ({ ...p, [f]: Number(v) || 0 }));
@@ -238,17 +271,35 @@ export default function SectionDesignTool() {
                 </div>
                 <CollapsibleCard title="Dati di progetto" command={cardCommand}>
                     <div className="mb-3">
+                        <span className="mb-1 block text-xs font-semibold text-slate-500">Sezione</span>
+                        <SegmentedToggle value={input.sectionType ?? "rect"} onChange={setField("sectionType")}
+                            options={[{ id: "rect", label: "Rettangolare" }, { id: "T", label: "a T" }]} />
+                    </div>
+                    <div className="mb-3">
                         <span className="mb-1 block text-xs font-semibold text-slate-500">Fissa</span>
                         <ModeToggle value={input.mode} onChange={setField("mode")} />
                     </div>
                     <div className="grid grid-cols-2 gap-3">
                         {input.mode === "fixH"
                             ? <NumberField label="Altezza h" unit="mm" value={input.h} onChange={setNumber("h")} />
-                            : <NumberField label="Larghezza B" unit="mm" value={input.B} onChange={setNumber("B")} />}
+                            : <NumberField label={isTsec ? "Larghezza ala B" : "Larghezza B"} unit="mm" value={input.B} onChange={setNumber("B")} />}
                         {input.mode === "fixBH"
                             ? <NumberField label="Altezza h" unit="mm" value={input.h} onChange={setNumber("h")} />
                             : <NumberField label={<>β = A's/As{topGiven && <span className="ml-1 font-normal text-slate-400">(A's assegnata)</span>}</>} value={input.beta} step="0.05" onChange={setNumber("beta")} disabled={topGiven} />}
                     </div>
+                    {isTsec && (
+                        <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                            <p className="mb-2 text-xs font-semibold text-slate-600">Sezione a T</p>
+                            <div className="grid grid-cols-2 gap-3">
+                                <NumberField label="b_w" hint="larghezza anima" unit="mm" value={input.bw} onChange={setNumber("bw")} />
+                                <NumberField label="s" hint="spessore ala" unit="mm" value={input.hf} onChange={setNumber("hf")} />
+                            </div>
+                            <div className="mt-3">
+                                <SelectField label="Compressione dell'ala" value={input.flangeMethod ?? "simplified"} onChange={setField("flangeMethod")}
+                                    options={[{ value: "simplified", label: "Semplificato (ali a f_cd)" }, { value: "exact", label: "Esatto (integrazione σ-ε)" }]} />
+                            </div>
+                        </div>
+                    )}
                     <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
                         <p className="mb-2 text-xs font-semibold text-slate-600">Copriferri</p>
                         <div className="grid grid-cols-2 gap-3">
@@ -421,8 +472,8 @@ export default function SectionDesignTool() {
                                 )}
                             </div>
                             <div className="mt-3 space-y-2">
-                                <CheckRow ok={checkedWidthOk} label={`Ingombro barre tese${selectedTensionBars >= 2 || selectedTensionPhi > 0 ? " adottate" : ""}: ${fmt(checkedWidth, 0)} mm ${checkedWidthOk ? "≤" : ">"} B = ${fmt(checkedWidthLimit, 0)} mm`} reference={{ ntc: "§4.1.6.1.3", ec2: "§8.2" }} />
-                                {adoptedCompressionBars > 0 && <CheckRow ok={checkedWidthCOk} label={`Ingombro barre compresse adottate: ${fmt(checkedWidthC, 0)} mm ${checkedWidthCOk ? "≤" : ">"} B = ${fmt(checkedWidthLimit, 0)} mm`} reference={{ ntc: "§4.1.6.1.3", ec2: "§8.2" }} />}
+                                <CheckRow ok={checkedWidthOk} label={`Ingombro barre tese${selectedTensionBars >= 2 || selectedTensionPhi > 0 ? " adottate" : ""}: ${fmt(checkedWidth, 0)} mm ${checkedWidthOk ? "≤" : ">"} ${result.isT ? "b_w" : "B"} = ${fmt(checkedWidthLimit, 0)} mm`} reference={{ ntc: "§4.1.6.1.3", ec2: "§8.2" }} />
+                                {adoptedCompressionBars > 0 && <CheckRow ok={checkedWidthCOk} label={`Ingombro barre compresse adottate: ${fmt(checkedWidthC, 0)} mm ${checkedWidthCOk ? "≤" : ">"} ${result.isT ? "b_w" : "B"} = ${fmt(checkedWidthLimit, 0)} mm`} reference={{ ntc: "§4.1.6.1.3", ec2: "§8.2" }} />}
                                 <CheckRow ok={checkedTensionArea >= result.AsMin} warn label={`${checkedTensionAreaIsAdopted ? "A_s adottata" : "A_s calcolata"} ${checkedTensionArea >= result.AsMin ? "≥" : "<"} A_s,min (${fmt(checkedTensionArea, 0)} / ${fmt(result.AsMin, 0)} mm²)`} reference={{ ntc: "§4.1.6.1.1", ec2: "§9.2.1.1(1)" }} />
                                 <CheckRow ok={checkedTensionArea <= result.AsMax} label={`${checkedTensionAreaIsAdopted ? "A_s adottata" : "A_s calcolata"} ${checkedTensionArea <= result.AsMax ? "≤" : ">"} A_s,max (${fmt(checkedTensionArea, 0)} / ${fmt(result.AsMax, 0)} mm²)`} reference={{ ntc: "§4.1.6.1.1", ec2: "§9.2.1.1(3)" }} />
                                 {result.beta > 0 && (
@@ -448,6 +499,16 @@ export default function SectionDesignTool() {
                                         <option value="cm">cm</option>
                                         <option value="m">m</option>
                                     </select>
+                                    <button type="button" onClick={saveSectionDxf} title={isDxfSaved ? "DXF scaricato" : "Esporta DXF 1:1 per AutoCAD"} aria-label={isDxfSaved ? "DXF scaricato" : "Esporta sezione progettata in DXF in scala 1:1"} className="rounded-full border border-slate-300 bg-white p-2 text-slate-700 shadow-sm transition hover:bg-slate-50">
+                                        <span className="relative block h-[15px] w-[15px]">
+                                            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" className={`absolute inset-0 transition-all duration-300 ease-in-out ${isDxfSaved ? "rotate-90 scale-50 opacity-0" : "rotate-0 scale-100 opacity-100"}`} aria-hidden="true">
+                                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+                                                <path d="M14 2v6h6" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+                                                <text x="5.1" y="16.2" fill="currentColor" fontSize="5.6" fontWeight="700" fontFamily="sans-serif">DXF</text>
+                                            </svg>
+                                            <Check size={15} className={`absolute inset-0 transition-all duration-300 ease-in-out ${isDxfSaved ? "rotate-0 scale-100 opacity-100" : "-rotate-90 scale-50 opacity-0"}`} />
+                                        </span>
+                                    </button>
                                     <button type="button" onClick={copyImage} title="Copia immagine" aria-label={isCopied ? "Immagine copiata" : "Copia immagine negli appunti"} className="rounded-full border border-slate-300 bg-white p-2 text-slate-700 shadow-sm transition hover:bg-slate-50">
                                         <span className="relative block h-[15px] w-[15px]">
                                             <Copy size={15} className={`absolute inset-0 transition-all duration-300 ease-in-out ${isCopied ? "rotate-90 scale-50 opacity-0" : "rotate-0 scale-100 opacity-100"}`} />
@@ -1003,6 +1064,56 @@ function CalcReport({ result, input, commercial, sectionDrawing, forcesDrawing }
         solve.push(res("x", r.X, mm), res("A_s", r.As, mm2), { tex: "A_s'=0" });
     }
 
+    // ---- sezione a T: formule simboliche, risultati e valori all'equilibrio ----
+    let tBlk = null;
+    if (r.isT) {
+        const flip = r.tensionTop, exact = r.flangeMethod === "exact";
+        const kN3 = (v) => `${T(v / 1000, 1)}\\cdot 10^{3}`;   // N → "…·10^3"
+        const kNm6 = (v) => `${T(v / 1e6, 2)}\\cdot 10^{6}`;  // N·mm → "…·10^6"
+        const Bv = T(r.B, 1), bwv = T(r.bw, 0), sv = T(r.hf, 0), hv = T(r.h, 1), dv = T(r.d, 1), xv = T(r.X, 2);
+        const caseNote = exact
+            ? "Ala: integrazione del diagramma σ-ε sull'area compressa reale della T (b = B nell'ala, b = b_w nell'anima)."
+            : flip
+                ? (r.inFlange ? "M_Ed < 0: è compressa l'anima (Ψ·x ≤ h − s), rettangolo di larghezza b_w." : "M_Ed < 0: la zona compressa raggiunge l'ala, risultante per integrazione.")
+                : (r.inFlange ? `Ψ·x = ${fmtNum(r.psi * r.X, 1)} mm ≤ s = ${fmtNum(r.hf, 0)} mm: asse neutro nell'ala, sezione rettangolare di larghezza B.`
+                    : `Ψ·x = ${fmtNum(r.psi * r.X, 1)} mm > s = ${fmtNum(r.hf, 0)} mm: è compressa anche l'anima; gli sbalzi dell'ala (B − b_w) lavorano uniformemente a f_cd.`);
+        const ccSym = exact ? "\\int_0^{x}\\sigma_c(y)\\,b(y)\\,dy"
+            : flip ? "\\Psi\\,b_w\\,x\\,f_{cd}"
+                : r.inFlange ? "\\Psi\\,B\\,x\\,f_{cd}" : "\\Psi\\,b_w\\,x\\,f_{cd}+(B-b_w)\\,s\\,f_{cd}";
+        const ycSym = exact ? "\\dfrac{\\int_0^{x}\\sigma_c\\,b\\,y\\,dy}{C_c}"
+            : flip || r.inFlange ? "\\lambda\\,x" : "\\dfrac{C_{c,w}\\,\\lambda x+C_{c,f}\\,s/2}{C_c}";
+        const yGfrac = "\\dfrac{B\\,s^2/2+b_w\\,(h-s)(h+s)/2}{B\\,s+b_w\\,(h-s)}";
+        const yGnum = `\\dfrac{${Bv}\\cdot ${sv}^2/2+${bwv}\\cdot(${hv}-${sv})(${hv}+${sv})/2}{${Bv}\\cdot ${sv}+${bwv}\\cdot(${hv}-${sv})}`;
+        const csSymOnly = hasCs ? { lhs: "C_s'", sym: rowCs.sym } : null;
+        const ccNum = exact ? null
+            : flip || r.inFlange ? `${Ps}\\cdot ${flip ? bwv : Bv}\\cdot ${xv}\\cdot ${fcd}`
+                : `${Ps}\\cdot ${bwv}\\cdot ${xv}\\cdot ${fcd}+(${Bv}-${bwv})\\cdot ${sv}\\cdot ${fcd}`;
+        const Ts = r.As * r.fs, Cs = r.Cs || 0;
+        tBlk = {
+            caseNote,
+            forces: eqBlock([{ lhs: "C_c", sym: ccSym }, csSymOnly, { lhs: "T_s", sym: `A_s\\,${ts}` }].filter(Boolean)),
+            geom: eqBlock([
+                { lhs: "y_G", sym: flip ? `h-${yGfrac}` : yGfrac },
+                { lhs: "y_c", sym: ycSym },
+            ]),
+            system: hasCs
+                ? `\\begin{cases}C_c+C_s'-T_s=N_{Ed}\\\\[6pt]C_c\\,(y_G-y_c)+C_s'\\,(y_G-${sC})+T_s\\,(d-y_G)=M_{Ed}\\end{cases}`
+                : `\\begin{cases}C_c-T_s=N_{Ed}\\\\[6pt]C_c\\,(y_G-y_c)+T_s\\,(d-y_G)=M_{Ed}\\end{cases}`,
+            values: eqBlock([
+                r.xFromXi ? { lhs: "x", sym: `${Xi}\\cdot d`, num: `${Xi}\\cdot ${dv}`, val: `${xv}${mm}` } : { lhs: "x", sym: `${xv}${mm}` },
+                { lhs: "y_G", sym: flip ? `${hv}-${yGnum}` : yGnum, val: `${T(r.yG, 1)}${mm}` },
+                { lhs: "C_c", sym: ccNum ?? `${kN3(r.Cc)}\\ \\text{N}`, val: ccNum ? `${kN3(r.Cc)}\\ \\text{N}` : null },
+                { lhs: "y_c", sym: `${T(r.yc, 1)}${mm}` },
+                hasCs ? { lhs: "C_s'", sym: `${T(r.AsPrime, 1)}\\cdot ${fyd}`, val: `${kN3(Cs)}\\ \\text{N}` } : null,
+                { lhs: "T_s", sym: `${T(r.As, 1)}\\cdot ${fsv}`, val: `${kN3(Ts)}\\ \\text{N}` },
+                { lhs: "y_G-y_c", sym: `${T(r.aCc, 1)}${mm}` },
+                hasCs ? { lhs: `y_G-${sC}`, sym: `${T(r.aCs, 1)}${mm}` } : null,
+                { lhs: "d-y_G", sym: `${T(r.aTs, 1)}${mm}` },
+            ].filter(Boolean)),
+            check: `\\begin{cases}${kN3(r.Cc)}${hasCs ? `+${kN3(Cs)}` : ""}-${kN3(Ts)}=${Math.abs(r.eqN) < 500 ? "0" : kN3(r.eqN)}\\;\\approx\\;N_{Ed}=${Nnum}\\\\[6pt]${kNm6(r.Cc * r.aCc)}${hasCs ? `+${kNm6(Cs * r.aCs)}` : ""}+${kNm6(Ts * r.aTs)}=${kNm6(r.eqM)}\\;\\approx\\;M_{Ed}=${Mnum}\\end{cases}`,
+        };
+    }
+
     // riga di più grandezze che va a capo da sola quando lo spazio non basta
     const Row = ({ items }) => (
         <div className="flex flex-wrap items-baseline justify-center gap-x-6 gap-y-1 py-1">
@@ -1029,9 +1140,12 @@ function CalcReport({ result, input, commercial, sectionDrawing, forcesDrawing }
                     Convenzioni: M_Ed &gt; 0 tende le fibre inferiori; N_Ed &gt; 0 compressione..
                     {r.tensionTop ? " M_Ed < 0 → sezione ribaltata (lato teso in alto), si usa |M_Ed|." : ""}
                 </Sym></p>
+                {r.isT && <p className="text-xs text-slate-400"><Sym>{`Sezione a T: ala di larghezza B e spessore s sul lembo superiore, anima b_w; compressione dell'ala con il metodo ${r.flangeMethod === "exact" ? "esatto (integrazione del diagramma σ-ε)" : "semplificato (sbalzi dell'ala a f_cd)"}.`}</Sym></p>}
                 <p className="text-xs font-semibold text-slate-500">Fisso:</p>
                 <Row items={[
                     r.mode !== "fixH" ? `B=${T(r.B, 0)}${mm}` : null,
+                    r.isT ? `b_w=${T(r.bw, 0)}${mm}` : null,
+                    r.isT ? `s=${T(r.hf, 0)}${mm}` : null,
                     r.mode !== "fixB" ? `h=${T(r.h, 0)}${mm}` : null,
                     `d'=${T(input.dInf, 0)}${mm}`,
                     `d''=${T(input.dSup, 0)}${mm}`,
@@ -1103,8 +1217,20 @@ function CalcReport({ result, input, commercial, sectionDrawing, forcesDrawing }
                         <Sym>Con x = 0,259259·d risulterebbe A's &lt; 0: l'armatura compressa non è necessaria. Si pone A's = 0 e si ricava x dall'equilibrio.</Sym>
                     </p>
                 )}
+                {/* sezione a T: formule simboliche (i valori dopo "Ottengo") */}
+                {tBlk && (
+                    <div className="tex-left space-y-1.5">
+                        <p className="text-xs text-slate-400">{sub(tBlk.caseNote)}</p>
+                        <p className="text-xs font-semibold text-slate-500">Risultanti delle forze [N]:</p>
+                        <Tex display>{tBlk.forces}</Tex>
+                        <p className="text-xs font-semibold text-slate-500">Baricentro della sezione e punto di applicazione di C<sub>c</sub> (profondità dal lembo compresso) [mm]:</p>
+                        <Tex display>{tBlk.geom}</Tex>
+                        <p className="text-xs font-semibold text-slate-500">Equilibrio alla traslazione e alla rotazione (rispetto al baricentro G):</p>
+                        <Tex display>{tBlk.system}</Tex>
+                    </div>
+                )}
                 {/* risultanti, bracci e sistemi allineati a sinistra */}
-                <div className="tex-left space-y-1.5">
+                {!tBlk && <div className="tex-left space-y-1.5">
                     <p className="text-xs font-semibold text-slate-500">Risultanti delle forze [N]:</p>
                     <Tex display>{eqBlock(forceRows.filter(Boolean))}</Tex>
                     <p className="text-xs font-semibold text-slate-500">Bracci rispetto al baricentro (h/2){r.mode === "fixB" ? sub(`, con h = d + ${sTtxt}`) : ""} [mm]:</p>
@@ -1117,7 +1243,7 @@ function CalcReport({ result, input, commercial, sectionDrawing, forcesDrawing }
                     <Tex display>{symSystem}</Tex>
                     <p className="text-xs font-semibold text-slate-500">Sostituendo ({sub(unknowns)}; forze in [N], momenti in [N·mm]):</p>
                     <Tex display>{numSystem}</Tex>
-                </div>
+                </div>}
                 <p className="text-xs font-semibold text-slate-500">Ottengo:</p>
                 {/* risultati in colonna, in un unico blocco allineato sull'"=" */}
                 <div className="tex-left">
@@ -1125,6 +1251,14 @@ function CalcReport({ result, input, commercial, sectionDrawing, forcesDrawing }
                         ? it.tex.replace("=", "&=")
                         : `${it.lhs}&=${it.sym}=${it.num}=${it.val}`)).join("\\\\[4pt]")}\\end{aligned}`}</Tex>
                 </div>
+                {tBlk && (
+                    <div className="tex-left space-y-1.5">
+                        <p className="text-xs font-semibold text-slate-500">Valori all'equilibrio [N, mm]:</p>
+                        <Tex display>{tBlk.values}</Tex>
+                        <p className="text-xs font-semibold text-slate-500">Verifica delle equazioni con i valori ottenuti [N, N·mm]:</p>
+                        <Tex display>{tBlk.check}</Tex>
+                    </div>
+                )}
             </Step>
 
             {cm && (
@@ -1177,7 +1311,7 @@ function CalcReport({ result, input, commercial, sectionDrawing, forcesDrawing }
                                     lhs={b.lhs}
                                     sym={`n_{barre}\\,\\Phi_{barre}+(n_{barre}-1)\\cdot ${T(gap, 0)}+2\\,\\Phi_{staffa}+c+c'`}
                                     num={`${b.n}\\cdot ${T(b.phi, 0)}+${b.n - 1}\\cdot ${T(gap, 0)}+2\\cdot ${T(phiStirrup, 0)}+${T(input.cLeft, 0)}+${T(input.cRight, 0)}`}
-                                    val={`${T(width, 0)}${mm}\\;${ok ? "\\le" : ">"}\\;B=${T(cm.widthLimit, 0)}${mm}`} />
+                                    val={`${T(width, 0)}${mm}\\;${ok ? "\\le" : ">"}\\;${r.isT ? "b_w" : "B"}=${T(cm.widthLimit, 0)}${mm}`} />
                                 <Outcome ok={ok}>{ok ? "Verificato." : "Non verificato: aumentare B o ridurre il numero di barre."}</Outcome>
                             </div>
                         );
@@ -1186,8 +1320,12 @@ function CalcReport({ result, input, commercial, sectionDrawing, forcesDrawing }
             )}
 
             <Step n={cm ? "7" : "4"} title="Verifica armature">
-                <Eq lhs="A_{s,min}" sym="\max\!\Big(0{,}26\tfrac{f_{ctm}}{f_{yk}}Bd,\;0{,}0013\,Bd\Big)" val={`${T(r.AsMin, 0)}${mm2}`} />
-                <Eq lhs="A_{s,max}" sym="0{,}04\,B\,h" val={`${T(r.AsMax, 0)}${mm2}`} />
+                {r.isT
+                    ? <Eq lhs="A_{s,min}" sym="\max\!\Big(0{,}26\tfrac{f_{ctm}}{f_{yk}}b_t\,d,\;0{,}0013\,b_t\,d\Big)" num={`b_t=${r.tensionTop ? "B" : "b_w"}=${T(r.bt, 0)}${mm}`} val={`${T(r.AsMin, 0)}${mm2}`} />
+                    : <Eq lhs="A_{s,min}" sym="\max\!\Big(0{,}26\tfrac{f_{ctm}}{f_{yk}}Bd,\;0{,}0013\,Bd\Big)" val={`${T(r.AsMin, 0)}${mm2}`} />}
+                {r.isT
+                    ? <Eq lhs="A_{s,max}" sym="0{,}04\,A_c=0{,}04\,[B\,s+b_w\,(h-s)]" val={`${T(r.AsMax, 0)}${mm2}`} />
+                    : <Eq lhs="A_{s,max}" sym="0{,}04\,B\,h" val={`${T(r.AsMax, 0)}${mm2}`} />}
                 <Tex display>{`A_{s,min}=${T(r.AsMin, 0)}\\;${minOk ? "\\le" : ">"}\\;A_s=${T(areaT, 0)}\\;${maxOk ? "\\le" : ">"}\\;A_{s,max}=${T(r.AsMax, 0)}${mm2}`}</Tex>
                 <Outcome ok={minOk && maxOk}>
                     {sub(minOk && maxOk ? "Verificato."
@@ -1254,6 +1392,30 @@ function Step({ n, title, children }) {
 
 // Togglebar per la modalità di progetto (controllo segmentato).
 const MODE_SHORT = { fixB: "Base B", fixH: "Altezza h", fixBH: "B e h" };
+// Controllo segmentato generico (opzioni { id, label, title? }).
+function SegmentedToggle({ value, onChange, options }) {
+    const n = options.length;
+    const idx = Math.max(0, options.findIndex((o) => o.id === value));
+    return (
+        <div className="relative flex rounded-xl border border-slate-200 bg-slate-50 p-1">
+            <span
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-y-1 left-1 rounded-lg bg-sky-600 shadow-sm transition-transform duration-300 ease-out"
+                style={{ width: `calc((100% - 0.5rem) / ${n})`, transform: `translateX(${idx * 100}%)` }}
+            />
+            {options.map((o) => {
+                const active = value === o.id;
+                return (
+                    <button key={o.id} type="button" onClick={() => onChange(o.id)} title={o.title ?? o.label} aria-pressed={active}
+                        className={`relative z-10 flex-1 rounded-lg px-2 py-1.5 text-xs font-semibold transition-colors duration-300 ${active ? "text-white" : "text-slate-600"}`}>
+                        {o.label}
+                    </button>
+                );
+            })}
+        </div>
+    );
+}
+
 function ModeToggle({ value, onChange }) {
     const n = DESIGN_MODES.length;
     const idx = Math.max(0, DESIGN_MODES.findIndex((m) => m.id === value));
@@ -1385,7 +1547,10 @@ function DesignDrawing({ result, B, layT, layC, hanger = null, dTNom = 40, dCNom
     // Margini per le quote (fissi) e area utile di disegno
     const mL = 160; // spazio per le quote e per le azioni M_Ed / N_Ed
     const mR = mL; // margini uguali: la sezione resta sempre centrata nel disegno
-    const mT = 24;
+    // sezione a T: ala (larghezza B, spessore s) sul lembo superiore, anima b_w
+    const isT = !!result.isT;
+    const bwT = isT ? Math.min(result.bw, B) : B, hfT = isT ? result.hf : 0;
+    const mT = isT ? 40 : 24; // spazio per la quota B dell'ala
     const mB = 104;
     const availW = BOX_W - mL - mR;
     const availH = BOX_H - mT - mB;
@@ -1397,10 +1562,16 @@ function DesignDrawing({ result, B, layT, layC, hanger = null, dTNom = 40, dCNom
     const secLeft = mL + (availW - w) / 2;
     const secTop = mT + (availH - ht) / 2;
     const secRight = secLeft + w;
+    // anima (coincide con la sezione se rettangolare)
+    const webOff = (B - bwT) / 2;
+    const webLeft = secLeft + webOff * scale, webRight = webLeft + bwT * scale;
+    const yFl = secTop + hfT * scale; // attacco ala-anima (in y)
     // azioni M_Ed / N_Ed a sinistra delle quote (x, d), alla quota h/2
     const ACT_COL = "#2563eb";
     const actHasN = Math.abs(result.NEd || 0) > 0.5; // N_Ed diverso da zero
-    const actY = secTop + ht / 2;
+    // quota del baricentro G della sezione (h/2 per il rettangolo), dal lembo superiore
+    const yGtop = isT ? (B * hfT * hfT / 2 + bwT * (h - hfT) * (h + hfT) / 2) / (B * hfT + bwT * (h - hfT)) : h / 2;
+    const actY = secTop + yGtop * scale;
     const actHead = secLeft - 56, actTail = actHead - 50;  // freccia di N_Ed
     const actCross = actTail + 16, actBw = 24, actMr = 26; // arco di M_Ed (come nel disegno delle forze)
     const actXa = actCross + actBw;
@@ -1417,16 +1588,17 @@ function DesignDrawing({ result, B, layT, layC, hanger = null, dTNom = 40, dCNom
     // max(phi, 20 mm) (ingombro non verificato) si dispongono con l'interferro
     // minimo, simmetriche rispetto all'asse della sezione: quelle oltre le
     // posizioni d'angolo escono dalla staffa / sezione (over).
-    const latL = (p) => Math.min(cLeft + phiStirrup + p / 2, B / 2 - p / 2);  // asse barra d'angolo sx dal bordo [mm]
-    const latR = (p) => Math.min(cRight + phiStirrup + p / 2, B / 2 - p / 2); // asse barra d'angolo dx dal bordo [mm]
+    // (nella T le barre e la staffa stanno nell'anima: larghezza b_w, bordi dell'anima)
+    const latL = (p) => Math.min(cLeft + phiStirrup + p / 2, bwT / 2 - p / 2);  // asse barra d'angolo sx dal bordo [mm]
+    const latR = (p) => Math.min(cRight + phiStirrup + p / 2, bwT / 2 - p / 2); // asse barra d'angolo dx dal bordo [mm]
     const barsAt = (n, depthY, p) => {
         const arr = [];
-        const xL = latL(p), xR = B - latR(p);
+        const xL = latL(p), xR = bwT - latR(p);
         const pitch = p + Math.max(p, 20);                 // passo minimo tra gli assi
         const fits = n <= 1 || (n - 1) * pitch <= xR - xL + 1e-6;
         for (let i = 0; i < n; i++) {
-            const pos = n === 1 ? B / 2 : fits ? xL + ((xR - xL) * i) / (n - 1) : B / 2 + (i - (n - 1) / 2) * pitch;
-            arr.push({ x: secLeft + pos * scale, y: yOf(depthY), over: !fits && (pos < xL - 1e-6 || pos > xR + 1e-6) });
+            const pos = n === 1 ? bwT / 2 : fits ? xL + ((xR - xL) * i) / (n - 1) : bwT / 2 + (i - (n - 1) / 2) * pitch;
+            arr.push({ x: webLeft + pos * scale, y: yOf(depthY), over: !fits && (pos < xL - 1e-6 || pos > xR + 1e-6) });
         }
         return arr;
     };
@@ -1449,7 +1621,7 @@ function DesignDrawing({ result, B, layT, layC, hanger = null, dTNom = 40, dCNom
     const offPxPrime = Math.max((phiPrime / 2 + phiStirrup / 2) * scale, barRPrime + stWidth / 2);
     // la staffa resta fissa: lati verticali sulle posizioni d'angolo nominali
     // (anche se le barre non ci stanno ed escono)
-    const cornerL = (p) => secLeft + latL(p) * scale, cornerR = (p) => secLeft + (B - latR(p)) * scale;
+    const cornerL = (p) => webLeft + latL(p) * scale, cornerR = (p) => webLeft + (bwT - latR(p)) * scale;
     const stLeft = Math.min(cornerL(phi) - offPx, hasTop ? cornerL(phiPrime) - offPxPrime : Infinity);
     const stRight = Math.max(cornerR(phi) + offPx, hasTop ? cornerR(phiPrime) + offPxPrime : -Infinity);
     const sgnT = flip ? -1 : 1; // verso (in y) dal centro della sezione al lato teso
@@ -1504,8 +1676,24 @@ function DesignDrawing({ result, B, layT, layC, hanger = null, dTNom = 40, dCNom
 
             <svg ref={svgRef} width="100%" viewBox={`0 ${vbY} ${BOX_W} ${vbH}`} role="img" aria-label="Sezione progettata quotata">
                 {/* zona compressa + contorno */}
-                <rect x={secLeft} y={flip ? secTop + ht - Math.min(X * scale, ht) : secTop} width={w} height={Math.min(X * scale, ht)} fill="#e0f2fe" />
-                <rect x={secLeft} y={secTop} width={w} height={ht} fill="none" stroke="#334155" strokeWidth="2" />
+                {isT ? (
+                    <>
+                        {/* zona compressa: ala e/o anima fino alla profondità x dal lembo compresso */}
+                        {!flip ? <>
+                            <rect x={secLeft} y={secTop} width={w} height={Math.min(X, hfT) * scale} fill="#e0f2fe" />
+                            {X > hfT && <rect x={webLeft} y={yFl} width={webRight - webLeft} height={(Math.min(X, h) - hfT) * scale} fill="#e0f2fe" />}
+                        </> : <>
+                            <rect x={webLeft} y={secTop + ht - Math.min(X, h - hfT) * scale} width={webRight - webLeft} height={Math.min(X, h - hfT) * scale} fill="#e0f2fe" />
+                            {X > h - hfT && <rect x={secLeft} y={secTop + ht - Math.min(X, h) * scale} width={w} height={(Math.min(X, h) - (h - hfT)) * scale} fill="#e0f2fe" />}
+                        </>}
+                        <path d={`M${secLeft},${secTop} H${secRight} V${yFl} H${webRight} V${secTop + ht} H${webLeft} V${yFl} H${secLeft} Z`} fill="none" stroke="#334155" strokeWidth="2" strokeLinejoin="round" />
+                    </>
+                ) : (
+                    <>
+                        <rect x={secLeft} y={flip ? secTop + ht - Math.min(X * scale, ht) : secTop} width={w} height={Math.min(X * scale, ht)} fill="#e0f2fe" />
+                        <rect x={secLeft} y={secTop} width={w} height={ht} fill="none" stroke="#334155" strokeWidth="2" />
+                    </>
+                )}
 
                 {/* staffa (tangente alle armature) */}
                 {showStirrup && (
@@ -1565,15 +1753,21 @@ function DesignDrawing({ result, B, layT, layC, hanger = null, dTNom = 40, dCNom
 
                 {/* copriferri orizzontali c (sinistro) e c' (destro): bordo - faccia esterna della staffa, tra il disegno e B */}
                 {show.dims && <>
-                    <HDim dimY={secTop + ht + 12} xA={secLeft} xB={secLeft + cLeft * scale} edgeY={secTop + ht} label={`c=${fmtU(cLeft)}`} fontSize={9} bold={false} />
-                    <HDim dimY={secTop + ht + 12} xA={secRight - cRight * scale} xB={secRight} edgeY={secTop + ht} label={`c'=${fmtU(cRight)}`} fontSize={9} bold={false} />
+                    <HDim dimY={secTop + ht + 12} xA={webLeft} xB={webLeft + cLeft * scale} edgeY={secTop + ht} label={`c=${fmtU(cLeft)}`} fontSize={9} bold={false} />
+                    <HDim dimY={secTop + ht + 12} xA={webRight - cRight * scale} xB={webRight} edgeY={secTop + ht} label={`c'=${fmtU(cRight)}`} fontSize={9} bold={false} />
                 </>}
+
+                {/* sezione a T: larghezza dell'ala B (sopra) e spessore s (a destra) */}
+                {isT && show.dims && <HDim dimY={secTop - 14} xA={secLeft} xB={secRight} edgeY={secTop} label={`B = ${fmtU(B)}`} color={bColor} labelAbove />}
+                {isT && show.dims && <VDim dimX={secRight + 62} yA={secTop} yB={yFl} edgeX={secRight} label={`s=${fmtU(hfT)}`} color="#64748b" />}
 
                 {/* base: quota con frecce (se le quote sono attive) altrimenti etichetta */}
                 {show.dims ? (
-                    <HDim dimY={secTop + ht + 34} xA={secLeft} xB={secRight} edgeY={secTop + ht} label={`B = ${fmtU(B)}`} color={bColor} />
+                    isT
+                        ? <HDim dimY={secTop + ht + 34} xA={webLeft} xB={webRight} edgeY={secTop + ht} label={`b_w = ${fmtU(bwT)}`} />
+                        : <HDim dimY={secTop + ht + 34} xA={secLeft} xB={secRight} edgeY={secTop + ht} label={`B = ${fmtU(B)}`} color={bColor} />
                 ) : (
-                    <text x={secLeft + w / 2} y={secTop + ht + 20} textAnchor="middle" fontSize="11" fill={bColor}>B = {fmtU(B)}</text>
+                    <text x={secLeft + w / 2} y={secTop + ht + 20} textAnchor="middle" fontSize="11" fill={isT ? INPUT_COLOR : bColor}>{isT ? `b_w = ${fmtU(bwT)}` : `B = ${fmtU(B)}`}</text>
                 )}
                 {showStirrup && <text x={secLeft + w / 2} y={secTop + ht + labelY[0]} textAnchor="middle" fontSize="10" fill={STIRRUP_COL}>staffa φ{fmt(phiStirrup, 0)}</text>}
                 {show.bars && nBars > 0 && <text x={secLeft + w / 2} y={secTop + ht + labelY[1]} textAnchor="middle" fontSize="10" fill="#0f172a">armatura tesa φ{fmt(phi, 0)}</text>}
@@ -1610,7 +1804,13 @@ function SideForcesDiagram({ result, unit = "mm", svgRef, bare = false }) {
     const hasCompr = result.AsPrime > 0;
     // forze interne in forma simbolica (in fase di progetto x non è noto)
     const fSteel = Math.abs(result.fs - result.fyd) < 1e-9 ? "yd" : "s";
-    const lblCcParts = [["C"], ["c", true], [" = Ψ·B·x·f"], ["cd", true]];
+    // C_c: rettangolo Ψ·B·x·f_cd; T semplificato: anima + sbalzi dell'ala; T esatto: integrale
+    const lblCcParts = !result.isT ? [["C"], ["c", true], [" = Ψ·B·x·f"], ["cd", true]]
+        : result.flangeMethod === "exact" ? [["C"], ["c", true], [" = ∫σ"], ["c", true], ["·b dy"]]
+            : result.inFlange ? (tensionTop
+                ? [["C"], ["c", true], [" = Ψ·b"], ["w", true], ["·x·f"], ["cd", true]]
+                : [["C"], ["c", true], [" = Ψ·B·x·f"], ["cd", true]])
+                : [["C"], ["c", true], [" = Ψ·b"], ["w", true], ["·x·f"], ["cd", true], [" + (B − b"], ["w", true], [")·s·f"], ["cd", true]];
     const lblCsParts = result.mode === "fixBH" || result.givenTop
         ? [["C'"], ["s", true], [" = A'"], ["s", true], ["·f"], ["yd", true]]
         : [["C'"], ["s", true], [" = β·A"], ["s", true], ["·f"], ["yd", true]];
@@ -1642,9 +1842,9 @@ function SideForcesDiagram({ result, unit = "mm", svgRef, bare = false }) {
     const xRight = 380, xCut = 272;        // corpo trave: xCut..xRight (spostato a sinistra)
     const xStressL = xCut - stressW;       // σ_c a sinistra del taglio
     const yOf = (depth) => tensionTop ? secBot - depth * scale : secTop + depth * scale;
-    const yNA = yOf(X), yEdge0 = yOf(0), yN = yOf(h / 2);
+    const yNA = yOf(X), yEdge0 = yOf(0), yN = yOf(result.yG ?? h / 2); // baricentro G (h/2 se rettangolare)
 
-    const yCc = yOf(kG * X), yCs = yOf(cC), yTs = yOf(d);
+    const yCc = yOf(result.yc ?? kG * X), yCs = yOf(cC), yTs = yOf(d);
     let lblCc = yCc, lblCs = yCs;
     if (hasCompr && Math.abs(yCc - yCs) < 13) {
         const mid = (yCc + yCs) / 2, up = mid - 7, dn = mid + 7;
@@ -1745,7 +1945,7 @@ function SideForcesDiagram({ result, unit = "mm", svgRef, bare = false }) {
                 {show.forces && <>
                     {/* baricentro σ_c: qui cade C_c (tratteggio fino alla quota del braccio) */}
                     {show.dims && <line x1={xTail} y1={yCc} x2={qCc} y2={yCc} stroke="#94a3b8" strokeWidth="1" strokeDasharray="3 3" />}
-                    {show.dims && <text x={xCut - 3} y={yCc - 3} textAnchor="end" fontSize="8" fill="#64748b">G (λ·x)</text>}
+                    {show.dims && <text x={xCut - 3} y={yCc - 3} textAnchor="end" fontSize="8" fill="#64748b">{result.isT ? svgSubText([["G (y"], ["c", true], [")"]]) : "G (λ·x)"}</text>}
 
                     {/* C_c (compressione → verso la sezione, destra) */}
                     <line x1={xTail} y1={yCc} x2={xHead} y2={yCc} stroke={RED} strokeWidth="2.2" markerEnd="url(#sf-red)" />
@@ -1777,15 +1977,15 @@ function SideForcesDiagram({ result, unit = "mm", svgRef, bare = false }) {
                 {show.dims && <>
                     {/* asse baricentrico h/2 */}
                     <line x1={xCut} y1={yN} x2={xRight + 120} y2={yN} stroke="#94a3b8" strokeWidth="0.8" strokeDasharray="4 3" />
-                    <text x={xCut + 4} y={yN - 3} textAnchor="start" fontSize="8" fill="#94a3b8">baricentro (h/2)</text>
+                    <text x={xCut + 4} y={yN - 3} textAnchor="start" fontSize="8" fill="#94a3b8">{result.isT ? "baricentro G" : "baricentro (h/2)"}</text>
                     <VDim dimX={qX} yA={yEdge0} yB={yNA} edgeX={xRight} label="x" color={NA_COL} />
-                    <VDim dimX={qCc} yA={yN} yB={yCc} edgeX={xRight} label="h/2 − λx" color="#475569" />
+                    <VDim dimX={qCc} yA={yN} yB={yCc} edgeX={xRight} label={result.isT ? svgSubText([["y"], ["G", true], [" − y"], ["c", true]]) : "h/2 − λx"} color="#475569" />
                     <text x={qCc + 11} y={(yN + yCc) / 2} textAnchor="middle" fontSize="10" fill="#94a3b8" transform={`rotate(-90 ${qCc + 11} ${(yN + yCc) / 2})`}>br. C<tspan fontSize="7" dy="2">c</tspan></text>
                     {hasCompr && <>
-                        <VDim dimX={qCs} yA={yN} yB={yCs} edgeX={xRight} label={svgSubText([[`h/2 − ${symC}`], ...(effC ? [["eff", true]] : [])])} color="#475569" />
+                        <VDim dimX={qCs} yA={yN} yB={yCs} edgeX={xRight} label={svgSubText([...(result.isT ? [["y"], ["G", true], [` − ${symC}`]] : [[`h/2 − ${symC}`]]), ...(effC ? [["eff", true]] : [])])} color="#475569" />
                         <text x={qCs + 11} y={(yN + yCs) / 2} textAnchor="middle" fontSize="10" fill="#94a3b8" transform={`rotate(-90 ${qCs + 11} ${(yN + yCs) / 2})`}>br. C'<tspan fontSize="7" dy="2">s</tspan></text>
                     </>}
-                    <VDim dimX={qTs} yA={yN} yB={yTs} edgeX={xRight} label={svgSubText([[`h/2 − ${symT}`], ...(effT ? [["eff", true]] : [])])} color="#475569" />
+                    <VDim dimX={qTs} yA={yN} yB={yTs} edgeX={xRight} label={result.isT ? svgSubText([["d − y"], ["G", true]]) : svgSubText([[`h/2 − ${symT}`], ...(effT ? [["eff", true]] : [])])} color="#475569" />
                     <text x={qTs + 11} y={(yN + yTs) / 2} textAnchor="middle" fontSize="10" fill="#94a3b8" transform={`rotate(-90 ${qTs + 11} ${(yN + yTs) / 2})`}>br. T<tspan fontSize="7" dy="2">s</tspan></text>
                 </>}
 
@@ -1797,7 +1997,7 @@ function SideForcesDiagram({ result, unit = "mm", svgRef, bare = false }) {
             </svg>
             <div className="mt-1 text-center text-[11px] leading-tight text-slate-400">
                 <p><Sym>C_c cade nel baricentro G del diagramma σ_c.</Sym></p>
-                <p>I bracci sono misurati dall'asse baricentrico (h/2).</p>
+                <p>I bracci sono misurati dall'asse baricentrico {result.isT ? "G della sezione a T" : "(h/2)"}.</p>
                 {tensionTop && <p><Sym>M_Ed &lt; 0: lato teso in alto.</Sym></p>}
             </div>
         </div>
@@ -1970,8 +2170,10 @@ function formatNumericFieldValue(value) {
 
 function NumberField({ label, hint, unit, value, onChange, onBlur, min, step = "any", disabled = false }) {
     const [displayValue, setDisplayValue] = useState(() => formatNumericFieldValue(value));
+    const inputRef = useRef(null);
     const focusedRef = useRef(false);
     const lastValueRef = useRef(value);
+    const wheelHandlerRef = useRef(null);
 
     useEffect(() => {
         if (Object.is(value, lastValueRef.current)) return;
@@ -2002,6 +2204,30 @@ function NumberField({ label, hint, unit, value, onChange, onBlur, min, step = "
         setDisplayValue(formatNumericFieldValue(lastValueRef.current));
     };
 
+    wheelHandlerRef.current = (e) => {
+        if (disabled) return;
+        e.preventDefault();
+        if (!focusedRef.current || !e.deltaY) return;
+        const current = Number(displayValue.replace(",", "."));
+        if (!Number.isFinite(current)) return;
+
+        const direction = e.deltaY < 0 ? 1 : -1;
+        const fraction = step === "1" ? 0 : current - Math.trunc(current);
+        let nextValue = Math.trunc(current) + direction + fraction;
+        if (step === "1" && min != null) nextValue = Math.max(Number(min), nextValue);
+        const nextText = String(+nextValue.toFixed(6));
+        setDisplayValue(formatNumericFieldValue(nextText));
+        onChange(nextText);
+    };
+
+    useEffect(() => {
+        const input = inputRef.current;
+        if (!input) return;
+        const handleWheel = (event) => wheelHandlerRef.current?.(event);
+        input.addEventListener("wheel", handleWheel, { passive: false });
+        return () => input.removeEventListener("wheel", handleWheel);
+    }, []);
+
     return (
         <label className="block">
             <span className="mb-1 block text-xs font-semibold text-slate-500">
@@ -2009,7 +2235,7 @@ function NumberField({ label, hint, unit, value, onChange, onBlur, min, step = "
                 {/* sottotitolo sotto l'etichetta */}
                 {hint && <span className="block text-[10px] font-normal text-slate-400">{hint}</span>}
             </span>
-            <input type="text" inputMode="decimal" value={displayValue} disabled={disabled}
+            <input ref={inputRef} type="text" inputMode="decimal" value={displayValue} disabled={disabled}
                 onFocus={() => { focusedRef.current = true; }} onChange={handleChange} onBlur={handleBlur}
                 className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400" />
         </label>
