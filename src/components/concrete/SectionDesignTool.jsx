@@ -21,7 +21,7 @@ import Sym, { sub } from "../Sym";
 import { concreteTable, STEEL_TABLE } from "../../lib/concrete/materialTables";
 import ConcreteDiagram from "./ConcreteDiagram";
 import SteelDiagram from "./SteelDiagram";
-import { buildSectionDxf } from "../../lib/concrete/sectionDxf";
+import { buildSectionDxf, buildForcesDxf } from "../../lib/concrete/sectionDxf";
 
 const BAR_DIAMETERS = [10, 12, 14, 16, 18, 20, 24, 26];
 const STIRRUP_DIAMETERS = [6, 8, 10, 12];
@@ -47,12 +47,14 @@ export default function SectionDesignTool() {
     const copiedTimer = useRef(null);
     const savedTimer = useRef(null);
     const dxfSavedTimer = useRef(null);
+    const dxfSavedTimerF = useRef(null);
     const copiedTimerF = useRef(null);
     const savedTimerF = useRef(null);
     const [exportMessage, setExportMessage] = useState("");
     const [isCopied, setIsCopied] = useState(false);
     const [isSaved, setIsSaved] = useState(false);
     const [isDxfSaved, setIsDxfSaved] = useState(false);
+    const [isDxfSavedF, setIsDxfSavedF] = useState(false);
     const [isCopiedF, setIsCopiedF] = useState(false);
     const [isSavedF, setIsSavedF] = useState(false);
 
@@ -210,6 +212,25 @@ export default function SectionDesignTool() {
         phiPrime: adoptedCompressionPhi,
     } : result;
 
+    const downloadDxf = (dxf, filename) => {
+        const url = URL.createObjectURL(new Blob([dxf], { type: "application/dxf" }));
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = filename;
+        link.click();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    };
+    const saveForcesDxf = () => {
+        try {
+            downloadDxf(buildForcesDxf({ result }), "forze-interne.dxf");
+            setExportMessage("");
+            setIsDxfSavedF(true);
+            window.clearTimeout(dxfSavedTimerF.current);
+            dxfSavedTimerF.current = window.setTimeout(() => setIsDxfSavedF(false), 1600);
+        } catch {
+            setExportMessage("Esportazione DXF non riuscita");
+        }
+    };
     const saveSectionDxf = () => {
         try {
             const dxf = buildSectionDxf({
@@ -224,12 +245,7 @@ export default function SectionDesignTool() {
                 cLeft: input.cLeft,
                 cRight: input.cRight,
             });
-            const url = URL.createObjectURL(new Blob([dxf], { type: "application/dxf" }));
-            const link = document.createElement("a");
-            link.href = url;
-            link.download = "sezione-progettata-1-1mm.dxf";
-            link.click();
-            window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+            downloadDxf(dxf, "sezione-progettata-1-1mm.dxf");
             setExportMessage("");
             setIsDxfSaved(true);
             window.clearTimeout(dxfSavedTimer.current);
@@ -553,6 +569,16 @@ export default function SectionDesignTool() {
                                         <option value="cm">cm</option>
                                         <option value="m">m</option>
                                     </select>
+                                    <button type="button" onClick={saveForcesDxf} title={isDxfSavedF ? "DXF scaricato" : "Esporta DXF per AutoCAD"} aria-label={isDxfSavedF ? "DXF scaricato" : "Esporta il disegno delle forze interne in DXF"} className="rounded-full border border-slate-300 bg-white p-2 text-slate-700 shadow-sm transition hover:bg-slate-50">
+                                        <span className="relative block h-[15px] w-[15px]">
+                                            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" className={`absolute inset-0 transition-all duration-300 ease-in-out ${isDxfSavedF ? "rotate-90 scale-50 opacity-0" : "rotate-0 scale-100 opacity-100"}`} aria-hidden="true">
+                                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+                                                <path d="M14 2v6h6" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+                                                <text x="5.1" y="16.2" fill="currentColor" fontSize="5.6" fontWeight="700" fontFamily="sans-serif">DXF</text>
+                                            </svg>
+                                            <Check size={15} className={`absolute inset-0 transition-all duration-300 ease-in-out ${isDxfSavedF ? "rotate-0 scale-100 opacity-100" : "-rotate-90 scale-50 opacity-0"}`} />
+                                        </span>
+                                    </button>
                                     <button type="button" onClick={copyForces} title="Copia immagine" aria-label={isCopiedF ? "Immagine copiata" : "Copia immagine negli appunti"} className="rounded-full border border-slate-300 bg-white p-2 text-slate-700 shadow-sm transition hover:bg-slate-50">
                                         <span className="relative block h-[15px] w-[15px]">
                                             <Copy size={15} className={`absolute inset-0 transition-all duration-300 ease-in-out ${isCopiedF ? "rotate-90 scale-50 opacity-0" : "rotate-0 scale-100 opacity-100"}`} />

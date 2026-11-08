@@ -1,238 +1,447 @@
-function dxfNumber(value) {
-    const number = Number(value);
-    return Number.isFinite(number) ? number.toFixed(4).replace(/\.?0+$/, "") : "0";
+// Esportazione DXF dei disegni del progetto sezione (unità mm):
+//  - buildSectionDxf: sezione progettata quotata, scala 1:1;
+//  - buildForcesDxf: sezione di lato con diagramma σc, forze interne e bracci
+//    (altezze in scala 1:1, sviluppi orizzontali schematici come a schermo).
+//
+// Formato AutoCAD R12 (AC1009) volutamente minimale, letto senza errori da
+// AutoCAD, BricsCAD, DraftSight, LibreCAD, QCAD e dai visualizzatori online:
+// solo entità elementari (POLYLINE, CIRCLE, LINE, SOLID, TEXT). Le quote sono
+// disegnate con linee, frecce piene e testi (nessuna entità DIMENSION né blocchi
+// anonimi, che nelle versioni R12 sono la causa tipica dei file "non validi").
+
+function num(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "0";
+    const s = n.toFixed(4).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+    return s === "-0" ? "0" : s;
 }
 
-function labelNumber(value) {
-    return Number(value).toLocaleString("it-IT", { useGrouping: false, maximumFractionDigits: 2 });
+const lbl = (value) => Number(value).toLocaleString("it-IT", { useGrouping: false, maximumFractionDigits: 1 });
+
+// testo DXF: φ → %%c (diametro), − → "-", gli altri caratteri non ASCII
+// (Ψ, λ, β, σ, ·, ∫ …) con la sequenza \U+XXXX letta da AutoCAD
+const dxfText = (text) => String(text)
+    .replace(/φ/g, "%%c").replace(/−/g, "-")
+    .replace(/[^\x20-\x7e]/g, (ch) => `\\U+${ch.codePointAt(0).toString(16).toUpperCase().padStart(4, "0")}`);
+
+// ---------------------------------------------------------------------------
+// scrittore DXF R12 condiviso dai due disegni
+// ---------------------------------------------------------------------------
+function createDxf(TH) {
+    const GAP = 2.2 * TH;   // distanza tra le linee di quota
+    const ARW = 1.2 * TH;   // lunghezza delle frecce
+    const ent = [];
+    const push = (type, layer, pairs) => {
+        ent.push("0", type, "8", layer);
+        pairs.forEach(([c, v]) => ent.push(String(c), String(v)));
+    };
+    const line = (x1, y1, x2, y2, layer = "QUOTE") => push("LINE", layer, [
+        [10, num(x1)], [20, num(y1)], [30, 0], [11, num(x2)], [21, num(y2)], [31, 0],
+    ]);
+    const circle = (x, y, r, layer) => push("CIRCLE", layer, [[10, num(x)], [20, num(y)], [30, 0], [40, num(r)]]);
+    const poly = (pts, layer, closed = true) => {
+        ent.push("0", "POLYLINE", "8", layer, "66", "1", "10", "0", "20", "0", "30", "0", "70", closed ? "1" : "0");
+        pts.forEach(({ x, y, bulge }) => {
+            ent.push("0", "VERTEX", "8", layer, "10", num(x), "20", num(y), "30", "0");
+            if (bulge) ent.push("42", num(bulge));
+        });
+        ent.push("0", "SEQEND", "8", layer);
+    };
+    // freccia piena (triangolo) con la punta in (x, y) e direzione (ux, uy)
+    const arrow = (x, y, ux, uy, layer = "QUOTE", len = ARW) => {
+        const m = Math.hypot(ux, uy) || 1; ux /= m; uy /= m;
+        const bx = x - ux * len, by = y - uy * len, wx = -uy * len / 6, wy = ux * len / 6;
+        push("SOLID", layer, [
+            [10, num(x)], [20, num(y)], [30, 0],
+            [11, num(bx + wx)], [21, num(by + wy)], [31, 0],
+            [12, num(bx - wx)], [22, num(by - wy)], [32, 0],
+            [13, num(bx - wx)], [23, num(by - wy)], [33, 0],
+        ]);
+    };
+    // testo in (x, y): align "c" centrato, "l" a sinistra, "r" a destra (sempre a metà altezza);
+    // "base" = punto di inserimento sulla linea di base, allineato a sinistra
+    const JUST = { c: 1, l: 0, r: 2 };
+    const text = (s, x, y, { h = TH, rot = 0, layer = "TESTI", align = "c" } = {}) => push("TEXT", layer, [
+        [10, num(x)], [20, num(y)], [30, 0], [40, num(h)], [1, dxfText(s)], [50, num(rot)],
+        ...(align === "base" ? [] : [[72, JUST[align]], [73, 2], [11, num(x)], [21, num(y)], [31, 0]]),
+    ]);
+    // quota orizzontale tra x1 e x2, linea di quota a yDim, linee di richiamo da yEdge
+    const hDim = (label, x1, x2, yDim, yEdge, above = yDim > yEdge, layer = "QUOTE") => {
+        const s = Math.sign(yDim - yEdge) || -1;
+        line(x1, yEdge + s * TH * 0.3, x1, yDim + s * TH * 0.4, layer);
+        line(x2, yEdge + s * TH * 0.3, x2, yDim + s * TH * 0.4, layer);
+        line(x1, yDim, x2, yDim, layer);
+        const inside = Math.abs(x2 - x1) >= 2.4 * ARW;
+        if (inside) { arrow(x1, yDim, -1, 0, layer); arrow(x2, yDim, 1, 0, layer); } else { arrow(x1, yDim, 1, 0, layer); arrow(x2, yDim, -1, 0, layer); }
+        text(label, (x1 + x2) / 2, yDim + (above ? 0.9 : -0.9) * TH);
+    };
+    // quota verticale tra y1 e y2, linea di quota a xDim, linee di richiamo da xEdge
+    const vDim = (label, y1, y2, xDim, xEdge, layer = "QUOTE") => {
+        const s = Math.sign(xDim - xEdge) || -1;
+        const lo = Math.min(y1, y2), hi = Math.max(y1, y2);
+        line(xEdge + s * TH * 0.3, lo, xDim + s * TH * 0.4, lo, layer);
+        line(xEdge + s * TH * 0.3, hi, xDim + s * TH * 0.4, hi, layer);
+        line(xDim, lo, xDim, hi, layer);
+        const inside = hi - lo >= 2.4 * ARW;
+        if (inside) { arrow(xDim, lo, 0, -1, layer); arrow(xDim, hi, 0, 1, layer); } else { arrow(xDim, lo, 0, 1, layer); arrow(xDim, hi, 0, -1, layer); }
+        text(label, xDim - 0.9 * TH, (lo + hi) / 2, { rot: 90 });
+    };
+
+    // file completo: intestazione, tabelle (vista, tipi di linea, layer, stile) ed entità
+    const build = (ext, layers) => {
+        const vc = { x: (ext.x0 + ext.x1) / 2, y: (ext.y0 + ext.y1) / 2 };
+        const vSize = 1.1 * Math.max(ext.y1 - ext.y0, (ext.x1 - ext.x0) / 1.6); // altezza della vista iniziale
+        const dash = Math.max(4, Math.round(TH)), gap = Math.max(2, Math.round(TH / 2));
+        const out = [
+            "0", "SECTION", "2", "HEADER",
+            "9", "$ACADVER", "1", "AC1009",
+            "9", "$INSBASE", "10", "0", "20", "0", "30", "0",
+            "9", "$EXTMIN", "10", num(ext.x0), "20", num(ext.y0), "30", "0",
+            "9", "$EXTMAX", "10", num(ext.x1), "20", num(ext.y1), "30", "0",
+            "9", "$LIMMIN", "10", num(ext.x0), "20", num(ext.y0),
+            "9", "$LIMMAX", "10", num(ext.x1), "20", num(ext.y1),
+            "9", "$VIEWCTR", "10", num(vc.x), "20", num(vc.y),
+            "9", "$VIEWSIZE", "40", num(vSize),
+            "9", "$FASTZOOM", "70", "1",
+            "9", "$REGENMODE", "70", "1",
+            "9", "$FILLMODE", "70", "1",
+            "9", "$LTSCALE", "40", "1",
+            "9", "$TEXTSIZE", "40", num(TH),
+            "9", "$TEXTSTYLE", "7", "STANDARD",
+            "9", "$CLAYER", "8", "0",
+            "9", "$LUNITS", "70", "2",
+            "9", "$LUPREC", "70", "2",
+            "0", "ENDSEC",
+            "0", "SECTION", "2", "TABLES",
+            // vista attiva inquadrata sul disegno, zoom veloce (73 = 1) e
+            // risoluzione dei cerchi 1000 (72): senza la tabella VPORT AutoCAD
+            // crea una vista con valori nulli e lo zoom rigenera a ogni scatto
+            "0", "TABLE", "2", "VPORT", "70", "1",
+            "0", "VPORT", "2", "*ACTIVE", "70", "0",
+            "10", "0", "20", "0", "11", "1", "21", "1",
+            "12", num(vc.x), "22", num(vc.y),
+            "13", "0", "23", "0", "14", "10", "24", "10", "15", "10", "25", "10",
+            "16", "0", "26", "0", "36", "1", "17", "0", "27", "0", "37", "0",
+            "40", num(vSize), "41", "1.6", "42", "50", "43", "0", "44", "0", "50", "0", "51", "0",
+            "71", "0", "72", "1000", "73", "1", "74", "3", "75", "0", "76", "0", "77", "0", "78", "0",
+            "0", "ENDTAB",
+            "0", "TABLE", "2", "LTYPE", "70", "2",
+            "0", "LTYPE", "2", "CONTINUOUS", "70", "0", "3", "Solid line", "72", "65", "73", "0", "40", "0",
+            "0", "LTYPE", "2", "DASHED", "70", "0", "3", "Dashed __ __ __", "72", "65", "73", "2",
+            "40", num(dash + gap), "49", num(dash), "49", num(-gap),
+            "0", "ENDTAB",
+            "0", "TABLE", "2", "LAYER", "70", String(layers.length + 1),
+            ...[["0", 7, "CONTINUOUS"], ...layers].flatMap(([name, color, lt]) => ["0", "LAYER", "2", name, "70", "0", "62", String(color), "6", lt]),
+            "0", "ENDTAB",
+            // font TrueType (Arial) per i caratteri greci delle formule (Ψ, λ, β, σ)
+            "0", "TABLE", "2", "STYLE", "70", "1",
+            "0", "STYLE", "2", "STANDARD", "70", "0", "40", "0", "41", "1", "50", "0", "71", "0", "42", num(TH), "3", "arial.ttf", "4", "",
+            "0", "ENDTAB",
+            "0", "TABLE", "2", "VIEW", "70", "0", "0", "ENDTAB",
+            "0", "TABLE", "2", "UCS", "70", "0", "0", "ENDTAB",
+            "0", "TABLE", "2", "APPID", "70", "1",
+            "0", "APPID", "2", "ACAD", "70", "0",
+            "0", "ENDTAB",
+            "0", "ENDSEC",
+            "0", "SECTION", "2", "BLOCKS", "0", "ENDSEC",
+            "0", "SECTION", "2", "ENTITIES", ...ent, "0", "ENDSEC",
+            "0", "EOF",
+        ];
+        return out.join("\r\n") + "\r\n";
+    };
+
+    return { GAP, ARW, line, circle, poly, arrow, text, hDim, vDim, build };
 }
 
+// ---------------------------------------------------------------------------
+// sezione progettata (scala 1:1). Origine: spigolo inferiore sinistro della
+// sezione (per la T: dell'ala)
+// ---------------------------------------------------------------------------
 export function buildSectionDxf({ result, B, layT, layC, hanger, dTNom, dCNom, phiStirrup, cLeft, cRight }) {
     const h = Number(result.h);
     const width = Number(B);
     const phiT = Number(result.phi);
-    const stirrup = Number(phiStirrup);
-    const flip = !!result.tensionTop;
-    const tensionRows = layT?.rows?.length ? layT.rows : [result.nBars];
+    const st = Number(phiStirrup) || 0;
+    const cL = Number(cLeft) || 0, cR = Number(cRight) || 0;
+    const flip = !!result.tensionTop; // M_Ed < 0: lembo compresso inferiore
+    const isT = !!result.isT;
+    const bw = isT ? Math.min(Number(result.bw), width) : width;
+    const hf = isT ? Number(result.hf) : 0;
+    const webL = (width - bw) / 2, webR = webL + bw;
+
+    const rowsT = layT?.rows?.length ? layT.rows : [result.nBars];
     const hangerOnly = !!hanger && !(result.nBarsPrime > 0);
     const phiC = Number(hangerOnly ? hanger.phi : result.phiPrime || phiT);
-    const compressionRows = hangerOnly
-        ? [hanger.n]
-        : result.nBarsPrime > 0
-            ? layC?.rows?.length ? layC.rows : [result.nBarsPrime]
-            : [];
-    const spacingT = Number(layT?.sV) || 0;
-    const spacingC = Number(layC?.sV) || 0;
-    const yFromCompressionFace = (depth) => flip ? depth : h - depth;
+    const rowsC = hangerOnly ? [hanger.n]
+        : result.nBarsPrime > 0 ? (layC?.rows?.length ? layC.rows : [result.nBarsPrime]) : [];
+    const sVT = Number(layT?.sV) || 0, sVC = Number(layC?.sV) || 0;
+    // profondità misurate dal lembo compresso → ordinata y (y = 0 lembo inferiore)
+    const yOf = (depth) => (flip ? depth : h - depth);
 
-    const entities = [];
-    const dimensionBlocks = [];
-    let dimensionBlockCount = 0;
-    const pushEntityTo = (target, type, layer, data = []) => {
-        target.push("0", type, "8", layer, ...data.flatMap(([code, value]) => [String(code), String(value)]));
+    // altezza dei testi e distanze delle quote proporzionate alla sezione
+    const TH = Math.min(40, Math.max(6, Math.round(Math.max(width, h) / 45)));
+    const { GAP, line, circle, poly, text, hDim, vDim, build } = createDxf(TH);
+
+    // ---- contorno della sezione (rettangolo o T con l'ala sul lembo superiore) ----
+    poly(isT
+        ? [{ x: webL, y: 0 }, { x: webR, y: 0 }, { x: webR, y: h - hf }, { x: width, y: h - hf },
+            { x: width, y: h }, { x: 0, y: h }, { x: 0, y: h - hf }, { x: webL, y: h - hf }]
+        : [{ x: 0, y: 0 }, { x: width, y: 0 }, { x: width, y: h }, { x: 0, y: h }], "SEZIONE");
+
+    // ---- barre (nell'anima): barre d'angolo a c + φst + φ/2 dai bordi, le altre
+    // equidistanti; se non ci stanno, interferro minimo e simmetriche all'asse ----
+    const latL = (p) => Math.min(cL + st + p / 2, bw / 2 - p / 2);
+    const latR = (p) => Math.min(cR + st + p / 2, bw / 2 - p / 2);
+    const barsX = (n, p) => {
+        const xL = latL(p), xR = bw - latR(p), pitch = p + Math.max(p, 20);
+        const fits = n <= 1 || (n - 1) * pitch <= xR - xL + 1e-6;
+        return Array.from({ length: Math.max(0, Math.trunc(n) || 0) }, (_, i) => webL + (n === 1 ? bw / 2
+            : fits ? xL + ((xR - xL) * i) / (n - 1) : bw / 2 + (i - (n - 1) / 2) * pitch));
     };
-    const pushEntity = (type, layer, data = []) => pushEntityTo(entities, type, layer, data);
-    const addLineTo = (target, x1, y1, x2, y2, layer = "DIMENSIONS") => pushEntityTo(target, "LINE", layer, [
-        [10, dxfNumber(x1)], [20, dxfNumber(y1)], [30, "0"],
-        [11, dxfNumber(x2)], [21, dxfNumber(y2)], [31, "0"],
-    ]);
-    const addLine = (x1, y1, x2, y2, layer = "DIMENSIONS") => addLineTo(entities, x1, y1, x2, y2, layer);
-    const addCircle = (x, y, radius, layer) => pushEntity("CIRCLE", layer, [
-        [10, dxfNumber(x)], [20, dxfNumber(y)], [30, "0"], [40, dxfNumber(radius)],
-    ]);
-    const addPolyline = (points, layer, closed = false) => {
-        entities.push("0", "POLYLINE", "8", layer, "66", "1", "70", closed ? "1" : "0", "10", "0", "20", "0", "30", "0");
-        points.forEach(({ x, y, bulge = 0 }) => {
-            entities.push("0", "VERTEX", "8", layer, "10", dxfNumber(x), "20", dxfNumber(y), "30", "0", "70", "0");
-            if (bulge) entities.push("42", dxfNumber(bulge));
-        });
-        entities.push("0", "SEQEND", "8", layer);
-    };
-    const roundedRectangle = (left, bottom, right, top, radius) => {
-        const r = Math.max(0, Math.min(radius, (right - left) / 2, (top - bottom) / 2));
-        if (r < 1e-8) return [
-            { x: left, y: bottom }, { x: right, y: bottom },
-            { x: right, y: top }, { x: left, y: top },
-        ];
-        const q = 0.4142135624;
+    const depthT = (i) => h - dTNom - i * sVT;
+    const depthC = (i) => dCNom + i * sVC;
+    rowsT.forEach((n, i) => barsX(n, phiT).forEach((x) => circle(x, yOf(depthT(i)), phiT / 2, "ARMATURA_TESA")));
+    rowsC.forEach((n, i) => barsX(n, phiC).forEach((x) =>
+        circle(x, yOf(depthC(i)), phiC / 2, hangerOnly ? "REGGISTAFFA" : "ARMATURA_COMPRESSA")));
+
+    // ---- staffa tangente alle barre d'angolo (contorno esterno e interno) ----
+    const hasTop = rowsC.length > 0;
+    const offT = (phiT + st) / 2, offC = ((hasTop ? phiC : phiT) + st) / 2;
+    const axL = Math.min(webL + latL(phiT) - offT, hasTop ? webL + latL(phiC) - offC : Infinity);
+    const axR = Math.max(webL + bw - latR(phiT) + offT, hasTop ? webL + bw - latR(phiC) + offC : -Infinity);
+    const yEdgeT = yOf(depthT(0)) + (flip ? offT : -offT);
+    const yEdgeC = yOf(dCNom) + (flip ? -offC : offC);
+    const axB = Math.min(yEdgeT, yEdgeC), axTop = Math.max(yEdgeT, yEdgeC);
+    const rr = (l, b, r, t, rad) => {
+        const k = Math.max(0, Math.min(rad, (r - l) / 2, (t - b) / 2)), q = 0.4142135624;
+        if (k < 1e-6) return [{ x: l, y: b }, { x: r, y: b }, { x: r, y: t }, { x: l, y: t }];
         return [
-            { x: left + r, y: bottom }, { x: right - r, y: bottom, bulge: q },
-            { x: right, y: bottom + r }, { x: right, y: top - r, bulge: q },
-            { x: right - r, y: top }, { x: left + r, y: top, bulge: q },
-            { x: left, y: top - r }, { x: left, y: bottom + r, bulge: q },
+            { x: l + k, y: b }, { x: r - k, y: b, bulge: q }, { x: r, y: b + k }, { x: r, y: t - k, bulge: q },
+            { x: r - k, y: t }, { x: l + k, y: t, bulge: q }, { x: l, y: t - k }, { x: l, y: b + k, bulge: q },
         ];
     };
-    const addTextTo = (target, text, x, y, height = 2.5, rotation = 0, centered = true) => {
-        const data = [
-            [10, dxfNumber(x)], [20, dxfNumber(y)], [30, "0"], [40, dxfNumber(height)],
-            [1, text], [50, dxfNumber(rotation)], [7, "STANDARD"],
-        ];
-        if (centered) data.push([72, "1"], [73, "2"], [11, dxfNumber(x)], [21, dxfNumber(y)], [31, "0"]);
-        pushEntityTo(target, "TEXT", "TEXT", data);
-    };
-    const addText = (text, x, y, height = 2.5, rotation = 0, centered = true) => addTextTo(entities, text, x, y, height, rotation, centered);
+    if (st > 0 && axR - axL > st && axTop - axB > st) {
+        const rad = Math.min(offT, offC);
+        poly(rr(axL - st / 2, axB - st / 2, axR + st / 2, axTop + st / 2, rad + st / 2), "STAFFA");
+        poly(rr(axL + st / 2, axB + st / 2, axR - st / 2, axTop - st / 2, rad - st / 2), "STAFFA");
+    }
 
-    const addArrowH = (target, x, y, direction) => {
-        const tip = 3;
-        addLineTo(target, x, y, x + direction * tip, y + 1.2);
-        addLineTo(target, x, y, x + direction * tip, y - 1.2);
+    // ---- asse neutro (linea tratteggiata, tipo di linea DASHED) ----
+    const X = Number(result.X) || 0;
+    const yN = yOf(X);
+    if (X > 0 && X < h) {
+        const bAt = isT && yN > h - hf ? [0, width] : [webL, webR];
+        line(bAt[0] - TH, yN, bAt[1] + TH, yN, "ASSE_NEUTRO");
+    }
+
+    // ---- quote ----
+    const d = Number(result.d) || h - dTNom;
+    const cP = dCNom + (Number(layC?.delta) || 0);
+    const symT = flip ? "d''" : "d'", symC = flip ? "d'" : "d''";
+    const effT = rowsT.length > 1 ? "eff" : "", effC = rowsC.length > 1 ? "eff" : "";
+    const yComp = yOf(0);
+    // sinistra: x e d (dal lembo compresso), d' / d'' lato teso
+    vDim(`x = ${lbl(X)}`, yComp, yN, -GAP, isT ? (flip ? webL : 0) : 0);
+    vDim(`d = ${lbl(d)}`, yComp, yOf(d), -2 * GAP, 0);
+    vDim(`${symT}${effT} = ${lbl(h - d)}`, yOf(d), yOf(h), -2 * GAP, isT && !flip ? webL : 0);
+    // destra: d'' / d' lato compresso, h (e s per la T)
+    vDim(`${symC}${effC} = ${lbl(cP)}`, yComp, yOf(cP), width + GAP, width);
+    vDim(`h = ${lbl(h)}`, 0, h, width + 2 * GAP, width);
+    if (isT) vDim(`s = ${lbl(hf)}`, h - hf, h, width + 3 * GAP, width);
+    // sotto: copriferri laterali c, c' e larghezza (B o b_w); sopra: B dell'ala
+    hDim(`c = ${lbl(cL)}`, webL, webL + cL, -GAP, 0, false);
+    hDim(`c' = ${lbl(cR)}`, webR - cR, webR, -GAP, 0, false);
+    hDim(isT ? `bw = ${lbl(bw)}` : `B = ${lbl(width)}`, webL, webR, -2 * GAP, 0, false);
+    if (isT) hDim(`B = ${lbl(width)}`, 0, width, h + GAP, h, true);
+
+    // ---- didascalie ----
+    const top = h + (isT ? 2.4 : 1.2) * GAP;
+    text(`SEZIONE PROGETTATA${isT ? " A T" : ""} - SCALA 1:1 - UNITA' mm`, 0, top, { h: 1.2 * TH, align: "base" });
+    const capY = -2 * GAP - 2 * TH;
+    const caps = [`STAFFA φ${lbl(st)}`, `ARMATURA TESA ${rowsT.join("+")} φ${lbl(phiT)}`];
+    if (hasTop) caps.push(`${hangerOnly ? "REGGISTAFFA" : "ARMATURA COMPRESSA"} ${rowsC.join("+")} φ${lbl(phiC)}`);
+    caps.forEach((s, i) => text(s, width / 2, capY - i * 1.7 * TH));
+
+    return build(
+        { x0: -2 * GAP - 2 * TH, y0: capY - caps.length * 1.7 * TH, x1: width + (isT ? 3 : 2) * GAP + TH, y1: top + 2 * TH },
+        [
+            ["SEZIONE", 7, "CONTINUOUS"], ["STAFFA", 6, "CONTINUOUS"],
+            ["ARMATURA_TESA", 1, "CONTINUOUS"], ["ARMATURA_COMPRESSA", 5, "CONTINUOUS"], ["REGGISTAFFA", 8, "CONTINUOUS"],
+            ["ASSE_NEUTRO", 4, "DASHED"], ["QUOTE", 8, "CONTINUOUS"], ["TESTI", 7, "CONTINUOUS"],
+        ],
+    );
+}
+
+// ---------------------------------------------------------------------------
+// forze interne (sezione di lato). Le altezze sono in scala 1:1 (mm), gli
+// sviluppi orizzontali (trave, diagramma σc, frecce) sono schematici e
+// proporzionati ad h. Origine: lembo inferiore della sezione di taglio.
+// Forze e bracci in forma simbolica (in fase di progetto x non è un dato).
+// ---------------------------------------------------------------------------
+export function buildForcesDxf({ result }) {
+    const h = Number(result.h);
+    const X = Number(result.X) || 0;
+    const d = Number(result.d) || 0;
+    const flip = !!result.tensionTop;
+    const isT = !!result.isT;
+    const model = result.concreteModel || "rectangular";
+    const hasCompr = result.AsPrime > 0;
+    const NEd = Number(result.NEd) || 0, hasN = Math.abs(NEd) > 0.5;
+    const MEd = Number(result.MEdSigned) || 0;
+    const yOf = (depth) => (flip ? depth : h - depth);
+
+    const TH = Math.min(40, Math.max(6, Math.round(h / 22)));
+    const { GAP, line, poly, arrow, text, vDim, build } = createDxf(TH);
+    const FA = 1.6 * TH; // punta delle frecce delle forze
+
+    // geometria schematica (x orizzontale): taglio in x = 0, trave verso destra
+    const Lb = 0.55 * h;            // tratto di trave disegnato
+    const SW = 0.25 * h;            // larghezza del diagramma σc
+    const xHead = -SW - 0.08 * h;   // punta delle frecce delle forze
+    const xTail = xHead - 0.32 * h; // coda delle frecce
+    const xLab = xTail - 0.5 * TH;  // etichette delle forze (allineate a destra)
+
+    const yEdge0 = yOf(0), yNA = yOf(X), yG = yOf(result.yG ?? h / 2);
+    const yCc = yOf(result.yc ?? (result.kG ?? 0.4) * X);
+    const yCs = yOf(result.cC), yTs = yOf(d);
+
+    // ---- trave: taglio, lembi e linea di interruzione a destra ----
+    line(0, 0, 0, h, "TRAVE");
+    line(0, 0, Lb, 0, "TRAVE");
+    line(0, h, Lb, h, "TRAVE");
+    const zz = 0.05 * h;
+    poly([
+        { x: Lb, y: -zz }, { x: Lb, y: h / 2 - zz }, { x: Lb + zz, y: h / 2 - zz / 3 },
+        { x: Lb - zz, y: h / 2 + zz / 3 }, { x: Lb, y: h / 2 + zz }, { x: Lb, y: h + zz },
+    ], "TRAVE", false);
+    // sezione a T: attacco ala-anima (l'ala è sempre sul lembo superiore)
+    if (isT) {
+        const yFl = h - Number(result.hf);
+        line(0, yFl, Lb, yFl, "TRAVE");
+        line(-SW, yFl, 0, yFl, "RICHIAMI");
+    }
+
+    // ---- armature longitudinali ----
+    line(0, yTs, Lb, yTs, "ARMATURA_TESA");
+    if (hasCompr) line(0, yCs, Lb, yCs, "ARMATURA_COMPRESSA");
+
+    // ---- asse neutro ----
+    if (X > 0 && X < h) line(-SW - 0.5 * TH, yNA, Lb + TH, yNA, "ASSE_NEUTRO");
+
+    // ---- diagramma σc adottato (a sinistra del taglio) ----
+    const EPS_CU = 0.0035, EPS_C2 = 0.002, EPS_C3 = 0.00175;
+    const sigmaFrac = (depth) => {
+        const e = EPS_CU * (X - depth) / X;
+        if (model === "bilinear") return e >= EPS_C3 ? 1 : e / EPS_C3;
+        return e >= EPS_C2 ? 1 : 1 - Math.pow(1 - e / EPS_C2, 2);
     };
-    const addArrowV = (target, x, y, direction) => {
-        const tip = 3;
-        addLineTo(target, x, y, x + 1.2, y + direction * tip);
-        addLineTo(target, x, y, x - 1.2, y + direction * tip);
-    };
-    const addDimension = ({ prefix, value, x1, y1, x2, y2, lineX, lineY, textX, textY, rotation }) => {
-        const blockName = `*D${++dimensionBlockCount}`;
-        const blockEntities = [];
-        const label = `${prefix} ${dim(value)}`;
-        if (rotation === 0) {
-            addLineTo(blockEntities, x1, y1, x1, lineY + 2);
-            addLineTo(blockEntities, x2, y2, x2, lineY + 2);
-            addLineTo(blockEntities, x1, lineY, x2, lineY);
-            addArrowH(blockEntities, x1, lineY, 1);
-            addArrowH(blockEntities, x2, lineY, -1);
+    if (X > 0) {
+        if (model === "rectangular") {
+            const a = Math.min(0.8 * X, h);
+            poly([{ x: 0, y: yEdge0 }, { x: -SW, y: yEdge0 }, { x: -SW, y: yOf(a) }, { x: 0, y: yOf(a) }], "DIAGRAMMA_SIGMA");
         } else {
-            const low = Math.min(y1, y2), high = Math.max(y1, y2);
-            const extensionEndX = lineX + (lineX < x1 ? 2 : -2);
-            addLineTo(blockEntities, x1, y1, extensionEndX, y1);
-            addLineTo(blockEntities, x2, y2, extensionEndX, y2);
-            addLineTo(blockEntities, lineX, low, lineX, high);
-            addArrowV(blockEntities, lineX, low, 1);
-            addArrowV(blockEntities, lineX, high, -1);
+            const pts = [{ x: 0, y: yEdge0 }];
+            const xe = Math.min(X, h);
+            for (let i = 0; i <= 24; i++) {
+                const depth = (xe * i) / 24;
+                pts.push({ x: -sigmaFrac(depth) * SW, y: yOf(depth) });
+            }
+            pts.push({ x: 0, y: yOf(xe) });
+            poly(pts, "DIAGRAMMA_SIGMA");
         }
-        addTextTo(blockEntities, label, textX, textY, 2.5, rotation);
-        dimensionBlocks.push({ name: blockName, entities: blockEntities });
-        pushEntity("DIMENSION", "DIMENSIONS", [
-            [2, blockName], [10, dxfNumber(lineX)], [20, dxfNumber(lineY)], [30, "0"],
-            [11, dxfNumber(textX)], [21, dxfNumber(textY)], [31, "0"],
-            [70, "0"], [1, `${prefix} <> mm`], [3, "STANDARD"], [42, dxfNumber(value)],
-            [13, dxfNumber(x1)], [23, dxfNumber(y1)], [33, "0"],
-            [14, dxfNumber(x2)], [24, dxfNumber(y2)], [34, "0"], [50, dxfNumber(rotation)],
-        ]);
-    };
-    const horizontalDimension = (prefix, value, x1, x2, y1, y2, yDim, textY) => {
-        addDimension({ prefix, value, x1, y1, x2, y2, lineX: (x1 + x2) / 2, lineY: yDim, textX: (x1 + x2) / 2, textY, rotation: 0 });
-    };
-    const verticalDimension = (prefix, value, xDim, x1, y1, x2, y2, textX) => {
-        addDimension({ prefix, value, x1, y1, x2, y2, lineX: xDim, lineY: (y1 + y2) / 2, textX, textY: (Math.min(y1, y2) + Math.max(y1, y2)) / 2, rotation: 90 });
-    };
-    const barPositions = (count, diameter) => {
-        const n = Math.max(0, Math.trunc(Number(count) || 0));
-        if (!n) return [];
-        const left = Math.min(cLeft + stirrup + diameter / 2, width / 2 - diameter / 2);
-        const right = Math.min(cRight + stirrup + diameter / 2, width / 2 - diameter / 2);
-        const xLeft = left;
-        const xRight = width - right;
-        const pitch = diameter + Math.max(diameter, 20);
-        const fits = n <= 1 || (n - 1) * pitch <= xRight - xLeft + 1e-6;
-        return Array.from({ length: n }, (_, i) => n === 1
-            ? width / 2
-            : fits
-                ? xLeft + ((xRight - xLeft) * i) / (n - 1)
-                : width / 2 + (i - (n - 1) / 2) * pitch);
-    };
-
-    // Sezione in scala 1:1, con il bordo inferiore come origine e le coordinate in mm.
-    addPolyline([{ x: 0, y: 0 }, { x: width, y: 0 }, { x: width, y: h }, { x: 0, y: h }], "SECTION", true);
-
-    tensionRows.forEach((count, row) => {
-        const depth = h - dTNom - row * spacingT;
-        const y = yFromCompressionFace(depth);
-        barPositions(count, phiT).forEach((x) => addCircle(x, y, phiT / 2, "TENSION_BARS"));
-    });
-    compressionRows.forEach((count, row) => {
-        const y = yFromCompressionFace(dCNom + row * spacingC);
-        barPositions(count, phiC).forEach((x) => addCircle(x, y, phiC / 2, hangerOnly ? "HANGER_BARS" : "COMPRESSION_BARS"));
-    });
-
-    const yT = yFromCompressionFace(h - dTNom);
-    const yC = yFromCompressionFace(dCNom);
-    const offT = (phiT + stirrup) / 2;
-    const offC = (phiC + stirrup) / 2;
-    const yStirrupT = yT + (flip ? offT : -offT);
-    const yStirrupC = yC + (flip ? -offC : offC);
-    const xLeft = cLeft + stirrup / 2;
-    const xRight = width - cRight - stirrup / 2;
-    const yBottom = Math.min(yStirrupT, yStirrupC);
-    const yTop = Math.max(yStirrupT, yStirrupC);
-    const cornerRadius = Math.min(offT, offC, (xRight - xLeft) / 2, (yTop - yBottom) / 2);
-    if (xRight > xLeft && yTop > yBottom) {
-        const halfThickness = stirrup / 2;
-        addPolyline(roundedRectangle(
-            xLeft - halfThickness, yBottom - halfThickness,
-            xRight + halfThickness, yTop + halfThickness,
-            cornerRadius + halfThickness,
-        ), "STIRRUP", true);
-        addPolyline(roundedRectangle(
-            xLeft + halfThickness, yBottom + halfThickness,
-            xRight - halfThickness, yTop - halfThickness,
-            cornerRadius - halfThickness,
-        ), "STIRRUP", true);
+        text("σc", -SW, yEdge0 + (flip ? -1 : 1) * 0.9 * TH, { align: "l", layer: "DIAGRAMMA_SIGMA" });
     }
 
-    const neutralY = yFromCompressionFace(Number(result.X) || 0);
-    if (neutralY > 0 && neutralY < h) {
-        const dash = 6, gap = 4;
-        for (let x = 0; x < width; x += dash + gap) addLine(x, neutralY, Math.min(width, x + dash), neutralY, "NEUTRAL_AXIS");
+    // ---- forze risultanti (simboliche) ----
+    const fSteel = Math.abs(result.fs - result.fyd) < 1e-9 ? "yd" : "s";
+    const lblCc = !isT ? "Cc = Ψ·B·x·fcd"
+        : result.flangeMethod === "exact" ? "Cc = ∫σc·b dy"
+            : result.inFlange ? (flip ? "Cc = Ψ·bw·x·fcd" : "Cc = Ψ·B·x·fcd")
+                : "Cc = Ψ·bw·x·fcd + (B - bw)·s·fcd";
+    const lblCs = result.mode === "fixBH" || result.givenTop ? "C's = A's·fyd" : "C's = β·As·fyd";
+    const lblTs = `Ts = As·f${fSteel}`;
+    // etichette di C_c e C'_s distanziate se troppo vicine
+    let yLCc = yCc, yLCs = yCs;
+    if (hasCompr && Math.abs(yCc - yCs) < 1.3 * TH) {
+        const mid = (yCc + yCs) / 2, sep = 0.7 * TH;
+        if (yCc >= yCs) { yLCc = mid + sep; yLCs = mid - sep; } else { yLCc = mid - sep; yLCs = mid + sep; }
+    }
+    const qX = Lb + 1.4 * GAP, qCc = qX + GAP, qTs = qCc + GAP, qCs = qTs + GAP;
+    // compressioni → verso la sezione (destra); trazione → via dalla sezione (sinistra)
+    line(xTail, yCc, xHead - FA, yCc, "FORZE_COMPRESSIONE");
+    arrow(xHead, yCc, 1, 0, "FORZE_COMPRESSIONE", FA);
+    text(lblCc, xLab, yLCc, { align: "r", layer: "FORZE_COMPRESSIONE" });
+    text(isT ? "G (yc)" : "G (λ·x)", -0.3 * TH, yCc + 0.7 * TH, { h: 0.7 * TH, align: "r", layer: "QUOTE" });
+    line(xTail, yCc, qCc, yCc, "RICHIAMI");
+    if (hasCompr) {
+        line(xTail, yCs, xHead - FA, yCs, "FORZE_COMPRESSIONE");
+        arrow(xHead, yCs, 1, 0, "FORZE_COMPRESSIONE", FA);
+        text(lblCs, xLab, yLCs, { align: "r", layer: "FORZE_COMPRESSIONE" });
+        line(xTail, yCs, qCs, yCs, "RICHIAMI");
+    }
+    line(xHead, yTs, xTail + FA, yTs, "FORZE_TRAZIONE");
+    arrow(xTail, yTs, -1, 0, "FORZE_TRAZIONE", FA);
+    text(lblTs, xLab - FA * 0.2, yTs, { align: "r", layer: "FORZE_TRAZIONE" });
+    line(xTail, yTs, qTs, yTs, "RICHIAMI");
+
+    // ---- azioni applicate: N_Ed al baricentro, M_Ed come arco ----
+    const xCross = xTail + 0.08 * h;
+    if (hasN) {
+        line(xTail, yG, 0, yG, "RICHIAMI");
+        if (NEd > 0) { line(xTail, yG, xHead - FA, yG, "AZIONI"); arrow(xHead, yG, 1, 0, "AZIONI", FA); }
+        else { line(xHead, yG, xTail + FA, yG, "AZIONI"); arrow(xTail, yG, -1, 0, "AZIONI", FA); }
+        text(`NEd = ${lbl(Math.abs(NEd) / 1000)} kN`, xCross - 0.4 * TH, yG - 1.1 * TH, { align: "r", layer: "AZIONI" });
+    }
+    if (Math.abs(MEd) > 0) {
+        const bw = 0.11 * h, mr = 0.12 * h, xa = xCross + bw;
+        // M > 0 (fibre inferiori tese): arco dal basso verso l'alto; M < 0 il contrario
+        const s = flip ? 1 : -1;
+        const P0 = { x: xa, y: yG + s * mr }, P1 = { x: xCross, y: yG + s * mr * 0.5 },
+            P2 = { x: xCross, y: yG - s * mr * 0.5 }, P3 = { x: xa, y: yG - s * mr };
+        const bez = (t) => {
+            const u = 1 - t;
+            return {
+                x: u * u * u * P0.x + 3 * u * u * t * P1.x + 3 * u * t * t * P2.x + t * t * t * P3.x,
+                y: u * u * u * P0.y + 3 * u * u * t * P1.y + 3 * u * t * t * P2.y + t * t * t * P3.y,
+            };
+        };
+        // arco fino alla base della freccia, poi punta piena tangente all'arco
+        const pts = Array.from({ length: 21 }, (_, i) => bez((i / 20) * 0.88));
+        poly(pts, "AZIONI", false);
+        const end = pts[pts.length - 1];
+        arrow(P3.x, P3.y, P3.x - end.x, P3.y - end.y, "AZIONI", Math.hypot(P3.x - end.x, P3.y - end.y));
+        text(`MEd = ${lbl(Math.abs(MEd) / 1e6)} kNm`, xCross + bw / 2, yG - s * (mr + 1.1 * TH), { layer: "AZIONI" });
     }
 
-    const dim = (value) => `${labelNumber(value)} mm`;
-    horizontalDimension("c =", cLeft, 0, cLeft, 0, 0, -10, -8);
-    horizontalDimension("c' =", cRight, width - cRight, width, 0, 0, -10, -14);
-    horizontalDimension("B =", width, 0, width, 0, 0, -30, -27);
-    const tensionDepth = Number(result.d) || h - dTNom;
-    const compressionDepth = dCNom + (Number(layC?.delta) || 0);
-    const tensionY = yFromCompressionFace(tensionDepth);
-    const compressionY = yFromCompressionFace(compressionDepth);
-    const tensionCover = h - tensionDepth;
-    const compressionCover = compressionDepth;
-    const symT = flip ? "d''" : "d'";
-    const symC = flip ? "d'" : "d''";
-    verticalDimension("d =", tensionDepth, -22, 0, flip ? 0 : h, 0, tensionY, -26);
-    verticalDimension("x =", result.X, -9, 0, flip ? 0 : h, 0, neutralY, -13);
-    verticalDimension("h =", h, width + 28, width, 0, width, h, width + 32);
-    verticalDimension(`${symC} =`, compressionCover, width + 9, width, flip ? 0 : h, width, compressionY, width + 12);
-    verticalDimension(`${symT} =`, tensionCover, width + 9, width, tensionY, width, flip ? h : 0, width + 12);
+    // ---- asse baricentrico e quote (x e bracci rispetto al baricentro) ----
+    line(0, yG, qCs + TH, yG, "RICHIAMI");
+    text(isT ? "baricentro G" : "baricentro (h/2)", 0.3 * TH, yG + 0.6 * TH, { h: 0.7 * TH, align: "l", layer: "QUOTE" });
+    const symT = flip ? "d''" : "d'", symC = flip ? "d'" : "d''";
+    const effT = (result.layT?.rows?.length || 0) > 1 ? "eff" : "", effC = (result.layC?.rows?.length || 0) > 1 ? "eff" : "";
+    if (X > 0) vDim("x", yEdge0, yNA, qX, Lb);
+    vDim(`${isT ? "yG - yc" : "h/2 - λx"}  (br. Cc)`, yG, yCc, qCc, Lb);
+    vDim(`${isT ? "d - yG" : `h/2 - ${symT}${effT}`}  (br. Ts)`, yG, yTs, qTs, Lb);
+    if (hasCompr) vDim(`${isT ? `yG - ${symC}${effC}` : `h/2 - ${symC}${effC}`}  (br. C's)`, yG, yCs, qCs, Lb);
+    vDim(`h = ${lbl(h)}`, 0, h, xTail - 0.4 * h, xTail - 0.4 * h + 0.5 * TH);
 
-    addText("SEZIONE PROGETTATA - SCALA 1:1 - UNITA' mm", 0, h + 14, 3.5, 0, false);
-    addText(`STAFFA %%c${labelNumber(stirrup)}`, width / 2, -39, 2.5);
-    addText(`ARMATURA TESA ${tensionRows.join("+")} %%c${labelNumber(phiT)}`, width / 2, -44, 2.5);
-    if (compressionRows.length) {
-        addText(`${hangerOnly ? "REGGISTAFFA" : "ARMATURA COMPRESSA"} ${compressionRows.join("+")} %%c${labelNumber(phiC)}`, width / 2, -49, 2.5);
-    }
+    // ---- didascalie ----
+    const xLeft = xTail - 0.4 * h - 2 * TH;
+    text("FORZE INTERNE - SEZIONE DI LATO - altezze in scala 1:1 (mm), sviluppi orizzontali schematici",
+        xLeft, h + 2.2 * TH, { h: 1.1 * TH, align: "base" });
+    const notes = [
+        "Cc cade nel baricentro G del diagramma σc.",
+        `I bracci sono misurati dall'asse baricentrico ${isT ? "G della sezione a T" : "(h/2)"}.`,
+        ...(flip ? ["MEd < 0: lato teso in alto."] : []),
+    ];
+    notes.forEach((s, i) => text(s, xLeft, -2 * TH - i * 1.5 * TH, { h: 0.8 * TH, align: "base" }));
 
-    // AC1009 (R12) non prevede la tabella BLOCK: le definizioni dei blocchi
-    // sono dichiarate direttamente nella sezione BLOCKS.
-    const header = [
-        "0", "SECTION", "2", "HEADER", "9", "$ACADVER", "1", "AC1009", "0", "ENDSEC",
-        "0", "SECTION", "2", "TABLES",
-        "0", "TABLE", "2", "LTYPE", "70", "1",
-        "0", "LTYPE", "2", "CONTINUOUS", "70", "0", "3", "Solid line", "72", "65", "73", "0", "40", "0.0",
-        "0", "ENDTAB",
-        "0", "TABLE", "2", "LAYER", "70", "9",
-    ];
-    const layers = [
-        ["0", 7], ["SECTION", 7], ["STIRRUP", 6], ["TENSION_BARS", 1], ["COMPRESSION_BARS", 5],
-        ["HANGER_BARS", 8], ["DIMENSIONS", 8], ["TEXT", 7], ["NEUTRAL_AXIS", 4],
-    ];
-    const layerTable = layers.flatMap(([name, color]) => [
-        "0", "LAYER", "2", name, "70", "0", "62", String(color), "6", "CONTINUOUS",
-    ]);
-    const styleTable = [
-        "0", "TABLE", "2", "STYLE", "70", "1",
-        "0", "STYLE", "2", "STANDARD", "70", "0", "40", "0", "41", "1", "50", "0", "71", "0", "42", "2.5", "3", "txt",
-        "0", "ENDTAB",
-        "0", "TABLE", "2", "DIMSTYLE", "70", "1",
-        "0", "DIMSTYLE", "2", "STANDARD", "70", "0", "40", "1", "41", "3", "42", "1", "43", "3.75", "44", "1.25", "140", "2.5", "147", "0.625",
-        "0", "ENDTAB", "0", "ENDSEC",
-        "0", "SECTION", "2", "BLOCKS",
-        ...dimensionBlocks.flatMap(({ name, entities: blockEntities }) => [
-            "0", "BLOCK", "8", "0", "2", name, "70", "1", "10", "0", "20", "0", "30", "0", "3", name,
-            ...blockEntities, "0", "ENDBLK", "8", "0",
-        ]),
-        "0", "ENDSEC",
-        "0", "SECTION", "2", "ENTITIES", ...entities, "0", "ENDSEC", "0", "EOF",
-    ];
-    return [...header, ...layerTable, "0", "ENDTAB", ...styleTable].join("\r\n");
+    return build(
+        { x0: xLeft - TH, y0: -2 * TH - notes.length * 1.5 * TH, x1: qCs + 2 * TH, y1: h + 4 * TH },
+        [
+            ["TRAVE", 7, "CONTINUOUS"], ["ARMATURA_TESA", 1, "CONTINUOUS"], ["ARMATURA_COMPRESSA", 5, "CONTINUOUS"],
+            ["ASSE_NEUTRO", 4, "DASHED"], ["DIAGRAMMA_SIGMA", 3, "CONTINUOUS"],
+            ["FORZE_COMPRESSIONE", 1, "CONTINUOUS"], ["FORZE_TRAZIONE", 3, "CONTINUOUS"], ["AZIONI", 5, "CONTINUOUS"],
+            ["RICHIAMI", 8, "DASHED"], ["QUOTE", 8, "CONTINUOUS"], ["TESTI", 7, "CONTINUOUS"],
+        ],
+    );
 }
