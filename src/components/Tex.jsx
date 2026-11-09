@@ -1,17 +1,30 @@
 // src/components/Tex.jsx
 // Renderizza una formula LaTeX con KaTeX.
+import { memo } from "react";
 import katex from "katex";
 
-export default function Tex({ children, display = false }) {
-    let html = "";
-    try {
-        html = katex.renderToString(String(children), {
-            throwOnError: false,
-            displayMode: display,
-        });
-    } catch {
-        html = String(children);
+// Cache dei render KaTeX (stessa formula → stesso HTML): renderToString è
+// l'operazione più costosa delle pagine con molte formule; con la cache e
+// React.memo si ricalcolano solo le formule che cambiano davvero.
+const CACHE = new Map();
+const CACHE_MAX = 3000;
+function renderTex(src, display) {
+    const key = (display ? "D" : "I") + src;
+    let html = CACHE.get(key);
+    if (html === undefined) {
+        try {
+            html = katex.renderToString(src, { throwOnError: false, displayMode: display });
+        } catch {
+            html = src;
+        }
+        if (CACHE.size >= CACHE_MAX) CACHE.delete(CACHE.keys().next().value);
+        CACHE.set(key, html);
     }
+    return html;
+}
+
+function TexImpl({ children, display = false }) {
+    const html = renderTex(String(children), display);
     return (
         <span
             className={display ? "block overflow-x-auto py-0.5" : ""}
@@ -19,6 +32,8 @@ export default function Tex({ children, display = false }) {
         />
     );
 }
+const Tex = memo(TexImpl);
+export default Tex;
 
 // Equazione su due righe con "=" allineati (formula / numeri sostituiti),
 // seguita dal valore. lhs = formula simbolica; num = numeri sostituiti; val =

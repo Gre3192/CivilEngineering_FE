@@ -37,6 +37,7 @@ import CadGeometryCanvas from "../components/CadGeometryCanvas";
 import SectionDesignTool from "../components/concrete/SectionDesignTool";
 import CoverCalcTool from "../components/concrete/CoverCalcTool";
 import VerifySectionTool from "../components/concrete/VerifySectionTool";
+import DomainFieldsTool from "../components/concrete/DomainFieldsTool";
 import VerifyShearTool from "../components/concrete/VerifyShearTool";
 import VerifyCrackTool from "../components/concrete/VerifyCrackTool";
 import AnchorLapTool from "../components/concrete/AnchorLapTool";
@@ -152,6 +153,21 @@ export const DISCIPLINES = [
                         icon: Scissors,
                         status: "ready",
                         component: VerifyShearTool,
+                    },
+                ],
+            },
+            {
+                // sezione temporanea: controllo delle formule del dominio M-N per campi
+                title: "Laboratorio",
+                tools: [
+                    {
+                        id: "dominio-campi",
+                        name: "Dominio M-N per campi",
+                        description:
+                            "Costruzione del dominio M-N campo per campo con le formule degli appunti, con confronto numerico (temporaneo).",
+                        icon: Layers,
+                        status: "ready",
+                        component: DomainFieldsTool,
                     },
                 ],
             },
