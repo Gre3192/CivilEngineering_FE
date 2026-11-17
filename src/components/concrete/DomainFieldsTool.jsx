@@ -19,7 +19,7 @@ import { ChevronDown, CheckCircle2, XCircle, Hourglass } from "lucide-react";
 import Tex, { Eq, fmtNum, texNum as T } from "../Tex";
 import { CONCRETE_CLASSES, STEEL_GRADES } from "../../lib/concrete/sectionDesign";
 import {
-    DEFAULT_DOMAIN_INPUT, EPS_C2, FIELDS, branchParams, domainExtents, field1, field2, field3, field4, field5, field6, fieldOf, numericPivotA, numericPivotB, numericPivotC, psiLambda, pureTension, sigmaC,
+    DEFAULT_DOMAIN_INPUT, FIELDS, branchParams, concreteParams, domainExtents, field1, field2, field3, field4, field5, field6, fieldOf, numericPivotA, numericPivotB, numericPivotC, pureTension,
 } from "../../lib/concrete/domainFields";
 
 const FIELD_COL = { 1: "#7c3aed", 2: "#2563eb", 3: "#db2777", 4: "#ca8a04", 5: "#ea580c", 6: "#dc2626" };
@@ -51,6 +51,85 @@ const splitSub = (text, mk) => {
 };
 const hs = (t) => splitSub(t, (x, k) => <sub key={k}>{x}</sub>);
 const ss = (t) => splitSub(t, (x, k) => <tspan key={k} baselineShift="-0.12em" fontSize="70%">{x}</tspan>);
+
+// ---------------------------------------------------------------------------
+// LEGAMI COSTITUTIVI SCELTI: nomi, formule, scala dei disegni
+// ---------------------------------------------------------------------------
+const LAB_CLASSES = [...CONCRETE_CLASSES, { id: "C55/67", fck: 55 }, { id: "C60/75", fck: 60 }, { id: "C70/85", fck: 70 }, { id: "C80/95", fck: 80 }, { id: "C90/105", fck: 90 }];
+const CONC_LAWS = [
+    { value: "parabola", label: "Parabola-rettangolo" },
+    { value: "bilinear", label: "Triangolo-rettangolo" },
+    { value: "stressblock", label: "Stress-block (rettangolo)" },
+];
+const STEEL_LAWS = [
+    { value: "epp", label: "Elastico-perfettamente plastico" },
+    { value: "hard", label: "Bilineare con incrudimento" },
+    { value: "ductile", label: "Indefinitamente duttile" },
+];
+const EPS_VIEW = 0.01; // scala dei disegni dei campi 3–6: deformazioni fino a 10‰ (oltre, tagliate)
+const permil = (e, dec = 2) => `${fmtNum(e * 1000, dec)}‰`;
+const concName = (p) => (p.conc.type === "bilinear" ? "triangolo-rettangolo" : p.conc.type === "stressblock" ? "stress-block (rettangolo)" : `parabola-rettangolo (n = ${fmtNum(p.conc.n, 3)})`);
+const steelName = (p) => (p.steel.type === "hard" ? `bilineare con incrudimento (k = ${fmtNum(p.steel.k, 2)})` : p.steel.type === "ductile" ? "elastico-perfettamente plastico, indefinitamente duttile" : "elastico-perfettamente plastico");
+// tasso di lavoro di A_s nelle formule: con incrudimento compare α_s (≠ 1)
+const aSy = (p) => (p.steel.type === "hard" ? "\\alpha_s\\," : "");
+const aTx = (p, a) => (p.steel.type === "hard" ? `${T(a, 4)}\\cdot ` : "");
+// deformazioni dove disegnare il legame del cls (il salto dello stress-block diventa verticale)
+const concSamples = (c, e0, e1) => {
+    const es = Array.from({ length: 41 }, (_, i) => e0 + ((e1 - e0) * i) / 40);
+    if (c.epsK > e0 && c.epsK < e1) es.push(c.epsK - 1e-12, c.epsK);
+    return es.sort((a, b) => a - b);
+};
+// formule del legame del calcestruzzo scelto e di ψ, λ (blocco compresso da 0 a ε_c)
+function concTex(p) {
+    const c = p.conc;
+    if (c.type === "bilinear") return {
+        sigma: String.raw`\sigma_c=\begin{cases}f_{cd}\,\dfrac{\varepsilon_c}{\varepsilon_{c3}}&0\le\varepsilon_c\le\varepsilon_{c3}\\[6pt]f_{cd}&\varepsilon_{c3}\le\varepsilon_c\le\varepsilon_{cu}\end{cases}`,
+        psi: String.raw`\begin{aligned}&\varepsilon_c\le\varepsilon_{c3}:&&\psi=\dfrac{\varepsilon_c}{2\,\varepsilon_{c3}},\quad\lambda=\dfrac13\\&\varepsilon_c\ge\varepsilon_{c3}:&&\psi=1-\dfrac{\varepsilon_{c3}}{2\,\varepsilon_c},\quad\lambda=1-\dfrac{1}{\psi}\left(\dfrac12-\dfrac{\varepsilon_{c3}^2}{6\,\varepsilon_c^2}\right)\end{aligned}`,
+    };
+    if (c.type === "stressblock") return {
+        sigma: String.raw`\sigma_c=\begin{cases}0&0\le\varepsilon_c<\varepsilon_{c4}\\[4pt]f_{cd}&\varepsilon_{c4}\le\varepsilon_c\le\varepsilon_{cu}\end{cases}\qquad\varepsilon_{c4}=0{,}2\,\varepsilon_{cu}`,
+        psi: String.raw`\varepsilon_c\le\varepsilon_{c4}:\;\psi=0\qquad\varepsilon_c\ge\varepsilon_{c4}:\;\psi=1-\dfrac{\varepsilon_{c4}}{\varepsilon_c},\;\;\lambda=\dfrac{\psi}{2}\qquad(\varepsilon_c=\varepsilon_{cu}:\ \psi=0{,}8,\ \lambda=0{,}4)`,
+    };
+    return {
+        sigma: String.raw`\sigma_c=\begin{cases}f_{cd}\left[1-\left(1-\dfrac{\varepsilon_c}{\varepsilon_{c2}}\right)^{n}\right]&0\le\varepsilon_c\le\varepsilon_{c2}\\[6pt]f_{cd}&\varepsilon_{c2}\le\varepsilon_c\le\varepsilon_{cu}\end{cases}`,
+        psi: String.raw`\begin{aligned}&r\le1:&&\psi=1-\dfrac{1-(1-r)^{n+1}}{(n+1)\,r},\quad\lambda=1-\dfrac{1}{\psi}\left[\dfrac12-\dfrac{1}{r^2}\left(\dfrac{1-(1-r)^{n+1}}{n+1}-\dfrac{1-(1-r)^{n+2}}{n+2}\right)\right]\\&r\ge1:&&\psi=1-\dfrac{1}{(n+1)\,r},\quad\lambda=1-\dfrac{1}{\psi}\left[\dfrac12-\dfrac{1}{(n+1)(n+2)\,r^2}\right]\end{aligned}\qquad r=\dfrac{\varepsilon_c}{\varepsilon_{c2}}`,
+    };
+}
+const steelTex = (p) => (p.steel.type === "hard"
+    ? String.raw`\alpha=\dfrac{\sigma_s}{f_{yd}}=\begin{cases}\dfrac{E_s\,\varepsilon}{f_{yd}}&|\varepsilon|\le\varepsilon_{se}\\[6pt]\pm\left[1+(k-1)\,\dfrac{|\varepsilon|-\varepsilon_{se}}{\varepsilon_{su}-\varepsilon_{se}}\right]&\varepsilon_{se}\le|\varepsilon|\le\varepsilon_{su}\end{cases}`
+    : String.raw`\alpha=\dfrac{\sigma_s}{f_{yd}}=\begin{cases}\dfrac{E_s\,\varepsilon}{f_{yd}}&|\varepsilon|\le\varepsilon_{se}\\[6pt]\pm1&\varepsilon_{se}\le|\varepsilon|${p.ductile ? "" : String.raw`\le\varepsilon_{su}`}\end{cases}`);
+// tasso di lavoro di una barra sul tratto plastico: ±1 (appunti) o valore incrudito
+function alphaPl(p, prime, a, sig, cond) {
+    const q = prime ? "'" : "", sgn = a < 0 ? "-" : "";
+    if (p.steel.type !== "hard") return <Tex display>{String.raw`\alpha${q}_s=${sgn}1\quad(${cond})\qquad\sigma${q}_s=${sgn}f_{yd}=${T(sig, 1)}\ \text{MPa}`}</Tex>;
+    return <Tex display>{String.raw`\alpha${q}_s=${sgn}\left[1+(k-1)\dfrac{|\varepsilon${q}_s|-\varepsilon_{se}}{\varepsilon_{su}-\varepsilon_{se}}\right]=${T(a, 4)}\quad(${cond})\qquad\sigma${q}_s=${T(sig, 1)}\ \text{MPa}`}</Tex>;
+}
+// riquadro dei legami scelti (solo se diversi da quelli degli appunti)
+function LawsNote({ p }) {
+    if (p.prof) return null;
+    const ct = concTex(p), c = p.conc;
+    return (
+        <div className="mb-2 space-y-1 rounded-xl border border-sky-200 bg-sky-50/60 px-3 py-2 text-xs leading-5 text-sky-900">
+            <p><b>Legami diversi da quelli degli appunti</b> (NTC 2018 §4.1.2.1.2): campi, congruenza ed equazioni restano gli stessi; cambiano ψ, λ del calcestruzzo e i tassi di lavoro α = σ/f<sub>yd</sub> dell'acciaio. Le formule chiuse restano confrontate con il calcolo numerico.</p>
+            <p><b>Calcestruzzo</b> {concName(p)}: ε<sub>cu</sub> = {permil(p.epsCu, 3)}, {hs(c.kneeLabel)} = {permil(c.epsK, 3)}{c.epsC0 !== c.epsK ? <>, campo 6 con ε<sub>c2</sub> = {permil(c.epsC0, 3)}</> : ""}, f<sub>cd</sub> = {fmtNum(p.fcd, 2)} MPa.</p>
+            <div className="tex-left text-slate-800"><Tex display>{ct.sigma}</Tex><Tex display>{ct.psi}</Tex></div>
+            <p><b>Acciaio</b> {steelName(p)}: f<sub>yd</sub> = {fmtNum(p.fyd, 2)} MPa, ε<sub>se</sub> = {permil(p.epsSe, 3)}, ε<sub>su</sub> = {p.ductile ? "∞" : permil(p.epsSu, 1)}{p.steel.type === "hard" ? <>, σ(ε<sub>su</sub>) = k·f<sub>yd</sub> = {fmtNum(p.steel.k * p.fyd, 1)} MPa</> : ""}.</p>
+            <div className="tex-left text-slate-800"><Tex display>{steelTex(p)}</Tex></div>
+            {p.steel.type === "hard" && <p>Nelle equazioni dei blocchi 3–4 (scritte per il legame degli appunti), dove sul tratto plastico compare α = ±1 va letto il valore incrudito; nei campi 1–2 A<sub>s</sub> è a ε<sub>su</sub> e lavora con α<sub>s</sub> = k (ω<sub>s</sub> → k·ω<sub>s</sub>).</p>}
+            {c.type === "bilinear" && <p>Nel campo 6 il punto F è alla deformazione ε<sub>c3</sub> (nelle formule indicata ancora con ε<sub>c2</sub>).</p>}
+            {c.type === "stressblock" && <p>Per la sezione interamente compressa (campo 6) lo stress-block non fissa una deformazione limite: si usa ε<sub>c2</sub> del parabola-rettangolo della stessa classe.</p>}
+        </div>
+    );
+}
+// acciaio indefinitamente duttile: campi 1 e 2 senza pivot A
+function DuctileAbsent({ field, data }) {
+    const pt = data.f1pos.pointA;
+    return field === 1 ? (
+        <p className="text-sm leading-6 text-slate-600">Con acciaio <b>indefinitamente duttile</b> non c'è il pivot A (ε<sub>su</sub> → ∞): il campo 1 si riduce a un <b>punto</b>, con entrambe le armature snervate in trazione: N<sub>Rd</sub> = {fmtNum(pt.N, 1)} kN, M<sub>Rd</sub> = {fmtNum(pt.M, 2)} kNm (ramo M &gt; 0). È il limite per ξ → 0⁺ del campo 3: lì il dominio si chiude con uno spigolo.</p>
+    ) : (
+        <p className="text-sm leading-6 text-slate-600">Con acciaio <b>indefinitamente duttile</b> ξ<sub>H</sub> = ε<sub>cu</sub>/(ε<sub>su</sub> + ε<sub>cu</sub>) = 0: il campo 2 <b>scompare</b> e il campo 3 parte da ξ = 0 (per ξ → 0⁺ ε<sub>s</sub> → ∞). La crisi è sempre lato calcestruzzo (pivot B o C).</p>
+    );
+}
 
 // similitudini fra triangoli del campo 1: triangolo grande (ambra) e piccolo (azzurro)
 const TRI1_COL = "#d97706", TRI2_COL = "#0284c7";
@@ -138,7 +217,7 @@ export default function DomainFieldsTool() {
         return { field, pt };
     })();
     // punti dei campi aperti (cursore del campo)
-    const locals = data ? FIELDS.filter((f) => f.ready && open[f.id]).map((f) => {
+    const locals = data ? FIELDS.filter((f) => f.ready && open[f.id] && !(data.pos.ductile && f.id <= 2)).map((f) => {
         const st = fState(f.id);
         if (f.id === 6) {
             const f6 = st.branch > 0 ? data.f6pos : data.f6neg;
@@ -206,12 +285,10 @@ export default function DomainFieldsTool() {
                 </Card>
                 <Card title="Materiali">
                     <div className="grid grid-cols-2 gap-3">
-                        <SelectField label="Calcestruzzo" value={input.fck} onChange={setNum("fck")}
-                            options={CONCRETE_CLASSES.map((c) => ({ value: c.fck, label: c.id }))} />
+                        <SelectField label="Calcestruzzo" value={input.fck} onChange={(v) => { const fck = Number(v) || 25; setInput((s) => ({ ...s, fck, epsCu: concreteParams(fck).epsCu })); }}
+                            options={LAB_CLASSES.map((c) => ({ value: c.fck, label: c.id }))} />
                         <SelectField label="Acciaio" value={input.fyk} onChange={setNum("fyk")}
                             options={STEEL_GRADES.filter((s, i, a) => a.findIndex((t) => t.fyk === s.fyk) === i).map((s) => ({ value: s.fyk, label: `${s.id} (fyk ${s.fyk})` }))} />
-                        <NumberField label={hs("ε_su")} unit="‰" value={input.epsSu * 1000} onChange={(v) => setInput((s) => ({ ...s, epsSu: (Number(v) || 0) / 1000 }))} />
-                        <NumberField label={hs("ε_cu")} unit="‰" value={input.epsCu * 1000} onChange={(v) => setInput((s) => ({ ...s, epsCu: (Number(v) || 0) / 1000 }))} />
                     </div>
                     {data && (
                         <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 border-t border-slate-100 pt-3 text-xs text-slate-600">
@@ -221,6 +298,33 @@ export default function DomainFieldsTool() {
                             <span>ε′<sub>se</sub> = f<sub>yd</sub>/E<sub>s</sub> = <b>{fmtNum(data.pos.epsSe * 1000, 3)}</b>‰</span>
                         </div>
                     )}
+                </Card>
+                <Card title="Legami costitutivi" right={data && !data.pos.prof
+                    ? <button type="button" onClick={() => setInput((s) => ({ ...s, concLaw: "parabola", steelLaw: "epp", epsSu: 0.01, k: 1.15 }))}
+                        className="cursor-pointer rounded-lg border border-slate-200 px-2 py-1 text-[11px] font-semibold text-slate-600 hover:bg-slate-50">Legami degli appunti</button>
+                    : <span className="rounded-lg bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-700">appunti</span>}>
+                    <div className="grid grid-cols-1 gap-3">
+                        <SelectField label="Calcestruzzo" value={input.concLaw} onChange={(v) => setInput((s) => ({ ...s, concLaw: v }))} options={CONC_LAWS} />
+                        <SelectField label="Acciaio" value={input.steelLaw}
+                            onChange={(v) => setInput((s) => ({ ...s, steelLaw: v, epsSu: v === "hard" ? 0.0675 : v === "epp" ? 0.01 : s.epsSu }))} options={STEEL_LAWS} />
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-3">
+                        {input.steelLaw !== "ductile" && <NumberField label={hs("ε_su")} unit="‰" value={input.epsSu * 1000} onChange={(v) => setInput((s) => ({ ...s, epsSu: (Number(v) || 0) / 1000 }))} />}
+                        {input.steelLaw === "hard" && <NumberField label={hs("k = f_t/f_y")} value={input.k} onChange={(v) => setInput((s) => ({ ...s, k: Math.max(1, Number(v) || 1) }))} />}
+                        <NumberField label={hs("ε_cu")} unit="‰" value={input.epsCu * 1000} onChange={(v) => setInput((s) => ({ ...s, epsCu: (Number(v) || 0) / 1000 }))} />
+                    </div>
+                    {data && (() => {
+                        const c = data.pos.conc, P = c.P;
+                        return (
+                            <div className="mt-3 space-y-1 border-t border-slate-100 pt-3 text-xs leading-5 text-slate-600">
+                                <p>NTC per la classe: ε<sub>c2</sub> = <b>{permil(P.epsC2, 3)}</b>, n = <b>{fmtNum(P.n, 3)}</b>, ε<sub>c3</sub> = <b>{permil(P.epsC3, 3)}</b>, ε<sub>c4</sub> = 0,2·ε<sub>cu</sub> = <b>{permil(0.2 * data.pos.epsCu, 3)}</b>, ε<sub>cu</sub> = <b>{permil(P.epsCu, 3)}</b>.</p>
+                                <p>Campo 6 (pivot C): ε = <b>{permil(c.epsC0, 3)}</b>{c.type === "stressblock" ? " (ε_c2 del parabola-rettangolo)" : ""}. Acciaio: {steelName(data.pos)}{data.pos.ductile ? " (nessun pivot A: campi 1 e 2 assenti)" : ""}.</p>
+                                {data.pos.prof
+                                    ? <p className="text-emerald-700">Legami degli appunti della prof.</p>
+                                    : <p className="text-sky-700">Legami NTC non trattati negli appunti: le formule dei campi usano ψ, λ e α del legame scelto.</p>}
+                            </div>
+                        );
+                    })()}
                 </Card>
             </div>
 
@@ -252,7 +356,8 @@ export default function DomainFieldsTool() {
 
                         {FIELDS.map((f) => (
                             <Accordion key={f.id} field={f} isOpen={!!open[f.id]} onToggle={() => setOpen((s) => ({ ...s, [f.id]: !s[f.id] }))}>
-                                {f.id === 1 ? <FieldOneM data={data} st={fState(1)} set={setF(1)} />
+                                {f.id <= 2 && data.pos.ductile ? <DuctileAbsent field={f.id} data={data} />
+                                    : f.id === 1 ? <FieldOneM data={data} st={fState(1)} set={setF(1)} />
                                     : f.id === 2 ? <FieldTwoM data={data} st={fState(2)} set={setF(2)} />
                                         : f.id === 3 ? <FieldThreeM data={data} st={fState(3)} set={setF(3)} />
                                             : f.id === 4 ? <FieldFourM data={data} st={fState(4)} set={setF(4)} />
@@ -358,10 +463,11 @@ function FieldOne({ data, st, set }) {
                     return (<>
                 {/* 2. legami costitutivi */}
                 <Block n="2" title="Legami costitutivi">
+                    <LawsNote p={p} />
                     <div className="space-y-1 text-xs leading-5 text-slate-600">
                         <p>I legami σ-ε sono disegnati sopra (A′<sub>s</sub>) e sotto (A<sub>s</sub>) il diagramma delle deformazioni del blocco 1, con la stessa scala delle deformazioni (trazioni verso sinistra), come negli appunti.</p>
-                        <p><b>Acciaio</b> elastico-perfettamente plastico: E<sub>s</sub> = 200 000 MPa, f<sub>yd</sub> = {fmtNum(p.fyd, 2)} MPa, ε′<sub>se</sub> = {fmtNum(p.epsSe * 1000, 3)}‰, ε<sub>su</sub> = {fmtNum(p.epsSu * 1000, 1)}‰.</p>
-                        <p>• A<sub>s</sub> è sempre nel pivot A: ε<sub>s</sub> = ε<sub>su</sub>, σ<sub>s</sub> = f<sub>yd</sub> (punto fisso).</p>
+                        <p><b>Acciaio</b> {steelName(p)}: E<sub>s</sub> = 200 000 MPa, f<sub>yd</sub> = {fmtNum(p.fyd, 2)} MPa, ε′<sub>se</sub> = {fmtNum(p.epsSe * 1000, 3)}‰, ε<sub>su</sub> = {fmtNum(p.epsSu * 1000, 1)}‰.</p>
+                        <p>• A<sub>s</sub> è sempre nel pivot A: ε<sub>s</sub> = ε<sub>su</sub>, {p.steel.type === "hard" ? <>σ<sub>s</sub> = k·f<sub>yd</sub></> : <>σ<sub>s</sub> = f<sub>yd</sub></>} (punto fisso).</p>
                         <p>• A′<sub>s</sub> percorre {f.has1b ? <>il tratto elastico da ε′<sub>s1/2</sub> a ε′<sub>se</sub> (1b) e quello plastico fino a ε<sub>su</sub> (1a)</> : <>solo il tratto plastico (1a)</>}; il punto verde è lo stato corrente.</p>
                         <p><b>Calcestruzzo</b>: tutto teso, non reagente (nessun contributo nel campo 1).</p>
                     </div>
@@ -410,11 +516,11 @@ function FieldOne({ data, st, set }) {
                                 ? <Tex display>{String.raw`\varepsilon'_s=\varepsilon_{su}=${pm(cur.epsSP)}`}</Tex>
                                 : <F lhs="\varepsilon'_s" sym={String.raw`\dfrac{\varepsilon_{su}}{1-\xi}\,(\delta''-\xi)`} num={String.raw`\dfrac{${eSu}}{1-(${T(xi, 4)})}\,(${d2}-(${T(xi, 4)}))`} val={pm(cur.epsSP, 3)} br={false} />}
                             {cur.sub === "1a"
-                                ? <Tex display>{String.raw`\alpha'_s=1\quad(\varepsilon'_s\ge\varepsilon'_{se})\qquad\sigma'_s=f_{yd}=${T(cur.sigmaSP, 1)}\ \text{MPa}`}</Tex>
+                                ? alphaPl(p, true, cur.alphaSP, cur.sigmaSP, String.raw`\varepsilon'_s\ge\varepsilon'_{se}`)
                                 : <F lhs="\alpha'_s" sym={String.raw`\dfrac{E_s\,\varepsilon'_s}{f_{yd}}`} num={String.raw`\dfrac{200\,000\cdot ${T(cur.epsSP, 6)}}{${T(p.fyd, 2)}}`} val={`${T(cur.alphaSP, 4)}\\qquad\\sigma'_s=${T(cur.sigmaSP, 1)}\\ \\text{MPa}`} br={false} />}
-                            <F lhs="\nu_{Rd}" sym="-(\omega_s+\alpha'_s\,\omega'_s)" num={`-(${T(p.omegaS, 4)}+${T(cur.alphaSP, 4)}\\cdot ${T(p.omegaSP, 4)})`} val={T(cur.nu, 4)} br={false} />
-                            <F lhs="\mu_{Rd}" sym={String.raw`${sgnM ? "-\\Big(" : ""}\omega_s\,\dfrac{1-\delta'}{2}-\alpha'_s\,\omega'_s\,\dfrac{1+\delta'-2\delta''}{2}${sgnM ? "\\Big)" : ""}`}
-                                num={`${sgnM ? "-\\big(" : ""}${T(p.omegaS, 4)}\\cdot ${T(p.armS, 4)}-${T(cur.alphaSP, 4)}\\cdot ${T(p.omegaSP, 4)}\\cdot ${T(p.armSP, 4)}${sgnM ? "\\big)" : ""}`} val={T(cur.mu, 4)} br={false} />
+                            <F lhs="\nu_{Rd}" sym={String.raw`-(${aSy(p)}\omega_s+\alpha'_s\,\omega'_s)`} num={`-(${aTx(p, cur.alphaS)}${T(p.omegaS, 4)}+${T(cur.alphaSP, 4)}\\cdot ${T(p.omegaSP, 4)})`} val={T(cur.nu, 4)} br={false} />
+                            <F lhs="\mu_{Rd}" sym={String.raw`${sgnM ? "-\\Big(" : ""}${aSy(p)}\omega_s\,\dfrac{1-\delta'}{2}-\alpha'_s\,\omega'_s\,\dfrac{1+\delta'-2\delta''}{2}${sgnM ? "\\Big)" : ""}`}
+                                num={`${sgnM ? "-\\big(" : ""}${aTx(p, cur.alphaS)}${T(p.omegaS, 4)}\\cdot ${T(p.armS, 4)}-${T(cur.alphaSP, 4)}\\cdot ${T(p.omegaSP, 4)}\\cdot ${T(p.armSP, 4)}${sgnM ? "\\big)" : ""}`} val={T(cur.mu, 4)} br={false} />
                             <F lhs="N_{Rd}" sym="\nu_{Rd}\,b\,d\,f_{cd}" num={`${T(cur.nu, 4)}\\cdot ${T(p.b, 0)}\\cdot ${T(p.d, 1)}\\cdot ${T(p.fcd, 2)}`} val={`${T(cur.N, 1)}\\ \\text{kN}`} br={false} />
                             <F lhs="M_{Rd}" sym="\mu_{Rd}\,b\,d^2\,f_{cd}" num={`${T(cur.mu, 4)}\\cdot ${T(p.b, 0)}\\cdot ${T(p.d, 1)}^2\\cdot ${T(p.fcd, 2)}`} val={`${T(cur.M, 2)}\\ \\text{kNm}`} br={false} />
                         </div>
@@ -435,7 +541,9 @@ function FieldOne({ data, st, set }) {
                         { label: "Retta limite 1/2 (ξ = 0)", pt: f.point(0) },
                     ]} />
                     <div className="mt-3 space-y-1 text-xs leading-5 text-slate-600">
-                        <p>• Il campo 1a è un <b>punto</b>: con acciaio elastico-perfettamente plastico le tensioni non cambiano. Lo stato a deformazione costante (ξ → −∞) dà una coppia (N, M), non trazione pura: M<sub>Rd</sub> = 0 solo se h/2 è il baricentro delle resistenze, A<sub>s</sub>f<sub>yd</sub>(h/2 − d′) = A′<sub>s</sub>f<sub>yd</sub>(h/2 − d″).</p>
+                        <p>• {p.steel.type === "hard"
+                            ? <>Con l'incrudimento il campo 1a <b>non è più un punto</b>: σ′<sub>s</sub> cresce con ε′<sub>s</sub> fino a k·f<sub>yd</sub>. </>
+                            : <>Il campo 1a è un <b>punto</b>: con acciaio elastico-perfettamente plastico le tensioni non cambiano. </>}Lo stato a deformazione costante (ξ → −∞) dà una coppia (N, M), non trazione pura: M<sub>Rd</sub> = 0 solo se h/2 è il baricentro delle resistenze, A<sub>s</sub>f<sub>yd</sub>(h/2 − d′) = A′<sub>s</sub>f<sub>yd</sub>(h/2 − d″).</p>
                         <p>• Nel tratto 1b σ′<sub>s</sub> diminuisce verso la retta 1/2: N<sub>Rd</sub> diventa meno negativo e M<sub>Rd</sub> cresce (in modulo).</p>
                         <p>• Trazione pura massima (M = 0, appunti p. 76): {data.pt.centroid
                             ? <>h/2 è baricentro delle resistenze, N<sub>Rd</sub> = −(A<sub>s</sub> + A′<sub>s</sub>)·f<sub>yd</sub> = <b>{fmtNum(data.pt.N, 1)} kN</b>.</>
@@ -531,12 +639,13 @@ function FieldTwo({ data, st, set }) {
                     return (<>
                 {/* 2. legami costitutivi */}
                 <Block n="2" title="Legami costitutivi">
+                    <LawsNote p={p} />
                     <div className="space-y-1 text-xs leading-5 text-slate-600">
-                        <p><b>Calcestruzzo</b>: parabola-rettangolo (n = 2, ε<sub>c2</sub> = 2‰, ε<sub>cu</sub> = {fmtNum(p.epsCu * 1000, 1)}‰, f<sub>cd</sub> = {fmtNum(p.fcd, 2)} MPa), non reagente a trazione.</p>
-                        <div className="tex-left"><Tex display>{String.raw`\sigma_c=\begin{cases}f_{cd}\left[1-\left(1-\dfrac{\varepsilon_c}{\varepsilon_{c2}}\right)^{n}\right]&0\le\varepsilon_c\le\varepsilon_{c2}\\[6pt]f_{cd}&\varepsilon_{c2}\le\varepsilon_c\le\varepsilon_{cu}\end{cases}`}</Tex></div>
+                        {p.prof && <><p><b>Calcestruzzo</b>: parabola-rettangolo (n = 2, ε<sub>c2</sub> = 2‰, ε<sub>cu</sub> = {fmtNum(p.epsCu * 1000, 1)}‰, f<sub>cd</sub> = {fmtNum(p.fcd, 2)} MPa), non reagente a trazione.</p>
+                        <div className="tex-left"><Tex display>{String.raw`\sigma_c=\begin{cases}f_{cd}\left[1-\left(1-\dfrac{\varepsilon_c}{\varepsilon_{c2}}\right)^{n}\right]&0\le\varepsilon_c\le\varepsilon_{c2}\\[6pt]f_{cd}&\varepsilon_{c2}\le\varepsilon_c\le\varepsilon_{cu}\end{cases}`}</Tex></div></>}
                         <p>Nel campo 2 il lembo compresso percorre tutto il legame, da 0 a ε<sub>cu</sub>.</p>
-                        <p><b>Acciaio</b> elastico-perfettamente plastico: E<sub>s</sub> = 200 000 MPa, f<sub>yd</sub> = {fmtNum(p.fyd, 2)} MPa, ε<sub>se</sub> = {fmtNum(p.epsSe * 1000, 3)}‰. Deformazioni e tensioni positive in trazione, <b>negative in compressione</b> (ε′<sub>se</sub> = −{fmtNum(p.epsSe * 1000, 3)}‰).</p>
-                        <p>• A<sub>s</sub> resta nel pivot A: ε<sub>s</sub> = ε<sub>su</sub>, σ<sub>s</sub> = f<sub>yd</sub>.</p>
+                        <p><b>Acciaio</b> {steelName(p)}: E<sub>s</sub> = 200 000 MPa, f<sub>yd</sub> = {fmtNum(p.fyd, 2)} MPa, ε<sub>se</sub> = {fmtNum(p.epsSe * 1000, 3)}‰. Deformazioni e tensioni positive in trazione, <b>negative in compressione</b> (ε′<sub>se</sub> = −{fmtNum(p.epsSe * 1000, 3)}‰).</p>
+                        <p>• A<sub>s</sub> resta nel pivot A: ε<sub>s</sub> = ε<sub>su</sub>, {p.steel.type === "hard" ? <>σ<sub>s</sub> = k·f<sub>yd</sub></> : <>σ<sub>s</sub> = f<sub>yd</sub></>}.</p>
                         <p>• A′<sub>s</sub> percorre {f.has2b ? <>il tratto elastico da ε′<sub>s1/2</sub> a ε′<sub>se</sub> (2a) e quello plastico in compressione fino a ε′<sub>s2/3</sub> (2b)</> : <>solo il tratto elastico (2a): lo snervamento in compressione avviene nel campo 3</>}.</p>
                     </div>
                 </Block>
@@ -562,9 +671,11 @@ function FieldTwo({ data, st, set }) {
                             <p className="text-xs font-semibold text-amber-700">ξ<sub>2a/2b</sub> = {fmtNum(f.xi2ab, 4)} &gt; ξ<sub>H</sub>: A′<sub>s</sub> non snerva in compressione nel campo 2 (copriferro d″ grande), il campo è tutto 2a; lo snervamento avverrà nel campo 3.</p>
                         )}
                         <p className="pt-1 text-xs font-semibold text-slate-500">Coefficienti del calcestruzzo (in funzione di ε<sub>c</sub> del lembo compresso):</p>
+                        {p.prof ? <>
                         <Tex display>{String.raw`\varepsilon_c\le\varepsilon_{c2}:\;\psi=\dfrac{\varepsilon_c}{3\varepsilon_{c2}^2}\,(3\varepsilon_{c2}-\varepsilon_c),\;\;\lambda=\dfrac{4\varepsilon_{c2}-\varepsilon_c}{4\,(3\varepsilon_{c2}-\varepsilon_c)}`}</Tex>
                         <Tex display>{String.raw`\varepsilon_c\ge\varepsilon_{c2}:\;\psi=1-\dfrac{\varepsilon_{c2}}{3\,\varepsilon_c},\;\;\lambda=\dfrac{6\varepsilon_c^2-4\varepsilon_c\varepsilon_{c2}+\varepsilon_{c2}^2}{4\,\varepsilon_c\,(3\varepsilon_c-\varepsilon_{c2})}`}</Tex>
-                        <p className="text-xs text-slate-400">C<sub>c</sub> = b·ψ·x·f<sub>cd</sub>, applicata a λ·x dal lembo compresso. Sulla retta 2/3 (ε<sub>c</sub> = 3,5‰): ψ = 0,8095, λ = 0,416.</p>
+                        </> : <Tex display>{String.raw`\psi=\psi(\varepsilon_c),\quad\lambda=\lambda(\varepsilon_c)\quad\text{dal legame scelto (blocco 2)}`}</Tex>}
+                        <p className="text-xs text-slate-400">C<sub>c</sub> = b·ψ·x·f<sub>cd</sub>, applicata a λ·x dal lembo compresso. Sulla retta 2/3 (ε<sub>c</sub> = {permil(p.epsCu, 1)}): ψ = {fmtNum(p.conc.psiLambda(p.epsCu).psi, 4)}, λ = {fmtNum(p.conc.psiLambda(p.epsCu).lam, 4)}.</p>
                     </div>
                 </Block>
 
@@ -589,16 +700,17 @@ function FieldTwo({ data, st, set }) {
                         <div className="tex-left space-y-1">
                             <Tex display>{String.raw`\xi=${xiv}\qquad x=${T(xi * p.d, 1)}\ \text{mm}\qquad\text{sottocampo }${cur.sub}`}</Tex>
                             <F lhs="\varepsilon_c" sym={String.raw`\dfrac{\varepsilon_{su}\,\xi}{1-\xi}`} num={String.raw`\dfrac{${eSu}\cdot ${xiv}}{1-${xiv}}`} val={pm(cur.epsC, 3)} br={false} />
-                            {cur.epsC <= 0.002
+                            {!p.prof ? <Tex display>{String.raw`\psi(\varepsilon_c)=${T(cur.psi, 4)}\qquad\lambda(\varepsilon_c)=${T(cur.lam, 4)}`}</Tex>
+                                : cur.epsC <= 0.002
                                 ? <F lhs="\psi" sym={String.raw`\dfrac{\varepsilon_c}{3\varepsilon_{c2}^2}(3\varepsilon_{c2}-\varepsilon_c)`} num={String.raw`\dfrac{${T(cur.epsC, 6)}}{3\cdot 0{,}002^2}(3\cdot 0{,}002-${T(cur.epsC, 6)})`} val={`${T(cur.psi, 4)}\\qquad\\lambda=${T(cur.lam, 4)}`} br={false} />
                                 : <F lhs="\psi" sym={String.raw`1-\dfrac{\varepsilon_{c2}}{3\varepsilon_c}`} num={String.raw`1-\dfrac{0{,}002}{3\cdot ${T(cur.epsC, 6)}}`} val={`${T(cur.psi, 4)}\\qquad\\lambda=${T(cur.lam, 4)}`} br={false} />}
                             <F lhs="\varepsilon'_s" sym={String.raw`-\dfrac{\varepsilon_{su}}{1-\xi}\,(\xi-\delta'')`} num={String.raw`-\dfrac{${eSu}}{1-${xiv}}\,(${xiv}-${d2})`} val={pm(cur.epsSP, 3)} br={false} />
                             {cur.sub === "2b"
-                                ? <Tex display>{String.raw`\alpha'_s=-1\quad(\varepsilon'_s\le\varepsilon'_{se})\qquad\sigma'_s=-f_{yd}=${T(cur.sigmaSP, 1)}\ \text{MPa}`}</Tex>
+                                ? alphaPl(p, true, cur.alphaSP, cur.sigmaSP, String.raw`\varepsilon'_s\le\varepsilon'_{se}`)
                                 : <F lhs="\alpha'_s" sym={String.raw`\dfrac{E_s\,\varepsilon'_s}{f_{yd}}`} num={String.raw`\dfrac{200\,000\cdot (${T(cur.epsSP, 6)})}{${T(p.fyd, 2)}}`} val={`${T(cur.alphaSP, 4)}\\qquad\\sigma'_s=${T(cur.sigmaSP, 1)}\\ \\text{MPa}`} br={false} />}
-                            <F lhs="\nu_{Rd}" sym="\psi\,\xi-\alpha'_s\,\omega'_s-\omega_s" num={`${T(cur.psi, 4)}\\cdot ${xiv}-(${T(cur.alphaSP, 4)})\\cdot ${T(p.omegaSP, 4)}-${T(p.omegaS, 4)}`} val={T(cur.nu, 4)} br={false} />
-                            <F lhs="\mu_{Rd}" sym={String.raw`${sgnM ? "-\\Big[" : ""}\psi\xi\left(\tfrac{1+\delta'}{2}-\lambda\xi\right)-\alpha'_s\omega'_s\tfrac{1+\delta'-2\delta''}{2}+\omega_s\tfrac{1-\delta'}{2}${sgnM ? "\\Big]" : ""}`}
-                                num={`${sgnM ? "-\\big[" : ""}${T(cur.psi, 4)}\\cdot ${xiv}\\,(\\tfrac{1+${d1}}{2}-${T(cur.lam, 4)}\\cdot ${xiv})-(${T(cur.alphaSP, 4)})\\cdot ${T(p.omegaSP, 4)}\\cdot ${T(p.armSP, 4)}+${T(p.omegaS, 4)}\\cdot ${T(p.armS, 4)}${sgnM ? "\\big]" : ""}`} val={T(cur.mu, 4)} br={false} />
+                            <F lhs="\nu_{Rd}" sym={String.raw`\psi\,\xi-\alpha'_s\,\omega'_s-${aSy(p)}\omega_s`} num={`${T(cur.psi, 4)}\\cdot ${xiv}-(${T(cur.alphaSP, 4)})\\cdot ${T(p.omegaSP, 4)}-${aTx(p, cur.alphaS)}${T(p.omegaS, 4)}`} val={T(cur.nu, 4)} br={false} />
+                            <F lhs="\mu_{Rd}" sym={String.raw`${sgnM ? "-\\Big[" : ""}\psi\xi\left(\tfrac{1+\delta'}{2}-\lambda\xi\right)-\alpha'_s\omega'_s\tfrac{1+\delta'-2\delta''}{2}+${aSy(p)}\omega_s\tfrac{1-\delta'}{2}${sgnM ? "\\Big]" : ""}`}
+                                num={`${sgnM ? "-\\big[" : ""}${T(cur.psi, 4)}\\cdot ${xiv}\\,(\\tfrac{1+${d1}}{2}-${T(cur.lam, 4)}\\cdot ${xiv})-(${T(cur.alphaSP, 4)})\\cdot ${T(p.omegaSP, 4)}\\cdot ${T(p.armSP, 4)}+${aTx(p, cur.alphaS)}${T(p.omegaS, 4)}\\cdot ${T(p.armS, 4)}${sgnM ? "\\big]" : ""}`} val={T(cur.mu, 4)} br={false} />
                             <F lhs="N_{Rd}" sym="\nu_{Rd}\,b\,d\,f_{cd}" num={`${T(cur.nu, 4)}\\cdot ${T(p.b, 0)}\\cdot ${T(p.d, 1)}\\cdot ${T(p.fcd, 2)}`} val={`${T(cur.N, 1)}\\ \\text{kN}`} br={false} />
                             <F lhs="M_{Rd}" sym="\mu_{Rd}\,b\,d^2\,f_{cd}" num={`${T(cur.mu, 4)}\\cdot ${T(p.b, 0)}\\cdot ${T(p.d, 1)}^2\\cdot ${T(p.fcd, 2)}`} val={`${T(cur.M, 2)}\\ \\text{kNm}`} br={false} />
                         </div>
@@ -649,9 +761,20 @@ function StrainDiagramPivot({ p, xi, branch, mode = "fields", tri = "cur", onSli
     // LW: azioni resistenti N_Rd, M_Rd a sinistra della sezione; FW: forze interne sulla faccia destra
     const FW = 180, LW = 112, secL = LW + 16;
     const lawH = 54, sigPx = lawH - 16, top = 14;
-    const ax = secL + 70 + FW + 206, k = 200 / p.epsSu; // origine O e px per unità di deformazione
+    // scala: fino a ε_su (campo 2) o fino a 10‰ (campi 3–6, disegno unico); oltre, rette tagliate
+    const eView = spec.eView ?? Math.min(p.epsSu, EPS_VIEW);
+    const ax = secL + 70 + FW + 206, k = 200 / eView; // origine O e px per unità di deformazione
     const W = ax + 120;
-    const ex = (e) => ax - e * k;                   // e > 0 trazione (sinistra), e < 0 compressione (destra)
+    const ex = (e) => ax - Math.max(-10, Math.min(10, e)) * k; // e > 0 trazione (sinistra), e < 0 compressione (destra)
+    const offSu = p.epsSu > eView * (1 + 1e-9);   // ε_su fuori scala (incrudimento con ε_ud, acciaio duttile)
+    const suTxt = (lab) => (offSu ? `${lab} → ${p.ductile ? "∞" : permil(p.epsSu, 1)}` : lab);
+    const clip = `url(#sd${id}-clip)`;
+    const c = p.conc;
+    // etichette vicine all'origine: con scala compressa (ε_su grande) si diradano
+    const tightSe = k * p.epsSe < 14;
+    const showKnee = k * (p.epsCu - c.epsK) >= 16;
+    const showC0 = c.epsC0 !== c.epsK && k * Math.abs(c.epsC0 - c.epsK) >= 16 && k * (p.epsCu - c.epsC0) >= 16;
+    const fyX = (e) => (tightSe ? { x: ax - 4 * Math.sign(e), anchor: e > 0 ? "end" : "start" } : { x: ex(e), anchor: "middle" });
     const baseC = top + lawH;                       // asse ε_c del legame del cls
     const baseS = baseC + 34 + lawH;                // asse ε'_s del legame di A'_s
     const sTop = baseS + sigPx + 30, secH = 170;    // diagramma delle deformazioni
@@ -667,11 +790,14 @@ function StrainDiagramPivot({ p, xi, branch, mode = "fields", tri = "cur", onSli
     const Lc = lineFor(xi, p.h);
     const eCur = strainAt(xi, p.dSup), ecTop = -strainAt(xi, 0), esCur = strainAt(xi, p.d), yN = yD(xi * p.d);
     // legami
-    const sigS = (e) => Math.sign(e) * Math.min(ES_MPA * Math.abs(e), p.fyd);
-    const steelPts = (base, e0, e1) => [e0, ...[-p.epsSe, 0, p.epsSe].filter((q) => q > e0 && q < e1), e1]
-        .map((e) => `${ex(e).toFixed(1)},${(base - (sigS(e) / p.fyd) * sigPx).toFixed(1)}`).join(" ");
-    const concPts = (e0, e1) => Array.from({ length: 25 }, (_, i) => e0 + ((e1 - e0) * i) / 24)
-        .map((e) => `${ex(-e).toFixed(1)},${(baseC - sigmaC(e, 1) * sigPx).toFixed(1)}`).join(" ");
+    const sigS = (e) => p.steel.alpha(e) * p.fyd;   // legame dell'acciaio scelto (trazione +)
+    const steelPts = (base, e0, e1u) => {
+        const e1 = Math.min(e1u, eView + 20 / k);    // oltre la fine dell'asse non si disegna
+        return [e0, ...[-p.epsSe, 0, p.epsSe].filter((q) => q > e0 && q < e1), e1]
+            .map((e) => `${ex(e).toFixed(1)},${(base - (sigS(e) / p.fyd) * sigPx).toFixed(1)}`).join(" ");
+    };
+    const concPts = (e0, e1) => concSamples(c, e0, e1)
+        .map((e) => `${ex(-e).toFixed(1)},${(baseC - c.sigma(e) * sigPx).toFixed(1)}`).join(" ");
     // trascinamento dell'asse neutro (freccia di x o linea n–n): y del puntatore → x → ξ
     const draggingNA = useRef(false);
     const [naHover, setNaHover] = useState(false); // hover sul pallino dell'asse neutro
@@ -700,7 +826,7 @@ function StrainDiagramPivot({ p, xi, branch, mode = "fields", tri = "cur", onSli
     };
     const eAt = (depth) => strainAt(xi, depth);
     const barMark = (base, e, col, lab, law) => {
-        const yP = law === "c" ? baseC - sigmaC(-e, 1) * sigPx : base - (sigS(e) / p.fyd) * sigPx;
+        const yP = law === "c" ? baseC - c.sigma(-e) * sigPx : base - (sigS(e) / p.fyd) * sigPx;
         return (
             <g>
                 <line x1={ax} x2={ex(e)} y1={base} y2={base} stroke={col} strokeWidth="1.6" />
@@ -750,9 +876,11 @@ function StrainDiagramPivot({ p, xi, branch, mode = "fields", tri = "cur", onSli
                 <marker id={`sd${id}-na`} markerWidth="7" markerHeight="7" refX="5" refY="3.5" orient="auto"><path d="M0,0 L6,3.5 L0,7 Z" fill="#0284c7" /></marker>
                 <pattern id={`sd${id}-hatch`} width="6" height="6" patternUnits="userSpaceOnUse"><line x1="0" y1="3" x2="6" y2="3" stroke="#94a3b8" strokeWidth="0.8" strokeOpacity="0.4" /></pattern>
                 <pattern id={`sd${id}-hatchc`} width="6" height="6" patternUnits="userSpaceOnUse"><line x1="0" y1="3" x2="6" y2="3" stroke={CONC_COL} strokeWidth="0.8" strokeOpacity="0.4" /></pattern>
+                {/* tutto ciò che sta a sinistra della fine degli assi ε (deformazioni fuori scala) viene tagliato */}
+                <clipPath id={`sd${id}-clip`}><rect x={ex(eView) - 64} y="0" width={W} height={Hh} /></clipPath>
             </defs>
-            {/* richiami verticali (ε_su, ±ε_se, ε_c2, ε_cu) */}
-            {[p.epsSu, p.epsSe, -p.epsSe, -EPS_C2, -p.epsCu].map((e) => <line key={e} x1={ex(e)} x2={ex(e)} y1={baseC - lawH + 6} y2={baseBot} stroke="#eef2f7" strokeDasharray="3 3" />)}
+            {/* richiami verticali (ε_su, ±ε_se, ginocchio del cls, ε_c2 del campo 6, ε_cu) */}
+            {[...(offSu ? [] : [p.epsSu]), p.epsSe, -p.epsSe, -c.epsK, ...(c.epsC0 !== c.epsK ? [-c.epsC0] : []), -p.epsCu].map((e, i) => <line key={i} x1={ex(e)} x2={ex(e)} y1={baseC - lawH + 6} y2={baseBot} stroke="#eef2f7" strokeDasharray="3 3" />)}
 
             {/* legame del calcestruzzo (compressione a destra) */}
             <g>
@@ -760,34 +888,35 @@ function StrainDiagramPivot({ p, xi, branch, mode = "fields", tri = "cur", onSli
                 <line x1={ax} x2={ax} y1={baseC + 4} y2={baseC - lawH + 2} stroke="#64748b" markerEnd={`url(#sd${id}-arr)`} />
                 <text x={ex(-p.epsCu) + 28} y={baseC - 5} fontSize="10" textAnchor="start" fill="#475569">{ss("ε_c")}</text>
                 <text x={ax - 5} y={baseC - lawH + 10} fontSize="10" textAnchor="end" fill="#475569">{ss("σ_c")}</text>
-                <line x1={ax} x2={ex(-EPS_C2)} y1={baseC - sigPx} y2={baseC - sigPx} stroke="#cbd5e1" strokeDasharray="3 3" />
+                <line x1={ax} x2={ex(-c.epsK)} y1={baseC - sigPx} y2={baseC - sigPx} stroke="#cbd5e1" strokeDasharray="3 3" />
                 <text x={ax - 5} y={baseC - sigPx + 4} fontSize="9" textAnchor="end" fill="#64748b">{ss("f_cd")}</text>
                 <polyline points={concPts(0, p.epsCu)} fill="none" stroke="#94a3b8" strokeWidth="1.6" />
                 {spec.concRange[1] - spec.concRange[0] > 1e-9 && <polyline points={concPts(spec.concRange[0], spec.concRange[1])} fill="none" stroke={CONC_COL} strokeWidth="2.4" strokeLinecap="round" strokeOpacity="0.85" />}
-                <text x={ex(-EPS_C2)} y={baseC + 12} fontSize="9" textAnchor="middle" fill="#64748b">{ss("ε_c2")}</text>
+                {showKnee && <text x={ex(-c.epsK)} y={baseC + 12} fontSize="9" textAnchor="middle" fill="#64748b">{ss(c.kneeLabel)}</text>}
+                {showC0 && <text x={ex(-c.epsC0)} y={baseC + 12} fontSize="9" textAnchor="middle" fill="#94a3b8">{ss("ε_c2")}</text>}
                 <text x={ex(-p.epsCu)} y={baseC + 12} fontSize="9" textAnchor="middle" fill="#64748b">{ss("ε_cu")}</text>
                 {/* punto corrente solo se il lembo è compresso (dentro il legame del cls) */}
-                {ecTop >= -1e-12 && <circle cx={ex(-ecTop)} cy={baseC - sigmaC(ecTop, 1) * sigPx} r="4" fill={CONC_PT} stroke="#fff" strokeWidth="1.5"><title>lembo superiore</title></circle>}
-                {spec.concBottom && (() => { const eb = Math.max(0, -strainAt(xi, p.h)); return <circle cx={ex(-eb)} cy={baseC - sigmaC(eb, 1) * sigPx} r="3.4" fill="#fff" stroke={CONC_PT} strokeWidth="1.8"><title>lembo inferiore</title></circle>; })()}
+                {ecTop >= -1e-12 && <circle cx={ex(-ecTop)} cy={baseC - c.sigma(ecTop) * sigPx} r="4" fill={CONC_PT} stroke="#fff" strokeWidth="1.5"><title>lembo superiore</title></circle>}
+                {spec.concBottom && (() => { const eb = Math.max(0, -strainAt(xi, p.h)); return <circle cx={ex(-eb)} cy={baseC - c.sigma(eb) * sigPx} r="3.4" fill="#fff" stroke={CONC_PT} strokeWidth="1.8"><title>lembo inferiore</title></circle>; })()}
                 {profile && ecTop > 1e-12 && barMark(baseC, -ecTop, CONC_COL, "ε_c", "c")}
             </g>
 
             {/* legame di A'_s (trazione a sinistra in alto, compressione a destra in basso) */}
-            <g>
-                <line x1={ex(-p.epsCu) + 20} x2={ex(p.epsSu) - 24} y1={baseS} y2={baseS} stroke="#64748b" markerEnd={`url(#sd${id}-arr)`} />
+            <g clipPath={clip}>
+                <line x1={ex(-p.epsCu) + 20} x2={ex(eView) - 24} y1={baseS} y2={baseS} stroke="#64748b" markerEnd={`url(#sd${id}-arr)`} />
                 <line x1={ax} x2={ax} y1={baseS + sigPx + 6} y2={baseS - lawH + 2} stroke="#64748b" markerEnd={`url(#sd${id}-arr)`} />
-                <text x={ex(p.epsSu) - 26} y={baseS - 5} fontSize="10" textAnchor="end" fill="#475569">{ss("ε′_s")}</text>
+                <text x={ex(eView) - 26} y={baseS - 5} fontSize="10" textAnchor="end" fill="#475569">{ss("ε′_s")}</text>
                 <text x={ax + 5} y={baseS - lawH + 10} fontSize="10" fill="#475569">{ss("σ′_s")}</text>
-                <text x={ex(p.epsSe)} y={baseS - sigPx - 4} fontSize="9" textAnchor="middle" fill="#64748b">{ss("f′_yd")}</text>
-                <text x={ex(-p.epsSe)} y={baseS + sigPx + 12} fontSize="9" textAnchor="middle" fill="#64748b">−{ss("f′_yd")}</text>
+                <text x={fyX(p.epsSe).x} y={baseS - sigPx - 4} fontSize="9" textAnchor={fyX(p.epsSe).anchor} fill="#64748b">{ss("f′_yd")}</text>
+                <text x={fyX(-p.epsSe).x} y={baseS + sigPx + 12} fontSize="9" textAnchor={fyX(-p.epsSe).anchor} fill="#64748b">−{ss("f′_yd")}</text>
                 <polyline points={steelPts(baseS, -p.epsCu, p.epsSu)} fill="none" stroke="#94a3b8" strokeWidth="1.6" />
                 {/* plateau −f'_yd prolungato fino alla fine dell'asse ε */}
                 <line x1={ex(-p.epsCu)} x2={ex(-p.epsCu) + 20} y1={baseS + sigPx} y2={baseS + sigPx} stroke="#94a3b8" strokeWidth="1.6" />
                 {spec.aspRanges.map((r) => <polyline key={r.key} points={steelPts(baseS, r.e0, r.e1)} fill="none" stroke={r.color} strokeWidth="2.4" strokeLinecap="round" />)}
                 <circle cx={ex(eCur)} cy={baseS - (sigS(eCur) / p.fyd) * sigPx} r="4" fill={CUR_COL} stroke="#fff" strokeWidth="1.5" />
-                <text x={ex(p.epsSu)} y={baseS + 12} fontSize="9" textAnchor="middle" fill="#64748b">{ss("ε′_su")}</text>
-                <text x={ex(p.epsSe)} y={baseS + 12} fontSize="9" textAnchor="middle" fill="#64748b">{ss("ε_se")}</text>
-                <text x={ex(-p.epsSe)} y={baseS + 12} fontSize="9" textAnchor="middle" fill="#64748b">{ss("ε′_se")}</text>
+                <text x={ex(eView)} y={baseS + 12} fontSize="9" textAnchor="middle" fill="#64748b">{ss(suTxt("ε′_su"))}</text>
+                {!tightSe && <text x={ex(p.epsSe)} y={baseS + 12} fontSize="9" textAnchor="middle" fill="#64748b">{ss("ε_se")}</text>}
+                {!tightSe && <text x={ex(-p.epsSe)} y={baseS + 12} fontSize="9" textAnchor="middle" fill="#64748b">{ss("ε′_se")}</text>}
                 {profile && barMark(baseS, eCur, ASP_COL, "ε′_s", "s")}
             </g>
 
@@ -811,7 +940,7 @@ function StrainDiagramPivot({ p, xi, branch, mode = "fields", tri = "cur", onSli
             {showCur && (() => {
                 const xc = Math.min(Math.max(xi * p.d, 0), p.h);
                 const cf = spec.concForce ? spec.concForce(xi) : (() => {
-                    const { psi, lam } = psiLambda(ecTop);
+                    const { psi, lam } = c.psiLambda(ecTop);
                     return { Cc: psi * p.b * xi * p.d * p.fcd, depth: lam * xi * p.d };
                 })();
                 const Cc = cf.Cc;                                            // [N]
@@ -829,10 +958,13 @@ function StrainDiagramPivot({ p, xi, branch, mode = "fields", tri = "cur", onSli
                 const maxF = Math.max(1, ...forces.map((q) => Math.abs(q.v)));
                 const len = (v) => 16 + (Math.abs(v) / maxF) * 62;
                 const wMax = 38, cyG = yD(p.h / 2), xa = LW / 2 + 2, r = 15; // azioni a sinistra della sezione
-                const stress = Array.from({ length: 25 }, (_, i) => {
-                    const dpt = (xc * i) / 24;
-                    return `${(face + sigmaC(-strainAt(xi, dpt), 1) * wMax).toFixed(1)},${yD(dpt).toFixed(1)}`;
-                });
+                // σ_c lungo la zona compressa (con il ginocchio del legame: salto dello stress-block)
+                const deps = Array.from({ length: 49 }, (_, i) => (xc * i) / 48);
+                if (xc > 0) {
+                    const e0 = -strainAt(xi, 0), e1 = -strainAt(xi, xc), tk = (c.epsK - e0) / (e1 - e0);
+                    if (tk > 0 && tk < 1) deps.push(tk * xc - 1e-9, tk * xc + 1e-9);
+                }
+                const stress = deps.sort((a, b) => a - b).map((dpt) => `${(face + c.sigma(-strainAt(xi, dpt)) * wMax).toFixed(1)},${yD(dpt).toFixed(1)}`);
                 // faccia sinistra: M ≥ 0 (fibre inferiori tese) → verso orario; arco a sinistra del centro
                 const arc = Mm >= 0
                     ? `M${xa + 8},${cyG + r} A${r},${r} 0 0 1 ${xa + 8},${cyG - r}`
@@ -873,6 +1005,7 @@ function StrainDiagramPivot({ p, xi, branch, mode = "fields", tri = "cur", onSli
                 );
             })()}
 
+            <g clipPath={clip}>
             {/* fasce dei sottocampi */}
             {mode === "fields" && bandsLayer()}
 
@@ -915,6 +1048,7 @@ function StrainDiagramPivot({ p, xi, branch, mode = "fields", tri = "cur", onSli
             {/* lembo di calcestruzzo compresso: stesso punto del legame del cls (superiore pieno, inferiore vuoto) */}
             {showCur && ecTop >= -1e-12 && <circle cx={ex(-ecTop)} cy={yD(0)} r="4" fill={CONC_PT} stroke="#fff" strokeWidth="1.5"><title>lembo superiore</title></circle>}
             {showCur && spec.concBottom && (() => { const eb = -strainAt(xi, p.h); return eb >= 0 && <circle cx={ex(-eb)} cy={yD(p.h)} r="3.4" fill="#fff" stroke={CONC_PT} strokeWidth="1.8"><title>lembo inferiore</title></circle>; })()}
+            </g>
             {/* asse neutro n–n che taglia la sezione fino all'asse x; la freccia parte dal vertice
                 superiore della sezione (x = 0) e scende fino all'asse neutro (profondità x) */}
             {showCur && (() => {
@@ -942,6 +1076,7 @@ function StrainDiagramPivot({ p, xi, branch, mode = "fields", tri = "cur", onSli
                     </g>
                 );
             })()}
+            <g clipPath={clip}>
             {profile && [
                 { key: "sp", y: yAp, e: eCur, col: ASP_COL },
                 { key: "s", y: yA, e: esCur, col: AS_COL },
@@ -963,23 +1098,25 @@ function StrainDiagramPivot({ p, xi, branch, mode = "fields", tri = "cur", onSli
             {/* pivot (A: acciaio a ε_su; B: cls a ε_cu) */}
             {/* pivot A coincide con A_s (punto vuoto verde): niente pallino scuro, solo l'etichetta */}
             {spec.pivot.label !== "A" && <circle cx={ex(spec.pivot.e)} cy={yD(spec.pivot.depth)} r="3" fill={spec.pivot.color} />}
-            <text x={ex(spec.pivot.e) + spec.pivot.dx} y={yD(spec.pivot.depth) + spec.pivot.dy} fontSize="10" textAnchor={spec.pivot.anchor} fill={spec.pivot.color}>{spec.pivot.label}</text>
+            {/* pivot A fuori scala: etichetta sul bordo, con la freccia verso ε_su */}
+            {(() => { const off = spec.pivot.e > eView * (1 + 1e-9); return <text x={ex(off ? eView : spec.pivot.e) + spec.pivot.dx} y={yD(spec.pivot.depth) + spec.pivot.dy} fontSize="10" textAnchor={spec.pivot.anchor} fill={spec.pivot.color}>{off ? "← A" : spec.pivot.label}</text>; })()}
+            </g>
 
             {/* legame di A_s (sotto); con A_s compressa (campi 5, 6) anche il ramo di compressione */}
-            <g>
-                <line x1={spec.asFull ? ex(-p.epsCu) + 20 : ax + 6} x2={ex(p.epsSu) - 24} y1={baseBot} y2={baseBot} stroke="#64748b" markerEnd={`url(#sd${id}-arr)`} />
+            <g clipPath={clip}>
+                <line x1={spec.asFull ? ex(-p.epsCu) + 20 : ax + 6} x2={ex(eView) - 24} y1={baseBot} y2={baseBot} stroke="#64748b" markerEnd={`url(#sd${id}-arr)`} />
                 <line x1={ax} x2={ax} y1={spec.asFull ? baseBot + sigPx + 6 : baseBot + 4} y2={baseBot - lawH + 2} stroke="#64748b" markerEnd={`url(#sd${id}-arr)`} />
-                <text x={ex(p.epsSu) - 26} y={baseBot - 5} fontSize="10" textAnchor="end" fill="#475569">{ss("ε_s")}</text>
+                <text x={ex(eView) - 26} y={baseBot - 5} fontSize="10" textAnchor="end" fill="#475569">{ss("ε_s")}</text>
                 <text x={ax + 5} y={baseBot - lawH + 10} fontSize="10" fill="#475569">{ss("σ_s")}</text>
-                <text x={ex(p.epsSe)} y={baseBot - sigPx - 4} fontSize="9" textAnchor="middle" fill="#64748b">{ss("f_yd")}</text>
-                {spec.asFull && <text x={ex(-p.epsSe)} y={baseBot + sigPx + 12} fontSize="9" textAnchor="middle" fill="#64748b">−{ss("f_yd")}</text>}
-                {spec.asFull && <text x={ex(-p.epsSe)} y={baseBot + 12} fontSize="9" textAnchor="middle" fill="#64748b">−{ss("ε_se")}</text>}
+                <text x={fyX(p.epsSe).x} y={baseBot - sigPx - 4} fontSize="9" textAnchor={fyX(p.epsSe).anchor} fill="#64748b">{ss("f_yd")}</text>
+                {spec.asFull && <text x={fyX(-p.epsSe).x} y={baseBot + sigPx + 12} fontSize="9" textAnchor={fyX(-p.epsSe).anchor} fill="#64748b">−{ss("f_yd")}</text>}
+                {spec.asFull && !tightSe && <text x={ex(-p.epsSe)} y={baseBot + 12} fontSize="9" textAnchor="middle" fill="#64748b">−{ss("ε_se")}</text>}
                 <polyline points={steelPts(baseBot, spec.asFull ? -p.epsCu : 0, p.epsSu)} fill="none" stroke="#94a3b8" strokeWidth="1.6" />
                 {spec.asFull && <line x1={ex(-p.epsCu)} x2={ex(-p.epsCu) + 20} y1={baseBot + sigPx} y2={baseBot + sigPx} stroke="#94a3b8" strokeWidth="1.6" />}
                 {spec.asRanges.map((r) => <polyline key={r.key} points={steelPts(baseBot, r.e0, r.e1)} fill="none" stroke={r.color} strokeWidth="2.4" strokeLinecap="round" />)}
                 <circle cx={ex(esCur)} cy={baseBot - (sigS(esCur) / p.fyd) * sigPx} r="3.4" fill="#fff" stroke={CUR_COL} strokeWidth="1.8"><title>A_s (armatura inferiore)</title></circle>
-                <text x={ex(p.epsSu)} y={baseBot + 12} fontSize="9" textAnchor="middle" fill="#64748b">{ss("ε_su")}</text>
-                <text x={ex(p.epsSe)} y={baseBot + 12} fontSize="9" textAnchor="middle" fill="#64748b">{ss("ε_se")}</text>
+                <text x={ex(eView)} y={baseBot + 12} fontSize="9" textAnchor="middle" fill="#64748b">{ss(suTxt("ε_su"))}</text>
+                {!tightSe && <text x={ex(p.epsSe)} y={baseBot + 12} fontSize="9" textAnchor="middle" fill="#64748b">{ss("ε_se")}</text>}
                 {profile && barMark(baseBot, esCur, AS_COL, "ε_s", "s")}
             </g>
         </svg>
@@ -990,6 +1127,7 @@ function StrainDiagramPivot({ p, xi, branch, mode = "fields", tri = "cur", onSli
 function spec2(p, f) {
     return {
         id: "2",
+        eView: p.epsSu,           // pivot A: la scala arriva a ε_su
         range: [0, f.xiH],
         strainAt: (xv, depth) => (p.epsSu * (depth - xv * p.d)) / (p.d - xv * p.d),
         lines: [{ xi: 0, color: LIM_COL }, { xi: f.xiH, color: LIM23_COL }],
@@ -1054,7 +1192,8 @@ function spec3(p, f) {
     return {
         id: "3",
         range: [f.xiH, f.xiN],
-        strainAt: (xv, depth) => (p.epsCu * (depth - xv * p.d)) / (xv * p.d),
+        // ξ = 0 (acciaio duttile, ξ_H = 0): retta orizzontale sul lembo, ε → ∞ sotto
+        strainAt: (xv, depth) => (xv <= 0 ? (depth <= 0 ? -p.epsCu : 10) : (p.epsCu * (depth - xv * p.d)) / (xv * p.d)),
         lines: [{ xi: f.xiH, color: LIM23_COL }, { xi: f.xiN, color: LIM34_COL }],
         boundaries: f.has3a && f.has3b ? [{ xi: f.xi3ab }] : [],
         bands,
@@ -1167,9 +1306,10 @@ function FieldThree({ data, st, set }) {
                     return (<>
                 {/* 2. legami costitutivi */}
                 <Block n="2" title="Legami costitutivi">
+                    <LawsNote p={p} />
                     <div className="space-y-1 text-xs leading-5 text-slate-600">
-                        <p><b>Calcestruzzo</b>: parabola-rettangolo; nel campo 3 il lembo compresso è sempre a ε<sub>cu</sub> = {fmtNum(p.epsCu * 1000, 1)}‰, quindi si sviluppa l'intero diagramma per ogni stato deformativo: ψ e λ sono costanti.</p>
-                        <p><b>Acciaio</b>: A<sub>s</sub> snervata, ε<sub>s</sub> scende da ε<sub>su</sub> (retta 2/3) a ε<sub>se</sub> (retta 3/4) lungo il tratto plastico, σ<sub>s</sub> = f<sub>yd</sub>.</p>
+                        <p><b>Calcestruzzo</b>: {concName(p)}; nel campo 3 il lembo compresso è sempre a ε<sub>cu</sub> = {fmtNum(p.epsCu * 1000, 1)}‰, quindi si sviluppa l'intero diagramma per ogni stato deformativo: ψ e λ sono costanti.</p>
+                        <p><b>Acciaio</b>: A<sub>s</sub> snervata, ε<sub>s</sub> scende da ε<sub>su</sub> (retta 2/3) a ε<sub>se</sub> (retta 3/4) lungo il tratto plastico, {p.steel.type === "hard" ? <>σ<sub>s</sub> = α<sub>s</sub>·f<sub>yd</sub> con α<sub>s</sub> da k a 1 (incrudimento)</> : <>σ<sub>s</sub> = f<sub>yd</sub></>}.</p>
                         <p>• A′<sub>s</sub> compressa (deformazioni negative): {f.has3a && f.has3b
                             ? <>tratto elastico da ε′<sub>s2/3</sub> a ε′<sub>se</sub> (3a), poi plastico fino a ε′<sub>s3/4</sub> (3b)</>
                             : f.has3b ? <>già snervata nel campo 2: tratto plastico da ε′<sub>s2/3</sub> a ε′<sub>s3/4</sub> (3b)</>
@@ -1195,7 +1335,8 @@ function FieldThree({ data, st, set }) {
                         <p className="pt-1 text-xs font-semibold text-slate-500">In quale campo snerva A′<sub>s</sub>? Copriferro per cui snerva proprio sulla retta 2/3:</p>
                         <F lhs="d''_{\varepsilon se,2/3}" sym={String.raw`\dfrac{\varepsilon_{cu}+\varepsilon'_{se}}{\varepsilon_{cu}}\,x_H`} num={String.raw`\dfrac{${eCu}+(${eSe})}{${eCu}}\cdot ${T(f.xH, 1)}`} val={`${T(f.dSup23, 1)}\\ \\text{mm}`} br={false} />
                         <p className="text-xs text-slate-500">d″ = {fmtNum(p.dSup, 1)} mm {p.dSup < f.dSup23 ? "<" : "≥"} d″<sub>εse,2/3</sub> → sottocampi {p.dSup < f.dSup23 ? "2a, 2b, 3b" : "2a, 3a, 3b"}.</p>
-                        <Tex display>{String.raw`\psi=1-\dfrac{\varepsilon_{c2}}{3\,\varepsilon_{cu}}=${T(f.psi, 5)}\qquad\lambda=\dfrac{6\varepsilon_{cu}^2-4\varepsilon_{cu}\varepsilon_{c2}+\varepsilon_{c2}^2}{4\,\varepsilon_{cu}\,(3\varepsilon_{cu}-\varepsilon_{c2})}=${T(f.lam, 4)}`}</Tex>
+                        {!p.prof ? <Tex display>{String.raw`\psi=\psi(\varepsilon_{cu})=${T(f.psi, 5)}\qquad\lambda=\lambda(\varepsilon_{cu})=${T(f.lam, 4)}`}</Tex>
+                        : <Tex display>{String.raw`\psi=1-\dfrac{\varepsilon_{c2}}{3\,\varepsilon_{cu}}=${T(f.psi, 5)}\qquad\lambda=\dfrac{6\varepsilon_{cu}^2-4\varepsilon_{cu}\varepsilon_{c2}+\varepsilon_{c2}^2}{4\,\varepsilon_{cu}\,(3\varepsilon_{cu}-\varepsilon_{c2})}=${T(f.lam, 4)}`}</Tex>}
                     </div>
                 </Block>
 
@@ -1215,14 +1356,14 @@ function FieldThree({ data, st, set }) {
                     <div className="space-y-3">
                         <div className="tex-left space-y-1">
                             <Tex display>{String.raw`\xi=${xiv}\qquad x=${T(xi * p.d, 1)}\ \text{mm}\qquad\text{sottocampo }${cur.sub}\qquad\varepsilon_c=\varepsilon_{cu},\ \psi=${T(f.psi, 5)},\ \lambda=${T(f.lam, 4)}`}</Tex>
-                            <F lhs="\varepsilon_s" sym={String.raw`\dfrac{\varepsilon_{cu}}{\xi}\,(1-\xi)`} num={String.raw`\dfrac{${eCu}}{${xiv}}\,(1-${xiv})`} val={`${pm(cur.epsS, 3)}\\;\\ge\\;\\varepsilon_{se}\\;\\Rightarrow\\;\\sigma_s=f_{yd}`} br={false} />
+                            <F lhs="\varepsilon_s" sym={String.raw`\dfrac{\varepsilon_{cu}}{\xi}\,(1-\xi)`} num={String.raw`\dfrac{${eCu}}{${xiv}}\,(1-${xiv})`} val={`${pm(cur.epsS, 3)}\\;\\ge\\;\\varepsilon_{se}\\;\\Rightarrow\\;${p.steel.type === "hard" ? `\\alpha_s=${T(cur.alphaS, 4)}` : "\\sigma_s=f_{yd}"}`} br={false} />
                             <F lhs="\varepsilon'_s" sym={String.raw`-\dfrac{\varepsilon_{cu}}{\xi}\,(\xi-\delta'')`} num={String.raw`-\dfrac{${eCu}}{${xiv}}\,(${xiv}-${d2})`} val={pm(cur.epsSP, 3)} br={false} />
                             {cur.sub === "3b"
-                                ? <Tex display>{String.raw`\alpha'_s=-1\quad(\varepsilon'_s\le\varepsilon'_{se})\qquad\sigma'_s=-f_{yd}=${T(cur.sigmaSP, 1)}\ \text{MPa}`}</Tex>
+                                ? alphaPl(p, true, cur.alphaSP, cur.sigmaSP, String.raw`\varepsilon'_s\le\varepsilon'_{se}`)
                                 : <F lhs="\alpha'_s" sym={String.raw`\dfrac{E_s\,\varepsilon'_s}{f_{yd}}`} num={String.raw`\dfrac{200\,000\cdot (${T(cur.epsSP, 6)})}{${T(p.fyd, 2)}}`} val={`${T(cur.alphaSP, 4)}\\qquad\\sigma'_s=${T(cur.sigmaSP, 1)}\\ \\text{MPa}`} br={false} />}
-                            <F lhs="\nu_{Rd}" sym="\psi\,\xi-\alpha'_s\,\omega'_s-\omega_s" num={`${T(f.psi, 5)}\\cdot ${xiv}-(${T(cur.alphaSP, 4)})\\cdot ${T(p.omegaSP, 4)}-${T(p.omegaS, 4)}`} val={T(cur.nu, 4)} br={false} />
-                            <F lhs="\mu_{Rd}" sym={String.raw`${sgnM ? "-\\Big[" : ""}\psi\xi\left(\tfrac{1+\delta'}{2}-\lambda\xi\right)-\alpha'_s\omega'_s\tfrac{1+\delta'-2\delta''}{2}+\omega_s\tfrac{1-\delta'}{2}${sgnM ? "\\Big]" : ""}`}
-                                num={`${sgnM ? "-\\big[" : ""}${T(f.psi, 5)}\\cdot ${xiv}\\,(\\tfrac{1+${d1}}{2}-${T(f.lam, 4)}\\cdot ${xiv})-(${T(cur.alphaSP, 4)})\\cdot ${T(p.omegaSP, 4)}\\cdot ${T(p.armSP, 4)}+${T(p.omegaS, 4)}\\cdot ${T(p.armS, 4)}${sgnM ? "\\big]" : ""}`} val={T(cur.mu, 4)} br={false} />
+                            <F lhs="\nu_{Rd}" sym={String.raw`\psi\,\xi-\alpha'_s\,\omega'_s-${aSy(p)}\omega_s`} num={`${T(f.psi, 5)}\\cdot ${xiv}-(${T(cur.alphaSP, 4)})\\cdot ${T(p.omegaSP, 4)}-${aTx(p, cur.alphaS)}${T(p.omegaS, 4)}`} val={T(cur.nu, 4)} br={false} />
+                            <F lhs="\mu_{Rd}" sym={String.raw`${sgnM ? "-\\Big[" : ""}\psi\xi\left(\tfrac{1+\delta'}{2}-\lambda\xi\right)-\alpha'_s\omega'_s\tfrac{1+\delta'-2\delta''}{2}+${aSy(p)}\omega_s\tfrac{1-\delta'}{2}${sgnM ? "\\Big]" : ""}`}
+                                num={`${sgnM ? "-\\big[" : ""}${T(f.psi, 5)}\\cdot ${xiv}\\,(\\tfrac{1+${d1}}{2}-${T(f.lam, 4)}\\cdot ${xiv})-(${T(cur.alphaSP, 4)})\\cdot ${T(p.omegaSP, 4)}\\cdot ${T(p.armSP, 4)}+${aTx(p, cur.alphaS)}${T(p.omegaS, 4)}\\cdot ${T(p.armS, 4)}${sgnM ? "\\big]" : ""}`} val={T(cur.mu, 4)} br={false} />
                             <F lhs="N_{Rd}" sym="\nu_{Rd}\,b\,d\,f_{cd}" num={`${T(cur.nu, 4)}\\cdot ${T(p.b, 0)}\\cdot ${T(p.d, 1)}\\cdot ${T(p.fcd, 2)}`} val={`${T(cur.N, 1)}\\ \\text{kN}`} br={false} />
                             <F lhs="M_{Rd}" sym="\mu_{Rd}\,b\,d^2\,f_{cd}" num={`${T(cur.mu, 4)}\\cdot ${T(p.b, 0)}\\cdot ${T(p.d, 1)}^2\\cdot ${T(p.fcd, 2)}`} val={`${T(cur.M, 2)}\\ \\text{kNm}`} br={false} />
                         </div>
@@ -1374,8 +1515,9 @@ function FieldFour({ data, st, set }) {
                     return (<>
                 {/* 2. legami costitutivi */}
                 <Block n="2" title="Legami costitutivi">
+                    <LawsNote p={p} />
                     <div className="space-y-1 text-xs leading-5 text-slate-600">
-                        <p><b>Calcestruzzo</b>: lembo compresso sempre a ε<sub>cu</sub> = {fmtNum(p.epsCu * 1000, 1)}‰: diagramma parabola-rettangolo completo, ψ e λ costanti.</p>
+                        <p><b>Calcestruzzo</b>: lembo compresso sempre a ε<sub>cu</sub> = {fmtNum(p.epsCu * 1000, 1)}‰: diagramma {concName(p)} completo, ψ e λ costanti.</p>
                         <p><b>Acciaio</b>: A<sub>s</sub> nel tratto <b>elastico</b>, ε<sub>s</sub> scende da ε<sub>se</sub> (retta 3/4) a 0 (retta 4/5), σ<sub>s</sub> = E<sub>s</sub>ε<sub>s</sub>.</p>
                         <p>• A′<sub>s</sub> compressa: {f.split
                             ? <>tratto elastico da ε′<sub>s3/4</sub> a ε′<sub>se</sub> (4a), poi plastico fino a ε′<sub>s4/5</sub> (4b)</>
@@ -1426,7 +1568,7 @@ function FieldFour({ data, st, set }) {
                             <F lhs="\alpha_s" sym={String.raw`\dfrac{E_s\,\varepsilon_s}{f_{yd}}`} num={String.raw`\dfrac{200\,000\cdot ${T(cur.epsS, 6)}}{${T(p.fyd, 2)}}`} val={`${T(cur.alphaS, 4)}\\qquad\\sigma_s=${T(cur.sigmaS, 1)}\\ \\text{MPa}`} br={false} />
                             <F lhs="\varepsilon'_s" sym={String.raw`-\dfrac{\varepsilon_{cu}}{\xi}\,(\xi-\delta'')`} num={String.raw`-\dfrac{${eCu}}{${xiv}}\,(${xiv}-${d2})`} val={pm(cur.epsSP, 3)} br={false} />
                             {cur.alphaSP <= -1 + 1e-12
-                                ? <Tex display>{String.raw`\alpha'_s=-1\quad(\varepsilon'_s\le\varepsilon'_{se})\qquad\sigma'_s=-f_{yd}=${T(cur.sigmaSP, 1)}\ \text{MPa}`}</Tex>
+                                ? alphaPl(p, true, cur.alphaSP, cur.sigmaSP, String.raw`\varepsilon'_s\le\varepsilon'_{se}`)
                                 : <F lhs="\alpha'_s" sym={String.raw`\dfrac{E_s\,\varepsilon'_s}{f_{yd}}`} num={String.raw`\dfrac{200\,000\cdot (${T(cur.epsSP, 6)})}{${T(p.fyd, 2)}}`} val={`${T(cur.alphaSP, 4)}\\qquad\\sigma'_s=${T(cur.sigmaSP, 1)}\\ \\text{MPa}`} br={false} />}
                             <F lhs="\nu_{Rd}" sym="\psi\,\xi-\alpha'_s\,\omega'_s-\alpha_s\,\omega_s" num={`${T(f.psi, 5)}\\cdot ${xiv}-(${T(cur.alphaSP, 4)})\\cdot ${T(p.omegaSP, 4)}-${T(cur.alphaS, 4)}\\cdot ${T(p.omegaS, 4)}`} val={T(cur.nu, 4)} br={false} />
                             <F lhs="\mu_{Rd}" sym={String.raw`${sgnM ? "-\\Big[" : ""}\psi\xi\left(\tfrac{1+\delta'}{2}-\lambda\xi\right)-\alpha'_s\omega'_s\tfrac{1+\delta'-2\delta''}{2}+\alpha_s\omega_s\tfrac{1-\delta'}{2}${sgnM ? "\\Big]" : ""}`}
@@ -1593,6 +1735,7 @@ function FieldFive({ data, st, set }) {
                     return (<>
                 {/* 2. legami costitutivi */}
                 <Block n="2" title="Legami costitutivi">
+                    <LawsNote p={p} />
                     <div className="space-y-1 text-xs leading-5 text-slate-600">
                         <p><b>Calcestruzzo</b>: lembo compresso sempre a ε<sub>cu</sub> = {fmtNum(p.epsCu * 1000, 1)}‰: diagramma completo, ψ e λ costanti.</p>
                         <p><b>Acciaio</b>: A<sub>s</sub> passa da 0 (retta 4/5) a ε<sub>s,5/6</sub> = {fmtNum(f.epsAs56 * 1000, 3)}‰ in compressione, sul tratto elastico (nel legame di A<sub>s</sub> ora compare anche il ramo di compressione).</p>
@@ -1644,7 +1787,7 @@ function FieldFive({ data, st, set }) {
                             <F lhs="\alpha_s" sym={String.raw`\dfrac{E_s\,\varepsilon_s}{f_{yd}}`} num={String.raw`\dfrac{200\,000\cdot (${T(cur.epsS, 7)})}{${T(p.fyd, 2)}}`} val={`${T(cur.alphaS, 4)}\\qquad\\sigma_s=${T(cur.sigmaS, 1)}\\ \\text{MPa}`} br={false} />
                             <F lhs="\varepsilon'_s" sym={String.raw`-\dfrac{\varepsilon_{cu}}{\xi}\,(\xi-\delta'')`} num={String.raw`-\dfrac{${eCu}}{${xiv}}\,(${xiv}-${d2})`} val={pm(cur.epsSP, 3)} br={false} />
                             {cur.alphaSP <= -1 + 1e-12
-                                ? <Tex display>{String.raw`\alpha'_s=-1\quad(\varepsilon'_s\le\varepsilon'_{se})\qquad\sigma'_s=-f_{yd}=${T(cur.sigmaSP, 1)}\ \text{MPa}`}</Tex>
+                                ? alphaPl(p, true, cur.alphaSP, cur.sigmaSP, String.raw`\varepsilon'_s\le\varepsilon'_{se}`)
                                 : <F lhs="\alpha'_s" sym={String.raw`\dfrac{E_s\,\varepsilon'_s}{f_{yd}}`} num={String.raw`\dfrac{200\,000\cdot (${T(cur.epsSP, 6)})}{${T(p.fyd, 2)}}`} val={`${T(cur.alphaSP, 4)}\\qquad\\sigma'_s=${T(cur.sigmaSP, 1)}\\ \\text{MPa}`} br={false} />}
                             <F lhs="\nu_{Rd}" sym="\psi\,\xi-\alpha'_s\,\omega'_s-\alpha_s\,\omega_s" num={`${T(f.psi, 5)}\\cdot ${xiv}-(${T(cur.alphaSP, 4)})\\cdot ${T(p.omegaSP, 4)}-(${T(cur.alphaS, 4)})\\cdot ${T(p.omegaS, 4)}`} val={T(cur.nu, 4)} br={false} />
                             <F lhs="\mu_{Rd}" sym={String.raw`${sgnM ? "-\\Big[" : ""}\psi\xi\left(\tfrac{1+\delta'}{2}-\lambda\xi\right)-\alpha'_s\omega'_s\tfrac{1+\delta'-2\delta''}{2}+\alpha_s\omega_s\tfrac{1-\delta'}{2}${sgnM ? "\\Big]" : ""}`}
@@ -1779,8 +1922,10 @@ function FieldSix({ data, st, set }) {
                     <div className="space-y-4">
                         <div className="tex-left space-y-1 text-sm text-slate-600">
                             <Tex display>{String.raw`h \le x < +\infty \quad\Longleftrightarrow\quad 1+\delta'=${T(f.xi0, 4)} \le \xi < +\infty`}</Tex>
-                            <p className="text-xs">Campo convenzionale, nato dalla prescrizione normativa. Tutte le rette passano per il punto F (pivot C), a profondità t = (ε<sub>cu</sub> − ε<sub>c2</sub>)/ε<sub>cu</sub>·h = {fmtNum(f.t, 1)} mm (3/7 h) con deformazione ε<sub>c2</sub>: dalla retta 5/6 (x = h) alla retta limite inferiore (ξ → ∞, deformazione uniforme ε<sub>c2</sub>, compressione pura).</p>
-                            <p className="text-xs">ε<sub>se</sub> = {fmtNum(p.epsSe * 1000, 3)}‰ &lt; ε<sub>c2</sub> = 2‰: A′<sub>s</sub> è sicuramente già snervata. A<sub>s</sub> compressa snerva dentro il campo: sottocampi 6a (elastica) e 6b (plastica).</p>
+                            <p className="text-xs">Campo convenzionale, nato dalla prescrizione normativa. Tutte le rette passano per il punto F (pivot C), a profondità t = (ε<sub>cu</sub> − ε<sub>c2</sub>)/ε<sub>cu</sub>·h = {fmtNum(f.t, 1)} mm{p.prof ? " (3/7 h)" : ""} con deformazione ε<sub>c2</sub> = {permil(f.epsC2, 3)}: dalla retta 5/6 (x = h) alla retta limite inferiore (ξ → ∞, deformazione uniforme ε<sub>c2</sub>, compressione pura).</p>
+                            {p.epsSe < f.epsC2
+                                ? <p className="text-xs">ε<sub>se</sub> = {fmtNum(p.epsSe * 1000, 3)}‰ &lt; ε<sub>c2</sub> = {permil(f.epsC2, 3)}: A′<sub>s</sub> è sicuramente già snervata. A<sub>s</sub> compressa snerva dentro il campo: sottocampi 6a (elastica) e 6b (plastica).</p>
+                                : <p className="text-xs font-semibold text-amber-700">ε<sub>se</sub> = {fmtNum(p.epsSe * 1000, 3)}‰ ≥ ε<sub>c2</sub> = {permil(f.epsC2, 3)}: in compressione uniforme le barre non snervano (σ = E<sub>s</sub>ε<sub>c2</sub> &lt; f<sub>yd</sub>), il sottocampo 6b non esiste.</p>}
                         </div>
                         <div className="flex w-full flex-col items-center gap-3">
                             <div className="flex w-full flex-wrap items-start justify-center gap-3">
@@ -1821,8 +1966,9 @@ function FieldSix({ data, st, set }) {
                     return (<>
                 {/* 2. legami costitutivi */}
                 <Block n="2" title="Legami costitutivi">
+                    <LawsNote p={p} />
                     <div className="space-y-1 text-xs leading-5 text-slate-600">
-                        <p><b>Calcestruzzo</b>: tutta la sezione è compressa; il lembo superiore va da ε<sub>cu</sub> a ε<sub>c2</sub> (punto pieno) e quello inferiore da 0 a ε<sub>c2</sub> (punto vuoto). Il diagramma parabola-rettangolo non è più "completo": ψ e λ non sono costanti e si riferiscono all'altezza h.</p>
+                        <p><b>Calcestruzzo</b>: tutta la sezione è compressa; il lembo superiore va da ε<sub>cu</sub> a ε<sub>c2</sub> (punto pieno) e quello inferiore da 0 a ε<sub>c2</sub> (punto vuoto). Il diagramma {concName(p)} non è più "completo": ψ e λ non sono costanti e si riferiscono all'altezza h.</p>
                         <p><b>Acciaio</b>: A′<sub>s</sub> già snervata (σ′<sub>s</sub> = −f<sub>yd</sub>); A<sub>s</sub> compressa da ε<sub>s,5/6</sub> = {fmtNum(f.epsAs56 * 1000, 3)}‰ fino a −ε<sub>c2</sub>{f.has6b ? <>, elastica (6a) fino a −ε<sub>se</sub> e poi plastica (6b)</> : ""}.</p>
                     </div>
                 </Block>
@@ -1830,15 +1976,17 @@ function FieldSix({ data, st, set }) {
                 {/* 3. congruenza e sottocampi */}
                 <Block n="3" title="Congruenza e sottocampi">
                     <div className="tex-left space-y-1">
-                        <F lhs="t" sym={String.raw`\dfrac{\varepsilon_{cu}-\varepsilon_{c2}}{\varepsilon_{cu}}\,h`} num={String.raw`\dfrac{${eCu}-0{,}002}{${eCu}}\cdot ${T(p.h, 1)}`} val={`${T(f.t, 1)}\\ \\text{mm}`} br={false} />
+                        <F lhs="t" sym={String.raw`\dfrac{\varepsilon_{cu}-\varepsilon_{c2}}{\varepsilon_{cu}}\,h`} num={String.raw`\dfrac{${eCu}-${T(f.epsC2, 5)}}{${eCu}}\cdot ${T(p.h, 1)}`} val={`${T(f.t, 1)}\\ \\text{mm}`} br={false} />
                         <Tex display>{String.raw`\dfrac{\varepsilon_{c2}}{x-t}=\dfrac{-\varepsilon_s}{x-d}=\dfrac{-\varepsilon'_s}{x-d''}=\dfrac{\varepsilon_{cs}}{x}=\dfrac{\varepsilon_{ci}}{x-h}\;\Longleftrightarrow\;\dfrac{\varepsilon_{c2}}{\xi-t/d}=\dfrac{-\varepsilon_s}{\xi-1}=\dfrac{-\varepsilon'_s}{\xi-\delta''}=\dfrac{\varepsilon_{cs}}{\xi}=\dfrac{\varepsilon_{ci}}{\xi-(1+\delta')}`}</Tex>
                         <Tex display>{String.raw`\varepsilon_s=-\dfrac{\varepsilon_{c2}}{\xi-t/d}\,(\xi-1)\qquad\varepsilon_{cs}=\dfrac{\varepsilon_{c2}\,\xi}{\xi-t/d}\qquad\varepsilon_{ci}=\dfrac{\varepsilon_{c2}\,(\xi-1-\delta')}{\xi-t/d}`}</Tex>
-                        {f.has6b && <F lhs="\xi_{6a/6b}" sym={String.raw`\dfrac{\varepsilon_{c2}-\varepsilon_{se}\,t/d}{\varepsilon_{c2}-\varepsilon_{se}}`} num={String.raw`\dfrac{0{,}002-${eSe}\cdot ${tD}}{0{,}002-${eSe}}`} val={`${T(f.xi6ab, 3)}\\qquad x_{6a/6b}=${T(f.x6ab / 1000, 2)}\\ \\text{m}`} br={false} />}
+                        {f.has6b && <F lhs="\xi_{6a/6b}" sym={String.raw`\dfrac{\varepsilon_{c2}-\varepsilon_{se}\,t/d}{\varepsilon_{c2}-\varepsilon_{se}}`} num={String.raw`\dfrac{${T(f.epsC2, 5)}-${eSe}\cdot ${tD}}{${T(f.epsC2, 5)}-${eSe}}`} val={`${T(f.xi6ab, 3)}\\qquad x_{6a/6b}=${T(f.x6ab / 1000, 2)}\\ \\text{m}`} br={false} />}
                         {f.has6b && <Tex display>{String.raw`\begin{aligned}&\text{6a: }A_s\text{ elastica, }\sigma_s=E_s\,\varepsilon_s&&${T(f.xi0, 4)}\le\xi\le ${T(f.xi6ab, 3)}\\&\text{6b: }A_s\text{ plastica, }\sigma_s=-f_{yd}&&${T(f.xi6ab, 3)}\le\xi<+\infty\end{aligned}`}</Tex>}
                         <p className="text-xs text-slate-500">Negli appunti, per 6b, compare ε<sub>su</sub> ≤ ε<sub>s</sub> ≤ ε<sub>se</sub>: come notato dalla prof. dovrebbe essere −ε<sub>c2</sub> ≤ ε<sub>s</sub> ≤ −ε<sub>se</sub> (qui con i segni). Il confine 6a/6b è molto lontano perché ε<sub>se</sub> è vicina a ε<sub>c2</sub>.</p>
                         <p className="pt-1 text-xs font-semibold text-slate-500">Coefficienti del calcestruzzo sull'altezza h (differenza fra il blocco 0…x a ε<sub>cs</sub> e il blocco h…x a ε<sub>ci</sub>):</p>
                         <Tex display>{String.raw`\psi=\dfrac{x\,\psi(\varepsilon_{cs})-(x-h)\,\psi(\varepsilon_{ci})}{h}\qquad\lambda\,h=\dfrac{x\,\psi(\varepsilon_{cs})\,\lambda(\varepsilon_{cs})\,x-(x-h)\,\psi(\varepsilon_{ci})\,[h+\lambda(\varepsilon_{ci})(x-h)]}{\psi\,h}`}</Tex>
-                        <p className="text-xs text-slate-400">ψ(ε), λ(ε): le formule del campo 2 (parabola-rettangolo). Per ξ → ∞: ψ = 1, λ = 0,5. Nel campo 6: 0,80952 ≤ ψ ≤ 1.</p>
+                        <p className="text-xs text-slate-400">{p.prof
+                            ? "ψ(ε), λ(ε): le formule del campo 2 (parabola-rettangolo). Per ξ → ∞: ψ = 1, λ = 0,5. Nel campo 6: 0,80952 ≤ ψ ≤ 1."
+                            : `ψ(ε), λ(ε): formule del legame scelto (blocco 2). Per ξ → ∞: ψ = 1, λ = 0,5. Nel campo 6: ${fmtNum(f.point(f.xi0).psi, 5)} ≤ ψ ≤ 1.`}</p>
                     </div>
                 </Block>
 
@@ -1861,7 +2009,7 @@ function FieldSix({ data, st, set }) {
                             <Tex display>{String.raw`\varepsilon_{cs}=${pm(cur.epsCs, 3)}\qquad\varepsilon_{ci}=${pm(cur.epsCi, 3)}\qquad\psi=${T(cur.psi, 5)}\qquad\lambda=${T(cur.lam, 4)}`}</Tex>
                             {inf
                                 ? <Tex display>{String.raw`\varepsilon_s=\varepsilon'_s=-\varepsilon_{c2}=${pm(-f.epsC2, 3)}\qquad\alpha_s=${T(cur.alphaS, 4)}`}</Tex>
-                                : <F lhs="\varepsilon_s" sym={String.raw`-\dfrac{\varepsilon_{c2}}{\xi-t/d}\,(\xi-1)`} num={String.raw`-\dfrac{0{,}002}{${xiv}-${tD}}\,(${xiv}-1)`} val={`${pm(cur.epsS, 4)}\\qquad\\alpha_s=${T(cur.alphaS, 4)}`} br={false} />}
+                                : <F lhs="\varepsilon_s" sym={String.raw`-\dfrac{\varepsilon_{c2}}{\xi-t/d}\,(\xi-1)`} num={String.raw`-\dfrac{${T(f.epsC2, 5)}}{${xiv}-${tD}}\,(${xiv}-1)`} val={`${pm(cur.epsS, 4)}\\qquad\\alpha_s=${T(cur.alphaS, 4)}`} br={false} />}
                             <Tex display>{String.raw`\varepsilon'_s=${pm(cur.epsSP, 3)}\;\Rightarrow\;\alpha'_s=${T(cur.alphaSP, 4)}`}</Tex>
                             <F lhs="\nu_{Rd}" sym="\psi\,(1+\delta')-\alpha'_s\,\omega'_s-\alpha_s\,\omega_s" num={`${T(cur.psi, 5)}\\cdot ${T(f.xi0, 4)}-(${T(cur.alphaSP, 4)})\\cdot ${T(p.omegaSP, 4)}-(${T(cur.alphaS, 4)})\\cdot ${T(p.omegaS, 4)}`} val={T(cur.nu, 4)} br={false} />
                             <F lhs="\mu_{Rd}" sym={String.raw`${sgnM ? "-\\Big[" : ""}\psi(1+\delta')\left[\tfrac{1+\delta'}{2}-\lambda(1+\delta')\right]-\alpha'_s\omega'_s\tfrac{1+\delta'-2\delta''}{2}+\alpha_s\omega_s\tfrac{1-\delta'}{2}${sgnM ? "\\Big]" : ""}`}
@@ -1977,7 +2125,9 @@ function StrainDiagram({ p, f, xi, branch, mode = "fields", tri = "cur", onSlide
     const L0 = lineFor(0), Lab = lineFor(f.xi1ab), Linf = lineFor(-Infinity), Lc = lineFor(xi, p.h); // stato corrente: su tutta l'altezza, fino al lembo inferiore
     const eCur = xi === -Infinity ? p.epsSu : (p.epsSu * (p.dSup - xi * p.d)) / (p.d - xi * p.d);
     const sigPx = lawH - 16;                   // altezza di f_yd nei legami
-    const sig = (e) => Math.min(ES_MPA * e, p.fyd);
+    const sig = (e) => p.steel.alpha(e) * p.fyd;   // legame dell'acciaio scelto
+    const tightSe = k * p.epsSe < 14;              // scala compressa (ε_su grande): etichette diradate
+    const showKnee = k * (p.epsCu - p.conc.epsK) >= 16;
     const lawPts = (base, e0, e1) => [e0, ...(e0 < p.epsSe && e1 > p.epsSe ? [p.epsSe] : []), e1]
         .map((e) => `${ex(e).toFixed(1)},${(base - (sig(e) / p.fyd) * sigPx).toFixed(1)}`).join(" ");
     const law = ({ base, eLab, sLab, fLab, suLab, seLab, ranges, pts, bar, full = false }) => (
@@ -1986,19 +2136,19 @@ function StrainDiagram({ p, f, xi, branch, mode = "fields", tri = "cur", onSlide
             <line x1={ax} x2={ax} y1={full ? base + sigPx + 6 : base + 4} y2={base - lawH + 2} stroke="#64748b" markerEnd="url(#sd-arr)" />
             {/* ramo di compressione (come nei campi 2–5) */}
             {full && <polyline points={`${ex(-p.epsCu) + 20},${base + sigPx} ${ex(-p.epsSe)},${base + sigPx} ${ax},${base}`} fill="none" stroke="#94a3b8" strokeWidth="1.6" />}
-            {full && <text x={ex(-p.epsSe)} y={base + sigPx + 12} fontSize="9" textAnchor="middle" fill="#64748b">−{ss("f′_yd")}</text>}
-            {full && <text x={ex(-p.epsSe)} y={base + 12} fontSize="9" textAnchor="middle" fill="#64748b">{ss("ε′_se")}</text>}
+            {full && <text x={tightSe ? ax + 4 : ex(-p.epsSe)} y={base + sigPx + 12} fontSize="9" textAnchor={tightSe ? "start" : "middle"} fill="#64748b">−{ss("f′_yd")}</text>}
+            {full && !tightSe && <text x={ex(-p.epsSe)} y={base + 12} fontSize="9" textAnchor="middle" fill="#64748b">{ss("ε′_se")}</text>}
             <text x={ex(p.epsSu) - 26} y={base - 5} fontSize="10" textAnchor="end" fill="#475569">{ss(eLab)}</text>
             <text x={ax + 5} y={base - lawH + 10} fontSize="10" fill="#475569">{ss(sLab)}</text>
             <line x1={ax} x2={ex(p.epsSe)} y1={base - sigPx} y2={base - sigPx} stroke="#cbd5e1" strokeDasharray="3 3" />
-            <text x={ex(p.epsSe)} y={base - sigPx - 4} fontSize="9" textAnchor="middle" fill="#64748b">{ss(fLab)}</text>
+            <text x={tightSe ? ax - 4 : ex(p.epsSe)} y={base - sigPx - 4} fontSize="9" textAnchor={tightSe ? "end" : "middle"} fill="#64748b">{ss(fLab)}</text>
             <polyline points={lawPts(base, 0, p.epsSu)} fill="none" stroke="#94a3b8" strokeWidth="1.6" />
             {ranges.map((r) => <polyline key={r.key} points={lawPts(base, r.e0, r.e1)} fill="none" stroke={r.color} strokeWidth="2.4" strokeLinecap="round" />)}
             {pts.map((q) => q.hollow
                 ? <circle key={q.key} cx={ex(q.e)} cy={base - (sig(q.e) / p.fyd) * sigPx} r="3.4" fill="#fff" stroke={q.color} strokeWidth="1.8" />
                 : <circle key={q.key} cx={ex(q.e)} cy={base - (sig(q.e) / p.fyd) * sigPx} r="4" fill={q.color} stroke="#fff" strokeWidth="1.5" />)}
             <text x={ex(p.epsSu)} y={base + 12} fontSize="9" textAnchor="middle" fill="#64748b">{ss(suLab)}</text>
-            <text x={ex(p.epsSe)} y={base + 12} fontSize="9" textAnchor="middle" fill="#64748b">{ss(seLab)}</text>
+            {!tightSe && <text x={ex(p.epsSe)} y={base + 12} fontSize="9" textAnchor="middle" fill="#64748b">{ss(seLab)}</text>}
             {/* profilo deformativo: deformazione della barra riportata sull'asse ε del legame,
                 con il valore (piccolo) sopra l'asse, accanto al punto che si muove */}
             {bar && <g>
@@ -2049,7 +2199,7 @@ function StrainDiagram({ p, f, xi, branch, mode = "fields", tri = "cur", onSlide
                 <marker id="sd-arr" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L7,4 L0,8 Z" fill="#64748b" /></marker>
             </defs>
             {/* richiami verticali di ε_su ed ε'_se attraverso i tre diagrammi */}
-            {[p.epsSu, p.epsSe, -p.epsSe, -EPS_C2, -p.epsCu].map((e) => <line key={e} x1={ex(e)} x2={ex(e)} y1={baseC - lawH + 6} y2={baseBot} stroke="#eef2f7" strokeDasharray="3 3" />)}
+            {[p.epsSu, p.epsSe, -p.epsSe, -p.conc.epsK, -p.epsCu].map((e) => <line key={e} x1={ex(e)} x2={ex(e)} y1={baseC - lawH + 6} y2={baseBot} stroke="#eef2f7" strokeDasharray="3 3" />)}
 
             {/* legame del calcestruzzo (compressione a destra): nel campo 1 è tutto teso, σc = 0 */}
             <g>
@@ -2057,10 +2207,10 @@ function StrainDiagram({ p, f, xi, branch, mode = "fields", tri = "cur", onSlide
                 <line x1={ax} x2={ax} y1={baseC + 4} y2={baseC - lawH + 2} stroke="#64748b" markerEnd="url(#sd-arr)" />
                 <text x={ex(-p.epsCu) + 28} y={baseC - 5} fontSize="10" textAnchor="start" fill="#475569">{ss("ε_c")}</text>
                 <text x={ax - 5} y={baseC - lawH + 10} fontSize="10" textAnchor="end" fill="#475569">{ss("σ_c")}</text>
-                <line x1={ax} x2={ex(-EPS_C2)} y1={baseC - (lawH - 16)} y2={baseC - (lawH - 16)} stroke="#cbd5e1" strokeDasharray="3 3" />
+                <line x1={ax} x2={ex(-p.conc.epsK)} y1={baseC - (lawH - 16)} y2={baseC - (lawH - 16)} stroke="#cbd5e1" strokeDasharray="3 3" />
                 <text x={ax - 5} y={baseC - (lawH - 16) + 4} fontSize="9" textAnchor="end" fill="#64748b">{ss("f_cd")}</text>
-                <polyline points={Array.from({ length: 25 }, (_, i) => (p.epsCu * i) / 24).map((e) => `${ex(-e).toFixed(1)},${(baseC - sigmaC(e, 1) * (lawH - 16)).toFixed(1)}`).join(" ")} fill="none" stroke="#94a3b8" strokeWidth="1.6" />
-                <text x={ex(-EPS_C2)} y={baseC + 12} fontSize="9" textAnchor="middle" fill="#64748b">{ss("ε_c2")}</text>
+                <polyline points={concSamples(p.conc, 0, p.epsCu).map((e) => `${ex(-e).toFixed(1)},${(baseC - p.conc.sigma(e) * (lawH - 16)).toFixed(1)}`).join(" ")} fill="none" stroke="#94a3b8" strokeWidth="1.6" />
+                {showKnee && <text x={ex(-p.conc.epsK)} y={baseC + 12} fontSize="9" textAnchor="middle" fill="#64748b">{ss(p.conc.kneeLabel)}</text>}
                 <text x={ex(-p.epsCu)} y={baseC + 12} fontSize="9" textAnchor="middle" fill="#64748b">{ss("ε_cu")}</text>
                 <circle cx={ax} cy={baseC} r="4" fill={CONC_PT} stroke="#fff" strokeWidth="1.5" />
                 <text x={ax - 8} y={baseC - 6} fontSize="8.5" textAnchor="end" fill="#94a3b8">cls tutto teso: {ss("σ_c")} = 0</text>
@@ -2119,7 +2269,7 @@ function StrainDiagram({ p, f, xi, branch, mode = "fields", tri = "cur", onSlide
             {/* forze interne dello stato corrente sulla faccia destra della sezione (calcestruzzo
                 tutto teso: solo le armature), con le azioni N_Rd e M_Rd a h/2 */}
             {showCur && (() => {
-                const sP = Math.sign(eCur) * Math.min(ES_MPA * Math.abs(eCur), p.fyd), sS = p.fyd; // trazione +
+                const sP = sig(eCur), sS = sig(p.epsSu); // trazione + (A_s a ε_su: f_yd, o k f_yd se incrudente)
                 const forces = [
                     { key: "tsp", name: sP > 0 ? "T′_s" : "C′_s", y: yAp, v: -p.AsP * sP, col: ASP_COL },
                     { key: "ts", name: "T_s", y: yA, v: -p.As * sS, col: AS_COL },
@@ -2273,7 +2423,6 @@ function StrainDiagram({ p, f, xi, branch, mode = "fields", tri = "cur", onSlide
         </div>
     );
 }
-const ES_MPA = 200000;
 
 // Dominio con assi fissi centrati in 0 (campi implementati, cursore globale e dei campi)
 function DomainChart({ data, adim, global, locals }) {
@@ -2526,32 +2675,37 @@ function SelectField({ label, value, onChange, options }) {
 function specAll(p, F, xi) {
     const { f1, f2, f3, f4, f5, f6 } = F;
     const xiH = f2.xiH, xiN = f3.xiN, xiE = f5.xiE;
-    const strainAt = (xv, depth) => {
+    const e0 = f6.epsC2;                     // deformazione del punto F (ε_c2, ε_c3 per il triangolo-rettangolo)
+    const strainAt = (xv0, depth) => {
+        // acciaio duttile: niente pivot A, per ξ ≤ 0 lo stato limite è ξ → 0⁺ (pivot B)
+        const xv = p.ductile && xv0 <= 0 ? 1e-9 : xv0;
         if (xv === -Infinity) return p.epsSu;
-        if (xv === Infinity) return -EPS_C2;
+        if (xv === Infinity) return -e0;
         if (xv <= xiH) return (p.epsSu * (depth - xv * p.d)) / (p.d - xv * p.d);   // pivot A
         if (xv <= xiE) return (p.epsCu * (depth - xv * p.d)) / (xv * p.d);         // pivot B
-        return (-EPS_C2 * (xv * p.d - depth)) / (xv * p.d - f6.t);                 // pivot C (F)
+        return (-e0 * (xv * p.d - depth)) / (xv * p.d - f6.t);                     // pivot C (F)
     };
     const field = xi <= 0 ? 1 : xi <= xiH ? 2 : xi <= xiN ? 3 : xi <= 1 ? 4 : xi <= xiE ? 5 : 6;
-    const pivot = field <= 2
+    const pivot = field <= 2 && !p.ductile
         ? { e: p.epsSu, depth: p.d, label: "A", color: AS_COL, dx: -6, dy: 4, anchor: "end" }
         : field <= 5
             ? { e: -p.epsCu, depth: 0, label: "B", color: CONC_COL, dx: 6, dy: -4, anchor: "start" }
-            : { e: -EPS_C2, depth: f6.t, label: "F", color: LIMINF_COL, dx: 6, dy: 4, anchor: "start" };
+            : { e: -e0, depth: f6.t, label: "F", color: LIMINF_COL, dx: 6, dy: 4, anchor: "start" };
     return {
         id: "all",
         range: [-Infinity, Infinity],
         xiToSlider: (xv) => (xv === -Infinity ? 0 : xv === Infinity ? 1000 : 500 * (xv / (1 + Math.abs(xv)) + 1)),
         strainAt,
         lines: [
-            { xi: -Infinity, color: "#94a3b8" }, { xi: 0, color: LIM_COL }, { xi: xiH, color: LIM23_COL },
+            ...(p.ductile ? [] : [{ xi: -Infinity, color: "#94a3b8" }, { xi: 0, color: LIM_COL }, { xi: xiH, color: LIM23_COL }]),
             { xi: xiN, color: LIM34_COL }, { xi: 1, color: LIM45_COL, toH: true }, { xi: xiE, color: LIM56_COL, toH: true }, { xi: Infinity, color: LIMINF_COL, toH: true },
         ],
         boundaries: [],
         bands: [
-            { xi0: -Infinity, xi1: 0, color: FIELD_COL[1], op: 0.12, label: "1" },
-            { xi0: 0, xi1: xiH, color: FIELD_COL[2], op: 0.12, label: "2" },
+            ...(p.ductile ? [] : [
+                { xi0: -Infinity, xi1: 0, color: FIELD_COL[1], op: 0.12, label: "1" },
+                { xi0: 0, xi1: xiH, color: FIELD_COL[2], op: 0.12, label: "2" },
+            ]),
             { xi0: xiH, xi1: xiN, color: FIELD_COL[3], op: 0.12, label: "3" },
             { xi0: xiN, xi1: 1, color: FIELD_COL[4], op: 0.16, label: "4" },
             { xi0: 1, xi1: xiE, color: FIELD_COL[5], op: 0.2, label: "5", toH: true },
@@ -2561,18 +2715,20 @@ function specAll(p, F, xi) {
         concBottom: field === 6,
         concForce: field === 6 ? (xv) => { const { psi, lam } = f6.coef(xv); return { Cc: psi * p.b * p.h * p.fcd, depth: lam * p.h }; } : undefined,
         aspRanges: [
-            { key: "1", e0: f1.epsS12, e1: p.epsSu, color: FIELD_COL[1] },
-            { key: "2", e0: f2.epsS23, e1: f2.epsS12, color: FIELD_COL[2] },
+            ...(p.ductile ? [] : [
+                { key: "1", e0: f1.epsS12, e1: p.epsSu, color: FIELD_COL[1] },
+                { key: "2", e0: f2.epsS23, e1: f2.epsS12, color: FIELD_COL[2] },
+            ]),
             { key: "3", e0: f3.epsS34, e1: f3.epsS23, color: FIELD_COL[3] },
             { key: "4", e0: f4.epsS45, e1: f4.epsS34, color: FIELD_COL[4] },
             { key: "5", e0: f5.epsS56, e1: f5.epsS45, color: FIELD_COL[5] },
-            { key: "6", e0: f6.epsS56, e1: -EPS_C2, color: FIELD_COL[6] },
+            { key: "6", e0: f6.epsS56, e1: -e0, color: FIELD_COL[6] },
         ],
         asRanges: [
             { key: "3", e0: p.epsSe, e1: p.epsSu, color: FIELD_COL[3] },
             { key: "4", e0: 0, e1: p.epsSe, color: FIELD_COL[4] },
             { key: "5", e0: f5.epsAs56, e1: 0, color: FIELD_COL[5] },
-            { key: "6", e0: -EPS_C2, e1: f5.epsAs56, color: FIELD_COL[6] },
+            { key: "6", e0: -e0, e1: f5.epsAs56, color: FIELD_COL[6] },
         ],
         asFull: true,
         pivot,

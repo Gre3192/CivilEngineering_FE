@@ -9,7 +9,13 @@
 //  - x dal lembo superiore (compresso nel ramo M > 0) verso il basso, ξ = x/d;
 //  - d' copriferro inferiore (lato A_s), d'' superiore (lato A'_s), h = d + d';
 //  - N > 0 compressione, M rispetto ad h/2, M > 0 tende le fibre inferiori;
-//  - acciaio elastico-perfettamente plastico (f'_yd = f_yd), ε_su = 10‰.
+//  - legami degli appunti: acciaio elastico-perfettamente plastico (f'_yd = f_yd),
+//    ε_su = 10‰, calcestruzzo parabola-rettangolo (n = 2, ε_c2 = 2‰);
+//  - legami alternativi (non trattati negli appunti, NTC 2018 §4.1.2.1.2):
+//    calcestruzzo parabola-rettangolo con n generico (classi > C50/60),
+//    triangolo-rettangolo, stress-block; acciaio con incrudimento o
+//    indefinitamente duttile. I campi restano gli stessi: cambiano ψ, λ
+//    (calcestruzzo) e α = σ/f_yd (acciaio).
 // Ramo M < 0: stessa sezione ribaltata (A_s ↔ A'_s, d' ↔ d''), M cambia segno.
 //
 // Accanto alle formule c'è un calcolo NUMERICO indipendente (piano di
@@ -32,11 +38,95 @@ export const DEFAULT_DOMAIN_INPUT = {
     gammaS: 1.15,
     epsSu: 0.01,
     epsCu: 0.0035,
+    concLaw: "parabola", // "parabola" | "bilinear" | "stressblock"
+    steelLaw: "epp",     // "epp" | "hard" | "ductile"
+    k: 1.15,             // (f_t/f_y)_k per l'acciaio incrudente
 };
+
+// ---------------------------------------------------------------------------
+// LEGAMI COSTITUTIVI (NTC 2018 §4.1.2.1.2.1 e §4.1.2.1.2.2)
+// ---------------------------------------------------------------------------
+// parametri del calcestruzzo in funzione della classe (fck in MPa)
+export function concreteParams(fck) {
+    const hi = fck > 50, r = ((90 - fck) / 100) ** 4;
+    return {
+        epsC2: hi ? 0.002 + 0.000085 * (fck - 50) ** 0.53 : 0.002,
+        epsCu: hi ? 0.0026 + 0.035 * r : 0.0035,
+        n: hi ? 1.4 + 23.4 * r : 2,
+        epsC3: hi ? 0.00175 + (0.00055 * (fck - 50)) / 40 : 0.00175,
+    };
+}
+
+// ψ, λ di un blocco compresso con deformazione lineare da 0 (asse neutro) a ε_c
+// (lembo), per la legge σ/f_cd = 1 − (1 − ε/ε_k)^n fino a ε_k e 1 oltre
+// (n = 1: triangolo-rettangolo). r = ε_c/ε_k. λ dal lembo compresso, in frazione di x.
+function psiLamPower(r, n) {
+    if (r <= 0) return { psi: 0, lam: 1 / 3 };
+    if (r < 1e-7) return { psi: (n * r) / 2, lam: 1 / 3 };
+    let psi, I1; // I1 = ∫ u σ du (u = 0 sull'asse neutro, 1 al lembo)
+    if (r <= 1) {
+        const q1 = 1 - (1 - r) ** (n + 1), q2 = 1 - (1 - r) ** (n + 2);
+        psi = 1 - q1 / (r * (n + 1));
+        I1 = 0.5 - (q1 / (n + 1) - q2 / (n + 2)) / (r * r);
+    } else {
+        psi = 1 - 1 / (r * (n + 1));
+        I1 = 0.5 - 1 / (r * r * (n + 1) * (n + 2));
+    }
+    return { psi, lam: 1 - I1 / psi };
+}
+
+// legge del calcestruzzo scelta: σ/f_cd, ψ/λ in forma chiusa, deformazioni notevoli
+export function makeConcrete(input) {
+    const P = concreteParams(input.fck);
+    const epsCu = input.epsCu;
+    const type = input.concLaw ?? "parabola";
+    if (type === "bilinear") {
+        const ek = P.epsC3;
+        return {
+            type, epsCu, epsK: ek, epsC0: ek, n: 1, kneeLabel: "ε_c3", P,
+            sigma: (e) => (e <= 0 ? 0 : Math.min(1, e / ek)),
+            psiLambda: (ec) => psiLamPower(ec / ek, 1),
+        };
+    }
+    if (type === "stressblock") {
+        const ek = 0.2 * epsCu; // ε_c4 = 0,2 ε_cu (= 0,7‰ per fck ≤ 50)
+        return {
+            type, epsCu, epsK: ek, epsC0: P.epsC2, kneeLabel: "ε_c4", P,
+            sigma: (e) => (e >= ek - 1e-15 ? 1 : 0),
+            psiLambda: (ec) => {
+                const r = ec / ek;
+                if (r <= 1) return { psi: 0, lam: 0.5 };
+                const psi = 1 - 1 / r;
+                return { psi, lam: psi / 2 };
+            },
+        };
+    }
+    const ek = P.epsC2, n = P.n;
+    return {
+        type: "parabola", epsCu, epsK: ek, epsC0: ek, n, kneeLabel: "ε_c2", P,
+        sigma: (e) => (e <= 0 ? 0 : e >= ek ? 1 : 1 - (1 - e / ek) ** n),
+        psiLambda: (ec) => psiLamPower(ec / ek, n),
+    };
+}
+
+// legge dell'acciaio scelta: α(ε) = σ/f_yd con segno (trazione +)
+export function makeSteel(input, fyd) {
+    const type = input.steelLaw ?? "epp";
+    const epsSe = fyd / ES;
+    const epsSu = type === "ductile" ? Infinity : input.epsSu;
+    const k = type === "hard" ? input.k : 1;
+    const alpha = (e) => {
+        const a = Math.abs(e);
+        if (a <= epsSe) return (ES * e) / fyd;
+        if (type !== "hard") return Math.sign(e);
+        return Math.sign(e) * (1 + ((k - 1) * (Math.min(a, epsSu) - epsSe)) / (epsSu - epsSe));
+    };
+    return { type, epsSe, epsSu, k, alpha, alphaSu: alpha(epsSu === Infinity ? 1 : epsSu) };
+}
 
 // Parametri di un ramo. sign = +1 (M > 0, A_s in basso) o −1 (ribaltato).
 export function branchParams(input, sign = 1) {
-    const { b, h, alphaCc, fck, gammaC, fyk, gammaS, epsSu, epsCu } = input;
+    const { b, h, alphaCc, fck, gammaC, fyk, gammaS, epsCu } = input;
     const flip = sign < 0;
     const As = flip ? input.AsP : input.As;
     const AsP = flip ? input.As : input.AsP;
@@ -47,8 +137,12 @@ export function branchParams(input, sign = 1) {
     const fyd = fyk / gammaS;
     const epsSe = fyd / ES;
     const bdf = b * d * fcd;
+    const conc = makeConcrete(input), steel = makeSteel(input, fyd);
+    const epsSu = steel.epsSu;                    // ∞ per acciaio indefinitamente duttile
     return {
-        sign, b, h, d, dInf, dSup, As, AsP, fcd, fyd, epsSe, epsSu, epsCu,
+        sign, b, h, d, dInf, dSup, As, AsP, fcd, fyd, epsSe, epsSu, epsCu, conc, steel,
+        ductile: epsSu === Infinity,
+        prof: conc.type === "parabola" && conc.n === 2 && steel.type === "epp", // legami degli appunti
         delta1: dInf / d,            // δ'
         delta2: dSup / d,            // δ''
         omegaS: (As * fyd) / bdf,    // ω_s
@@ -67,28 +161,28 @@ const toNM = (p, nu, mu) => ({ nu, mu: p.sign * mu, N: (nu * p.bdf) / 1000, M: (
 // CAMPO 1: −∞ < ξ ≤ 0, pivot A (A_s a ε_su), calcestruzzo tutto teso
 // ---------------------------------------------------------------------------
 export function field1(p) {
-    const { epsSu, epsSe, delta2 } = p;
-    const epsS12 = epsSu * delta2;                         // ε'_s1/2 = ε_su δ''
-    const xi1ab = (epsSu * delta2 - epsSe) / (epsSu - epsSe); // ξ_1a/1b
+    const { epsSu, epsSe, delta2, steel } = p;
+    const epsS12 = epsSu * delta2;                         // ε'_s1/2 = ε_su δ'' (∞ se duttile)
     const has1b = epsS12 < epsSe;                           // A'_s elastica sulla retta 1/2
+    const xi1ab = has1b ? (epsSu * delta2 - epsSe) / (epsSu - epsSe) : -Infinity; // ξ_1a/1b
     // congruenza: ε'_s = ε_su (δ'' − ξ)/(1 − ξ)   (ξ = −∞ → ε_su)
-    const epsSP = (xi) => (xi === -Infinity ? epsSu : (epsSu * (delta2 - xi)) / (1 - xi));
+    const epsSP = (xi) => (xi === -Infinity || epsSu === Infinity ? epsSu : (epsSu * (delta2 - xi)) / (1 - xi));
     const sub = (xi) => (has1b && xi > xi1ab ? "1b" : "1a");
-    // tasso di lavoro di A'_s: 1 in 1a, E_s ε'_s / f_yd in 1b
-    const alphaSP = (xi) => (sub(xi) === "1a" ? 1 : (ES * epsSP(xi)) / p.fyd);
+    // tassi di lavoro: A_s nel pivot A (α_s = α(ε_su): 1, o k con incrudimento);
+    // A'_s dal legame (1 in 1a se elastico-perfettamente plastico, E_s ε'_s / f_yd in 1b)
+    const alphaS = steel.alphaSu;
+    const alphaSP = (xi) => steel.alpha(epsSP(xi));
     const point = (xi) => {
         const a = alphaSP(xi);
-        const nu = -(p.omegaS + a * p.omegaSP);
-        const mu = p.omegaS * p.armS - a * p.omegaSP * p.armSP;
-        return { xi, sub: sub(xi), epsSP: epsSP(xi), alphaSP: a, sigmaSP: a * p.fyd, ...toNM(p, nu, mu) };
+        const nu = -(alphaS * p.omegaS + a * p.omegaSP);
+        const mu = alphaS * p.omegaS * p.armS - a * p.omegaSP * p.armSP;
+        return { xi, sub: sub(xi), epsS: epsSu, alphaS, epsSP: epsSP(xi), alphaSP: a, sigmaSP: a * p.fyd, ...toNM(p, nu, mu) };
     };
-    // tratto 1b (curva) da ξ_1a/1b a 0; il campo 1a è un punto
-    const curve = [];
-    if (has1b) {
-        const n = 40;
-        for (let i = 0; i <= n; i++) curve.push(point(xi1ab + ((0 - xi1ab) * i) / n));
-    }
-    return { epsS12, xi1ab, x1ab: xi1ab * p.d, has1b, epsSP, alphaSP, sub, point, pointA: point(-Infinity), curve };
+    // curva da ξ → −∞ a 0 (con acciaio elastico-perfettamente plastico il tratto 1a è un punto)
+    const xs = [-Infinity, ...Array.from({ length: 60 }, (_, i) => { const u = (i + 1) / 60; return -(1 / u - 1) * 2; })];
+    if (has1b) xs.push(xi1ab);
+    const curve = epsSu === Infinity ? [point(-Infinity)] : xs.sort((a, b) => a - b).map(point);
+    return { epsS12, xi1ab, x1ab: xi1ab * p.d, has1b, epsSP, alphaS, alphaSP, sub, point, pointA: point(-Infinity), curve };
 }
 
 // ---------------------------------------------------------------------------
@@ -97,7 +191,7 @@ export function field1(p) {
 // in funzione della deformazione ε_c del lembo compresso (vedi "Coefficienti
 // parabola…pdf" in DOC).
 // ---------------------------------------------------------------------------
-export const EPS_C2 = 0.002;
+export const EPS_C2 = 0.002; // legge degli appunti (i campi usano p.conc)
 export function sigmaC(e, fcd) {
     if (e <= 0) return 0;
     return e >= EPS_C2 ? fcd : fcd * (1 - (1 - e / EPS_C2) ** 2);
@@ -120,7 +214,11 @@ export function psiLambda(epsC) {
 // in compressione (A'_s passa da tesa a compressa).
 // ---------------------------------------------------------------------------
 export function field2(p) {
-    const { epsSu, epsSe, epsCu, delta2, fyd } = p;
+    const { epsSu, epsSe, epsCu, delta2, fyd, steel, conc } = p;
+    // acciaio indefinitamente duttile: il pivot A non esiste, il campo 2 scompare (ξ_H = 0)
+    if (epsSu === Infinity) {
+        return { absent: true, xiH: 0, xH: 0, has2b: false, xi2ab: Infinity, curve: [], point: (xi) => field3(p).point(xi), sub: () => "–" };
+    }
     const xiH = epsCu / (epsSu + epsCu);
     const epsSP = (xi) => (-epsSu * (xi - delta2)) / (1 - xi);   // ε'_s (trazione +)
     const epsC = (xi) => (epsSu * xi) / (1 - xi);                // ε_c lembo compresso
@@ -129,20 +227,24 @@ export function field2(p) {
     const xi2ab = (epsSu * delta2 + epsSe) / (epsSu + epsSe);
     const has2b = xi2ab < xiH;
     const sub = (xi) => (has2b && xi >= xi2ab ? "2b" : "2a");
-    // tasso di lavoro con segno: α'_s = σ'_s / f_yd ∈ [−1, 1]
-    const alphaSP = (xi) => Math.max(-1, Math.min(1, (ES * epsSP(xi)) / fyd));
+    // tassi di lavoro con segno dal legame: α'_s = σ'_s / f_yd, α_s = α(ε_su)
+    const alphaS = steel.alphaSu;
+    const alphaSP = (xi) => steel.alpha(epsSP(xi));
     const point = (xi) => {
         const ec = epsC(xi);
-        const { psi, lam } = psiLambda(ec);
+        const { psi, lam } = conc.psiLambda(ec);
         const a = alphaSP(xi);
-        const nu = psi * xi - a * p.omegaSP - p.omegaS;
-        const mu = psi * xi * ((1 + p.delta1) / 2 - lam * xi) - a * p.omegaSP * p.armSP + p.omegaS * p.armS;
-        return { xi, sub: sub(xi), epsC: ec, psi, lam, epsSP: epsSP(xi), alphaSP: a, sigmaSP: a * fyd, ...toNM(p, nu, mu) };
+        const nu = psi * xi - a * p.omegaSP - alphaS * p.omegaS;
+        const mu = psi * xi * ((1 + p.delta1) / 2 - lam * xi) - a * p.omegaSP * p.armSP + alphaS * p.omegaS * p.armS;
+        return { xi, sub: sub(xi), epsC: ec, psi, lam, epsS: epsSu, alphaS, epsSP: epsSP(xi), alphaSP: a, sigmaSP: a * fyd, ...toNM(p, nu, mu) };
     };
     const xs = Array.from({ length: 61 }, (_, i) => (xiH * i) / 60);
     if (has2b && xi2ab > 0) xs.push(xi2ab);
+    // ginocchio del legame del cls (ε_c = ε_k): punto angoloso per lo stress-block
+    const xiK = conc.epsK / (epsSu + conc.epsK);
+    if (xiK > 0 && xiK < xiH) xs.push(xiK);
     const curve = xs.sort((a, b) => a - b).map(point);
-    return { xiH, xH: xiH * p.d, epsSP, epsC, epsS12, epsS23, xi2ab, x2ab: xi2ab * p.d, has2b, sub, alphaSP, point, curve };
+    return { xiH, xH: xiH * p.d, epsSP, epsC, epsS12, epsS23, xi2ab, x2ab: xi2ab * p.d, has2b, sub, alphaS, alphaSP, point, curve };
 }
 
 // ---------------------------------------------------------------------------
@@ -150,8 +252,8 @@ export function field2(p) {
 // A_s snervata (ε_se ≤ ε_s ≤ ε_su); ψ e λ costanti (diagramma completo).
 // ---------------------------------------------------------------------------
 export function field3(p) {
-    const { epsSu, epsSe, epsCu, delta2, fyd } = p;
-    const xiH = epsCu / (epsSu + epsCu), xiN = epsCu / (epsCu + epsSe);
+    const { epsSu, epsSe, epsCu, delta2, fyd, steel, conc } = p;
+    const xiH = epsCu / (epsSu + epsCu), xiN = epsCu / (epsCu + epsSe); // ξ_H = 0 se duttile
     const epsSP = (xi) => (-epsCu * (xi - delta2)) / xi;     // ε'_s (trazione +)
     const epsS = (xi) => (epsCu * (1 - xi)) / xi;            // ε_s (trazione +)
     const epsS23 = epsSP(xiH), epsS34 = epsSP(xiN);
@@ -159,21 +261,23 @@ export function field3(p) {
     const xi3ab = epsCu > epsSe ? (epsCu * delta2) / (epsCu - epsSe) : Infinity;
     const has3a = xi3ab > xiH, has3b = xi3ab < xiN;
     const sub = (xi) => (!has3a ? "3b" : !has3b ? "3a" : xi < xi3ab ? "3a" : "3b");
-    const alphaSP = (xi) => Math.max(-1, Math.min(1, (ES * epsSP(xi)) / fyd));
-    const { psi, lam } = psiLambda(epsCu);
+    const alphaSP = (xi) => steel.alpha(epsSP(xi));
+    const alphaS = (xi) => steel.alpha(epsS(xi));            // 1 (o > 1 se incrudente) nel campo 3
+    const { psi, lam } = conc.psiLambda(epsCu);
     // copriferro per cui A'_s snerva proprio sulla retta 2/3
     const dSup23 = ((epsCu - epsSe) * xiH * p.d) / epsCu;
     const point = (xi) => {
         const a = alphaSP(xi);
-        const aS = Math.min(1, (ES * epsS(xi)) / fyd); // = 1 nel campo 3
+        const aS = alphaS(xi);
         const nu = psi * xi - a * p.omegaSP - aS * p.omegaS;
         const mu = psi * xi * ((1 + p.delta1) / 2 - lam * xi) - a * p.omegaSP * p.armSP + aS * p.omegaS * p.armS;
-        return { xi, sub: sub(xi), epsC: epsCu, psi, lam, epsS: epsS(xi), epsSP: epsSP(xi), alphaSP: a, sigmaSP: a * fyd, ...toNM(p, nu, mu) };
+        return { xi, sub: sub(xi), epsC: epsCu, psi, lam, epsS: epsS(xi), alphaS: aS, sigmaS: aS * fyd, epsSP: epsSP(xi), alphaSP: a, sigmaSP: a * fyd, ...toNM(p, nu, mu) };
     };
-    const xs = Array.from({ length: 61 }, (_, i) => xiH + ((xiN - xiH) * i) / 60);
+    // con acciaio duttile (ξ_H = 0) campionamento più fitto vicino a ξ = 0 (ε_s → ∞)
+    const xs = Array.from({ length: 61 }, (_, i) => xiH + (xiN - xiH) * (epsSu === Infinity ? (i / 60) ** 2 : i / 60));
     if (has3a && has3b) xs.push(xi3ab);
     const curve = xs.sort((a, b) => a - b).map(point);
-    return { xiH, xiN, xH: xiH * p.d, xN: xiN * p.d, epsSP, epsS, epsS23, epsS34, xi3ab, x3ab: xi3ab * p.d, has3a, has3b, sub, alphaSP, psi, lam, dSup23, point, curve };
+    return { xiH, xiN, xH: xiH * p.d, xN: xiN * p.d, epsSP, epsS, epsS23, epsS34, xi3ab, x3ab: xi3ab * p.d, has3a, has3b, sub, alphaS, alphaSP, psi, lam, dSup23, point, curve };
 }
 
 // ---------------------------------------------------------------------------
@@ -181,7 +285,7 @@ export function field3(p) {
 // snervata, altrimenti sottocampi 4a (elastica) / 4b (plastica).
 // ---------------------------------------------------------------------------
 export function field4(p) {
-    const { epsSe, epsCu, delta2, fyd } = p;
+    const { epsSe, epsCu, delta2, fyd, steel, conc } = p;
     const xiN = epsCu / (epsCu + epsSe);
     const epsSP = (xi) => (-epsCu * (xi - delta2)) / xi;     // ε'_s (trazione +)
     const epsS = (xi) => (epsCu * (1 - xi)) / xi;            // ε_s (trazione +)
@@ -191,9 +295,9 @@ export function field4(p) {
     const has4a = xi4ab > xiN, has4b = xi4ab < 1;
     const split = has4a && has4b;
     const sub = (xi) => (split ? (xi < xi4ab ? "4a" : "4b") : "4");
-    const alphaSP = (xi) => Math.max(-1, Math.min(1, (ES * epsSP(xi)) / fyd));
-    const alphaS = (xi) => Math.max(-1, Math.min(1, (ES * epsS(xi)) / fyd)); // elastica nel campo 4
-    const { psi, lam } = psiLambda(epsCu);
+    const alphaSP = (xi) => steel.alpha(epsSP(xi));
+    const alphaS = (xi) => steel.alpha(epsS(xi)); // elastica nel campo 4
+    const { psi, lam } = conc.psiLambda(epsCu);
     const point = (xi) => {
         const a = alphaSP(xi), aS = alphaS(xi);
         const nu = psi * xi - a * p.omegaSP - aS * p.omegaS;
@@ -211,7 +315,7 @@ export function field4(p) {
 // elastica). Se A'_s non è ancora snervata: sottocampi 5a / 5b.
 // ---------------------------------------------------------------------------
 export function field5(p) {
-    const { epsSe, epsCu, delta1, delta2, fyd } = p;
+    const { epsSe, epsCu, delta1, delta2, fyd, steel, conc } = p;
     const xiE = 1 + delta1;                                   // x = h
     const epsSP = (xi) => (-epsCu * (xi - delta2)) / xi;      // ε'_s (trazione +)
     const epsS = (xi) => (-epsCu * (xi - 1)) / xi;            // ε_s ≤ 0 (compressione)
@@ -220,9 +324,9 @@ export function field5(p) {
     const split = xi5ab > 1 && xi5ab < xiE;
     const has5b = xi5ab < xiE;
     const sub = (xi) => (split ? (xi < xi5ab ? "5a" : "5b") : "5");
-    const alphaSP = (xi) => Math.max(-1, Math.min(1, (ES * epsSP(xi)) / fyd));
-    const alphaS = (xi) => Math.max(-1, Math.min(1, (ES * epsS(xi)) / fyd));
-    const { psi, lam } = psiLambda(epsCu);
+    const alphaSP = (xi) => steel.alpha(epsSP(xi));
+    const alphaS = (xi) => steel.alpha(epsS(xi));
+    const { psi, lam } = conc.psiLambda(epsCu);
     const point = (xi) => {
         const a = alphaSP(xi), aS = alphaS(xi);
         const nu = psi * xi - a * p.omegaSP - aS * p.omegaS;
@@ -241,17 +345,18 @@ export function field5(p) {
 // ---------------------------------------------------------------------------
 // ψ, λ dell'intera sezione con lembo superiore a ε_cs e inferiore a ε_ci (entrambi
 // compressi): differenza fra il blocco 0…x (ε_cs) e il blocco h…x (ε_ci).
-export function psiLambdaFull(xd, h, epsCs, epsCi) {
-    if (!Number.isFinite(xd)) return { psi: 1, lam: 0.5 }; // deformazione uniforme ε_c2
-    const A = psiLambda(epsCs), Bk = psiLambda(epsCi);
+export function psiLambdaFull(xd, h, epsCs, epsCi, conc = null) {
+    const PL = conc ? conc.psiLambda : psiLambda;
+    if (!Number.isFinite(xd)) return { psi: conc ? conc.sigma(epsCs) : 1, lam: 0.5 }; // deformazione uniforme
+    const A = PL(epsCs), Bk = PL(epsCi);
     const F1 = xd * A.psi, F2 = (xd - h) * Bk.psi;          // forze (÷ b f_cd)
     const psi = (F1 - F2) / h;
     const mom = F1 * A.lam * xd - F2 * (h + Bk.lam * (xd - h)); // momento rispetto al lembo superiore
     return { psi, lam: mom / (psi * h) / h };
 }
 export function field6(p) {
-    const { epsSe, epsCu, delta1, delta2, fyd, d, h } = p;
-    const epsC2 = EPS_C2;
+    const { epsSe, epsCu, delta1, delta2, fyd, d, h, steel, conc } = p;
+    const epsC2 = conc.epsC0;                                 // ε_c2 (ε_c3 per il triangolo-rettangolo)
     const t = ((epsCu - epsC2) * h) / epsCu;                  // profondità del punto F
     const tD = t / d;
     const xi0 = 1 + delta1;                                   // x = h (retta 5/6)
@@ -263,9 +368,9 @@ export function field6(p) {
     const xi6ab = (epsC2 - epsSe * tD) / (epsC2 - epsSe);
     const has6b = epsC2 > epsSe;
     const sub = (xi) => (has6b && xi >= xi6ab ? "6b" : "6a");
-    const alphaSP = (xi) => Math.max(-1, Math.min(1, (ES * epsSP(xi)) / fyd));
-    const alphaS = (xi) => Math.max(-1, Math.min(1, (ES * epsS(xi)) / fyd));
-    const coef = (xi) => psiLambdaFull(xi === Infinity ? Infinity : xi * d, h, epsCs(xi), epsCi(xi));
+    const alphaSP = (xi) => steel.alpha(epsSP(xi));
+    const alphaS = (xi) => steel.alpha(epsS(xi));
+    const coef = (xi) => psiLambdaFull(xi === Infinity ? Infinity : xi * d, h, epsCs(xi), epsCi(xi), conc);
     const point = (xi) => {
         const { psi, lam } = coef(xi);
         const a = alphaSP(xi), aS = alphaS(xi);
@@ -276,6 +381,11 @@ export function field6(p) {
     // campionamento: ξ = ξ0 + u/(1 − u) (fitto vicino a x = h), più il punto all'infinito
     const xs = Array.from({ length: 80 }, (_, i) => { const u = i / 80; return xi0 + u / (1 - u); });
     if (has6b && xi6ab > xi0) xs.push(xi6ab);
+    // stress-block: il lembo inferiore entra nel blocco (ε_ci = ε_c4) → punto angoloso
+    if (conc.type === "stressblock" && epsC2 > conc.epsK) {
+        const xiK = (epsC2 * xi0 - conc.epsK * tD) / (epsC2 - conc.epsK); // ε_ci(ξ) = ε_c4
+        if (xiK > xi0) xs.push(xiK);
+    }
     const curve = [...xs.sort((a, b) => a - b).map(point), point(Infinity)];
     // massima compressione pura: μ = 0 nel campo 6 (bisezione), se c'è un cambio di segno
     let pureComp = null;
@@ -293,9 +403,10 @@ export function field6(p) {
 }
 // pivot C: piano di deformazione per F (stesso integratore a strisce)
 export function numericPivotC(p, xi) {
-    const t = ((p.epsCu - EPS_C2) * p.h) / p.epsCu;
-    if (xi === Infinity) return numericPivotA(p, xi, () => -EPS_C2);
-    return numericPivotA(p, xi, (y) => (-EPS_C2 * (xi * p.d - y)) / (xi * p.d - t));
+    const e0 = p.conc.epsC0;
+    const t = ((p.epsCu - e0) * p.h) / p.epsCu;
+    if (xi === Infinity) return numericPivotA(p, xi, () => -e0);
+    return numericPivotA(p, xi, (y) => (-e0 * (xi * p.d - y)) / (xi * p.d - t));
 }
 
 // Trazione pura massima (M = 0) quando h/2 non è il baricentro delle resistenze
@@ -303,18 +414,19 @@ export function numericPivotC(p, xi) {
 // altre restano sotto lo snervamento.
 export function pureTension(input) {
     const p = branchParams(input, 1);
-    const RS = p.As * p.fyd * (p.h / 2 - p.dInf);   // momento di A_s a snervamento
-    const RSP = p.AsP * p.fyd * (p.h / 2 - p.dSup); // momento di A'_s a snervamento
+    const sMax = p.steel.alphaSu * p.fyd;             // tensione a ε_su (f_yd, o k f_yd se incrudente)
+    const RS = p.As * sMax * (p.h / 2 - p.dInf);    // momento di A_s a ε_su
+    const RSP = p.AsP * sMax * (p.h / 2 - p.dSup);  // momento di A'_s a ε_su
     if (Math.abs(RS - RSP) < 1e-6 * Math.max(RS, RSP, 1)) {
-        return { centroid: true, N: -(p.As + p.AsP) * p.fyd / 1000, sigmaS: p.fyd, sigmaSP: p.fyd };
+        return { centroid: true, N: -(p.As + p.AsP) * sMax / 1000, sigmaS: sMax, sigmaSP: sMax };
     }
     if (RS > RSP) {
-        // A'_s snervata, A_s con σ_s = A'_s f_yd (h/2 − d'') / [A_s (h/2 − d')]
+        // A'_s a ε_su, A_s con σ_s = A'_s σ_max (h/2 − d'') / [A_s (h/2 − d')]
         const sigmaS = RSP / (p.As * (p.h / 2 - p.dInf));
-        return { centroid: false, yielded: "AsP", sigmaS, sigmaSP: p.fyd, N: -(p.As * sigmaS + p.AsP * p.fyd) / 1000 };
+        return { centroid: false, yielded: "AsP", sigmaS, sigmaSP: sMax, N: -(p.As * sigmaS + p.AsP * sMax) / 1000 };
     }
     const sigmaSP = RS / (p.AsP * (p.h / 2 - p.dSup));
-    return { centroid: false, yielded: "As", sigmaS: p.fyd, sigmaSP, N: -(p.As * p.fyd + p.AsP * sigmaSP) / 1000 };
+    return { centroid: false, yielded: "As", sigmaS: sMax, sigmaSP, N: -(p.As * sMax + p.AsP * sigmaSP) / 1000 };
 }
 
 // ---------------------------------------------------------------------------
@@ -331,17 +443,28 @@ export function numericPivotA(p, xi, epsFn = null) {
     const yS = d, ySP = dSup; // profondità delle armature dal lembo superiore del ramo
     // deformazione di trazione (positiva) alla profondità y
     const eps = epsFn ?? ((y) => (xi === -Infinity ? epsSu : (epsSu * (y - xi * d)) / (d - xi * d)));
-    const sig = (e) => Math.sign(e) * Math.min(ES * Math.abs(e), fyd); // + trazione
+    const sig = (e) => p.steel.alpha(e) * fyd; // + trazione, dal legame scelto
     const Ts = As * sig(eps(yS)), TsP = AsP * sig(eps(ySP));
     let Cc = 0, McC = 0; // calcestruzzo compresso (ε < 0): strisce solo sulla zona compressa
     const yc = xi === -Infinity ? 0 : Math.min(Math.max(xi * d, 0), h);
+    // strisce su tratti separati dal ginocchio del legame (ε = ε_k), dove σ_c ha
+    // un punto angoloso (o un salto, nello stress-block)
+    const cuts = [0, yc];
+    if (yc > 0) {
+        const e0 = -eps(0), e1 = -eps(yc);           // deformazione lineare in y
+        const t = (p.conc.epsK - e0) / (e1 - e0);
+        if (t > 0 && t < 1) cuts.splice(1, 0, t * yc);
+    }
     const n = 2000;
-    for (let i = 0; i < n; i++) {
-        const y = ((i + 0.5) * yc) / n, e = -eps(y);
-        if (e <= 0) continue;
-        const s = e >= 0.002 ? fcd : fcd * (1 - (1 - e / 0.002) ** 2);
-        const dC = s * b * (yc / n);
-        Cc += dC; McC += dC * (h / 2 - y);
+    for (let j = 0; j + 1 < cuts.length; j++) {
+        const y0 = cuts[j], L = cuts[j + 1] - y0, m = Math.max(1, Math.round((n * L) / (yc || 1)));
+        for (let i = 0; i < m; i++) {
+            const y = y0 + ((i + 0.5) * L) / m, e = -eps(y);
+            if (e <= 0) continue;
+            const s = p.conc.sigma(e) * fcd;
+            const dC = s * b * (L / m);
+            Cc += dC; McC += dC * (h / 2 - y);
+        }
     }
     const N = Cc - Ts - TsP;                                    // compressione +
     const M = McC + Ts * (yS - h / 2) - TsP * (h / 2 - ySP);     // rispetto ad h/2
@@ -355,22 +478,24 @@ export function domainExtents(input) {
     let maxN = 0, maxM = 0, maxNu = 0, maxMu = 0;
     for (const sign of [1, -1]) {
         const p = branchParams(input, sign);
-        const { b, h, d, dSup, As, AsP, fyd, fcd, epsSu, epsCu } = p;
+        const { b, h, d, dSup, As, AsP, fyd, fcd, epsSu, epsCu, conc, steel } = p;
+        const e0 = conc.epsC0;
         const xiAB = epsCu / (epsCu + epsSu);
-        const yC = h * (1 - 0.002 / epsCu); // pivot C (ε_c2 = 2‰)
-        const sig = (e) => Math.sign(e) * Math.min(ES * Math.abs(e), fyd);
+        const yC = h * (1 - e0 / epsCu); // pivot C
+        const sig = (e) => -steel.alpha(-e) * fyd; // e: compressione +
         for (let i = 0; i <= 400; i++) {
             const x = -2 * h + (i / 400) * 8 * h;
             // deformazione di compressione (+) alla profondità y
-            const eps = x <= xiAB * d ? (y) => (epsSu * (x - y)) / (d - x)
-                : x <= h ? (y) => (epsCu * (x - y)) / x
-                    : (y) => (0.002 * (x - y)) / (x - yC);
+            const eps = epsSu === Infinity && x <= 0 ? () => -1           // duttile: trazione "infinita"
+                : x <= xiAB * d ? (y) => (epsSu * (x - y)) / (d - x)
+                    : x <= h ? (y) => (epsCu * (x - y)) / x
+                        : (y) => (e0 * (x - y)) / (x - yC);
             let N = As * sig(eps(d)) + AsP * sig(eps(dSup));
             let M = As * sig(eps(d)) * (h / 2 - d) + AsP * sig(eps(dSup)) * (h / 2 - dSup);
             for (let k = 0; k < 60; k++) {
                 const y = ((k + 0.5) * h) / 60, e = eps(y);
                 if (e <= 0) continue;
-                const s = e >= 0.002 ? fcd : fcd * (1 - (1 - e / 0.002) ** 2);
+                const s = conc.sigma(e) * fcd;
                 N += s * b * (h / 60); M += s * b * (h / 60) * (h / 2 - y);
             }
             maxN = Math.max(maxN, Math.abs(N) / 1000); maxM = Math.max(maxM, Math.abs(M) / 1e6);
