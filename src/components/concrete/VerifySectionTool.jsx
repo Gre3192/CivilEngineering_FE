@@ -7,6 +7,7 @@
 // gli accordion con la teoria completa di ciascun campo.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { CheckCircle2, XCircle, Info, RotateCcw, Layers, X, Crosshair } from "lucide-react";
 import {
     verifySection,
@@ -246,11 +247,11 @@ function FieldsModal({ result, onClose }) {
     useEffect(() => {
         const onKey = (e) => { if (e.key === "Escape") onClose(); };
         window.addEventListener("keydown", onKey);
-        const prev = document.body.style.overflow;
-        document.body.style.overflow = "hidden";
-        return () => { window.removeEventListener("keydown", onKey); document.body.style.overflow = prev; };
+        return () => window.removeEventListener("keydown", onKey);
     }, [onClose]);
-    return (
+    // su #modal-root (index.html), come gli altri modal dell'hub; il contenuto della
+    // pagina scorre nell'area sotto la navbar, coperta dallo sfondo del modal
+    return createPortal(
         <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/40 p-3 backdrop-blur-[2px] sm:p-6"
             role="dialog" aria-modal="true" aria-label="Campi di rottura" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
             <div className="flex max-h-full w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-slate-50 shadow-2xl">
@@ -267,7 +268,8 @@ function FieldsModal({ result, onClose }) {
                     <FieldsPanel data={result.data} design={result.design} />
                 </div>
             </div>
-        </div>
+        </div>,
+        document.getElementById("modal-root") ?? document.body,
     );
 }
 

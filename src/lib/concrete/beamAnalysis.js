@@ -9,7 +9,7 @@
 // Convenzioni: x [m] dal nodo sinistro; carichi verso il basso positivi [kN/m];
 // M > 0 tende le fibre inferiori (momento "positivo" in campata), V = dM/dx.
 
-import { USE_CATEGORIES } from "../actions/loadData";
+import { USE_CATEGORIES } from "../actions/loadData.js";
 
 export const SUPPORT_TYPES = [
     { id: "fixed", label: "Incastro" },
@@ -51,6 +51,67 @@ export function spanVariable(sp, beam) {
         groups: gs,
         multi: gs.length > 1,
     };
+}
+
+// ---------------------------------------------------------------------------
+// COMBINAZIONI DI CARICO (NTC 2018 §2.5.3)
+// ---------------------------------------------------------------------------
+// Azioni variabili della trave: ogni categoria d'uso presente nelle voci di q_k è
+// un'azione Q_i, con il proprio valore su ciascuna campata.
+const catOf = (id, beam) => USE_CATEGORIES.find((c) => c.id === id)
+    ?? USE_CATEGORIES.find((c) => c.id === beam.category) ?? USE_CATEGORIES[0];
+export function variableActions(beam) {
+    const map = new Map();
+    const add = (c, j, v) => {
+        if (!map.has(c.id)) map.set(c.id, { c, Q: beam.spans.map(() => 0) });
+        map.get(c.id).Q[j] += v;
+    };
+    beam.spans.forEach((sp, j) => {
+        const items = sp.items?.q;
+        if (items?.length) items.forEach((it) => add(catOf(it.cat ?? beam.category, beam), j, itemValue(it)));
+        else add(catOf(beam.category, beam), j, nz(sp.q));
+    });
+    return [...map.values()].filter((a) => a.Q.some((q) => Math.abs(q) > 1e-12));
+}
+
+export const COMBO_STATES = [
+    { id: "U", label: "SLU", long: "SLU (STR)" },
+    { id: "R", label: "SLE rara", long: "SLE rara (caratteristica)" },
+    { id: "F", label: "SLE frequente", long: "SLE frequente" },
+    { id: "Q", label: "SLE quasi permanente", long: "SLE quasi permanente" },
+];
+
+// Elenco delle combinazioni secondo lo schema della norma:
+//   ciclo sull'azione variabile dominante k = 1…n
+//     SLU       γG1·G1 + γG2·G2 + γQ·Q_k + Σ_j≠k γQ·ψ0j·Q_j
+//     rara      G1 + G2 + Q_k + Σ_j≠k ψ0j·Q_j
+//     frequente G1 + G2 + ψ1k·Q_k + Σ_j≠k ψ2j·Q_j
+//   senza variabile dominante
+//     quasi permanente  G1 + G2 + Σ_j ψ2j·Q_j
+// Per ogni combinazione: coefficienti di G1, G2 e di ciascuna Q_i, carichi
+// risultanti per campata (parte permanente qG e variabile qQ, totale q).
+export function loadCombinations(beam) {
+    const gm = beam.gamma ?? GAMMA_DEFAULT;
+    const gSelf = beam.selfWeight ? (25 * beam.section.b * beam.section.h) / 1e6 : 0;
+    const G1 = beam.spans.map((s) => nz(s.g1) + gSelf), G2 = beam.spans.map((s) => nz(s.g2));
+    const acts = variableActions(beam);
+    const n = acts.length;
+    const combos = [];
+    const make = (state, k, cG1, cG2, coef) => {
+        const qG = beam.spans.map((_, j) => cG1 * G1[j] + cG2 * G2[j]);
+        const qQ = beam.spans.map((_, j) => acts.reduce((t, a, i) => t + coef[i] * a.Q[j], 0));
+        const nIn = combos.filter((c) => c.state === state).length + 1;
+        combos.push({
+            id: `${state}${k ?? ""}`, state, index: nIn, lead: k ?? null, cG1, cG2, coef,
+            qG, qQ, q: qG.map((g, j) => g + qQ[j]),
+        });
+    };
+    const cyc = n ? acts.map((_, k) => k) : [null];
+    cyc.forEach((k) => make("U", k, gm.g1, gm.g2, acts.map((a, i) => (i === k ? gm.q : gm.q * a.c.psi0))));
+    cyc.forEach((k) => make("R", k, 1, 1, acts.map((a, i) => (i === k ? 1 : a.c.psi0))));
+    cyc.forEach((k) => make("F", k, 1, 1, acts.map((a, i) => (i === k ? a.c.psi1 : a.c.psi2))));
+    make("Q", null, 1, 1, acts.map((a) => a.c.psi2));
+    return { acts, combos, G1, G2, gSelf, gamma: gm };
 }
 
 let uid = 0;
@@ -156,7 +217,8 @@ function solve(beam, qs) {
 }
 
 // M(x), V(x) di una campata dalle forze di estremità
-const Mx = (e, x) => -e.M0 + e.V0 * x - (e.q * x * x) / 2;
+// momento nella campata (estremità e carico dell'elemento), x dal nodo sinistro
+export const Mx = (e, x) => -e.M0 + e.V0 * x - (e.q * x * x) / 2;
 const Vx = (e, x) => e.V0 - e.q * x;
 
 // ---------------------------------------------------------------------------
@@ -180,16 +242,19 @@ export function analyzeBeam(beam, nPerSpan = 80) {
     const gSelf = beam.selfWeight ? (25 * b * h) / 1e6 : 0;          // kN/m
     const cat = USE_CATEGORIES.find((u) => u.id === beam.category) ?? USE_CATEGORIES[0];
     const gm = beam.gamma ?? GAMMA_DEFAULT;
+    const LC = loadCombinations(beam);
 
     // risposte elementari: G1 (con peso proprio), G2 su tutte le campate; Q su ciascuna campata
     const rG1 = solve(beam, beam.spans.map((s) => s.g1 + gSelf));
     if (!rG1.ok) return { ok: false, errors: ["Schema labile: aggiungi vincoli o rendi continua la trave (una cerniera interna richiede appoggi su entrambi i lati)."] };
     const rG2 = solve(beam, beam.spans.map((s) => s.g2));
-    // variabile per campata: u per SLU e rara; frequente e quasi permanente come frazioni di u
-    const sv = beam.spans.map((sp) => spanVariable(sp, beam));
-    const fF = sv.map((v) => (v.u > 1e-12 ? v.f / v.u : cat.psi1));
-    const fQ = sv.map((v) => (v.u > 1e-12 ? v.qp / v.u : cat.psi2));
-    const rQ = beam.spans.map((_, k) => solve(beam, beam.spans.map((s, j) => (j === k ? sv[j].u : 0))));
+    // risposte a carico unitario sulla sola campata k: la parte variabile di ogni
+    // combinazione si alterna campata per campata (si carica dove aggrava)
+    const rU = beam.spans.map((_, k) => solve(beam, beam.spans.map((__, j) => (j === k ? 1 : 0))));
+    const combos = LC.combos;
+    // estremi di ogni combinazione su tutta la trave, con le campate caricate dai variabili
+    const ext = combos.map(() => ({ Mmax: { v: -Infinity }, Mmin: { v: Infinity }, Vabs: { v: -Infinity } }));
+    const loaded = (c, u, sgn) => c.qQ.map((q, k) => (sgn * q * u[k] > 1e-12 ? k : -1)).filter((k) => k >= 0);
 
     // campionamento
     const xs0 = [];                      // ascissa di inizio di ogni campata
@@ -202,21 +267,34 @@ export function analyzeBeam(beam, nPerSpan = 80) {
             const xl = (s.L * i) / nPerSpan;
             const g1 = Mx(rG1.ends[j], xl), g2 = Mx(rG2.ends[j], xl);
             const vg1 = Vx(rG1.ends[j], xl), vg2 = Vx(rG2.ends[j], xl);
-            const mq = rQ.map((r) => Mx(r.ends[j], xl)), vq = rQ.map((r) => Vx(r.ends[j], xl));
-            const pos = (a, w = null) => a.reduce((t, z, k) => t + (w ? w[k] : 1) * Math.max(0, z), 0), neg = (a, w = null) => a.reduce((t, z, k) => t + (w ? w[k] : 1) * Math.min(0, z), 0);
-            const MG = gm.g1 * g1 + gm.g2 * g2, VG = gm.g1 * vg1 + gm.g2 * vg2;
-            const Gk = g1 + g2, VGk = vg1 + vg2;
-            pts.push({
-                span: j, xl, x: xs0[j] + xl,
-                // SLU: permanenti sempre (γ sfavorevoli), variabili alternati → inviluppo esatto
-                MmaxU: MG + gm.q * pos(mq), MminU: MG + gm.q * neg(mq),
-                VmaxU: VG + gm.q * pos(vq), VminU: VG + gm.q * neg(vq),
-                // SLE: rara (Q con ψ = 1), frequente (ψ1), quasi permanente (ψ2)
-                MmaxR: Gk + pos(mq), MminR: Gk + neg(mq),
-                MmaxF: Gk + pos(mq, fF), MminF: Gk + neg(mq, fF),
-                MmaxQ: Gk + pos(mq, fQ), MminQ: Gk + neg(mq, fQ),
-                VmaxR: VGk + pos(vq), VminR: VGk + neg(vq),
+            const mu = rU.map((r) => Mx(r.ends[j], xl)), vu = rU.map((r) => Vx(r.ends[j], xl));
+            const x = xs0[j] + xl;
+            const p = { span: j, xl, x };
+            // inviluppo di ogni stato = estremo sulle sue combinazioni; in ciascuna i
+            // permanenti sono sempre presenti, i variabili alternati sulle campate
+            for (const st of ["U", "R", "F", "Q"]) {
+                p[`Mmax${st}`] = -Infinity; p[`Mmin${st}`] = Infinity; p[`Vmax${st}`] = -Infinity; p[`Vmin${st}`] = Infinity;
+            }
+            combos.forEach((c, ci) => {
+                const MG = c.cG1 * g1 + c.cG2 * g2, VG = c.cG1 * vg1 + c.cG2 * vg2;
+                let mP = MG, mN = MG, vP = VG, vN = VG;
+                c.qQ.forEach((q, k) => {
+                    const m = q * mu[k], v = q * vu[k];
+                    if (m > 0) mP += m; else mN += m;
+                    if (v > 0) vP += v; else vN += v;
+                });
+                const st = c.state;
+                if (mP > p[`Mmax${st}`]) p[`Mmax${st}`] = mP;
+                if (mN < p[`Mmin${st}`]) p[`Mmin${st}`] = mN;
+                if (vP > p[`Vmax${st}`]) p[`Vmax${st}`] = vP;
+                if (vN < p[`Vmin${st}`]) p[`Vmin${st}`] = vN;
+                const e = ext[ci];
+                if (mP > e.Mmax.v) e.Mmax = { v: mP, x, spans: loaded(c, mu, 1) };
+                if (mN < e.Mmin.v) e.Mmin = { v: mN, x, spans: loaded(c, mu, -1) };
+                const va = Math.max(vP, -vN);
+                if (va > e.Vabs.v) e.Vabs = { v: va, x, spans: vP >= -vN ? loaded(c, vu, 1) : loaded(c, vu, -1) };
             });
+            pts.push(p);
         }
     });
 
@@ -244,26 +322,48 @@ export function analyzeBeam(beam, nPerSpan = 80) {
         if (i < beam.spans.length) { const e = r.ends[i]; Rv += e.V0; Mr += e.M0; } // estremità sinistra della campata i
         return { R: Rv, M: Mr };
     });
-    const RG1 = nodeReac(rG1), RG2 = nodeReac(rG2), RQ = rQ.map(nodeReac);
+    const RG1 = nodeReac(rG1), RG2 = nodeReac(rG2);
     // coefficienti delle formule: reazione per carico unitario sulla sola campata k,
     // R_i = Σ c_ik·q_k·L_k (forza) e M_i = Σ m_ik·q_k·L_k² (momento d'incastro)
-    const RU = beam.spans.map((_, k) => nodeReac(solve(beam, beam.spans.map((__, j) => (j === k ? 1 : 0)))));
-    // carico SLU di progetto per campata con tutte le campate caricate
-    const qd = beam.spans.map((s, j) => gm.g1 * (s.g1 + gSelf) + gm.g2 * s.g2 + gm.q * sv[j].u);
+    const RU = rU.map(nodeReac);
+    const sluC = combos.filter((c) => c.state === "U");
+    // carico SLU per campata con tutte le campate caricate: il massimo sulle combinazioni SLU
+    const qd = beam.spans.map((_, j) => Math.max(...sluC.map((c) => c.q[j])));
     const reac = beam.nodes.map((nd, i) => {
-        const comb = (key, gQ, sgn) => gm.g1 * RG1[i][key] + gm.g2 * RG2[i][key] + gQ * RQ.reduce((t, r) => t + (sgn > 0 ? Math.max(0, r[i][key]) : Math.min(0, r[i][key])), 0);
+        // inviluppo SLU delle reazioni: estremo sulle combinazioni, variabili alternati
+        const comb = (key, sgn) => {
+            const vals = sluC.map((c) => c.cG1 * RG1[i][key] + c.cG2 * RG2[i][key]
+                + RU.reduce((t, r, k) => t + (sgn > 0 ? Math.max(0, c.qQ[k] * r[i][key]) : Math.min(0, c.qQ[k] * r[i][key])), 0));
+            return sgn > 0 ? Math.max(...vals) : Math.min(...vals);
+        };
         return {
             node: i, type: nd.type,
-            G1: RG1[i], G2: RG2[i], Q: RQ.map((r) => r[i]),
-            Rmax: comb("R", gm.q, 1), Rmin: comb("R", gm.q, -1),
-            Mmax: comb("M", gm.q, 1), Mmin: comb("M", gm.q, -1),
+            G1: RG1[i], G2: RG2[i],
+            Rmax: comb("R", 1), Rmin: comb("R", -1),
+            Mmax: comb("M", 1), Mmin: comb("M", -1),
             cR: RU.map((r, k) => r[i].R / beam.spans[k].L),
             cM: RU.map((r, k) => r[i].M / beam.spans[k].L ** 2),
             Rfull: RU.reduce((t, r, k) => t + r[i].R * qd[k], 0),
             Mfull: RU.reduce((t, r, k) => t + r[i].M * qd[k], 0),
         };
     });
-    return { ok: true, errors: [], pts, Ltot, xs0, gSelf, cat, aL, d, reac, gamma: gm, qd };
+    // combinazione più gravosa di ogni stato: quella col massimo |M| (a parità, il
+    // taglio); per ogni effetto anche la combinazione che lo rende massimo
+    const comboResults = combos.map((c, ci) => ({ ...c, ...ext[ci], Mabs: Math.max(ext[ci].Mmax.v, -ext[ci].Mmin.v) }));
+    const governing = {};
+    for (const st of COMBO_STATES) {
+        const list = comboResults.filter((c) => c.state === st.id);
+        const pick = (better) => list.reduce((b, c) => (better(c, b) ? c : b), list[0]).id;
+        governing[st.id] = {
+            id: pick((c, b) => c.Mabs > b.Mabs + 1e-9 || (Math.abs(c.Mabs - b.Mabs) <= 1e-9 && c.Vabs.v > b.Vabs.v + 1e-9)),
+            Mmax: pick((c, b) => c.Mmax.v > b.Mmax.v + 1e-9),
+            Mmin: pick((c, b) => c.Mmin.v < b.Mmin.v - 1e-9),
+            Vabs: pick((c, b) => c.Vabs.v > b.Vabs.v + 1e-9),
+        };
+    }
+    return { ok: true, errors: [], pts, Ltot, xs0, gSelf, cat, aL, d, reac, gamma: gm, qd, acts: LC.acts, combos: comboResults, governing,
+        // risposte elementari (per le frecce): G1, G2 e carico unitario su ciascuna campata
+        ends: { G1: rG1.ends, G2: rG2.ends, U: rU.map((r) => r.ends) } };
 }
 
 // valori dell'inviluppo nella sezione di ascissa x (interpolazione; sugli

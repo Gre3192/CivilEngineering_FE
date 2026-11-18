@@ -9,12 +9,14 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { ArrowLeft, Building, Check, Copy, Info, Pencil, Plus, Trash2, ChevronRight, Search, X, Wand2, CheckCircle2, XCircle, AlertTriangle, Download, Upload } from "lucide-react";
+import { createPortal } from "react-dom";
+import { ArrowLeft, Building, Check, Copy, Info, ListChecks, Pencil, Plus, Trash2, ChevronRight, Search, X, Wand2, CheckCircle2, XCircle, AlertTriangle, Download, Upload } from "lucide-react";
 import { sub } from "../Sym";
 import Tex from "../Tex";
 import { CONCRETE_CLASSES, STEEL_GRADES } from "../../lib/concrete/sectionDesign";
 import { USE_CATEGORIES } from "../../lib/actions/loadData";
-import { SUPPORT_TYPES, analyzeBeam, characteristicSections, itemValue, newBeam, newId, spanVariable, valuesAt } from "../../lib/concrete/beamAnalysis";
+import { DEFL_DEFAULT, beamDeflection } from "../../lib/concrete/deflection";
+import { COMBO_STATES, SUPPORT_TYPES, analyzeBeam, characteristicSections, itemValue, loadCombinations, newBeam, newId, spanVariable, valuesAt } from "../../lib/concrete/beamAnalysis";
 import { verifySection } from "../../lib/concrete/verifySection";
 import { crackCheck } from "../../lib/concrete/crackCheck";
 import SectionDesignTool from "./SectionDesignTool";
@@ -109,25 +111,45 @@ export default function BeamsTool() {
         const first = beams.filter((b) => floorOf(b) === id)[0];
         if (first) setSelId(first.id);
     };
-    const addFloor = () => {
-        const f = floors.length ? { id: newId("f"), name: `Piano ${floors.length}` } : firstFloor();
+    // nuovi piani, travi e pilastri: si compilano in un modal prima di crearli
+    const [form, setForm] = useState(null);         // "floor" | "beam" | "col"
+    const createFloor = ({ name }) => {
+        const f = { id: newId("f"), name: name.trim() || (floors.length ? `Piano ${floors.length}` : "Piano terra") };
         setFloors((fs) => [...fs, f]); setFloorSel(f.id);
-        return f;
     };
+    const addFloor = () => setForm("floor");
     const renameFloor = (id, name) => setFloors((fs) => fs.map((f) => (f.id === id ? { ...f, name: name.trim() || f.name } : f)));
     const delFloor = (id) => {
         if (beams.some((b) => floorOf(b) === id) || columns.some((c) => floorOf(c) === id)) return;
-        const rest = floors.filter((f) => f.id !== id);
-        setFloors(rest); setFloorSel(rest[0]?.id ?? null);
+        setAsk({
+            title: `Eliminare il piano ${floorName(id)}?`,
+            text: "Il piano non contiene travi né pilastri. L'operazione non si può annullare.",
+            yes: "Elimina il piano",
+            onYes: () => {
+                const rest = floors.filter((f) => f.id !== id);
+                setFloors(rest); setFloorSel(rest[0]?.id ?? null);
+            },
+        });
     };
     const an = useMemo(() => (beam ? analyzeBeam(beam) : null), [beam]);
     const updateBeam = useCallback((id, fn) => setBeams((bs) => bs.map((b) => (b.id === id ? fn(b) : b))), []);
     const upd = (fn) => { if (beam) updateBeam(beam.id, fn); };
 
-    const addBeam = () => {
-        if (!floorSel) return;
-        const nb = { ...newBeam(`T${beams.length + 1}`), floorId: floorSel };
-        setBeams((bs) => [...bs, nb]); setSelId(nb.id);
+    const addBeam = () => { if (floorSel) setForm("beam"); };
+    // trave dal modal: campate uguali e schema di partenza (poi si modifica liberamente)
+    const createBeam = (v) => {
+        const n = Math.min(12, Math.max(1, Math.round(num(v.n)))), L = Math.max(0.1, num(v.L));
+        const base = newBeam(v.name.trim() || `T${beams.length + 1}`);
+        const span = { L, g1: base.spans[0].g1, g2: base.spans[0].g2, q: base.spans[0].q };
+        const types = Array.from({ length: n + 1 }, (_, i) => (v.scheme === "fixed" && (i === 0 || i === n) ? "fixed"
+            : v.scheme === "cantilever" ? (i === 0 ? "fixed" : i === n ? "free" : "pin") : "pin"));
+        const nb = {
+            ...base, floorId: v.floor,
+            section: { ...base.section, b: Math.max(1, num(v.b)), h: Math.max(1, num(v.h)) },
+            spans: Array.from({ length: n }, () => ({ ...span })),
+            nodes: types.map((t) => ({ type: t, continuous: true })),
+        };
+        setBeams((bs) => [...bs, nb]); setSelId(nb.id); setFloorSel(v.floor);
     };
     const dupBeam = (b) => {
         const nb = { ...JSON.parse(JSON.stringify(b)), id: newId("b"), name: `${b.name} (copia)` };
@@ -151,10 +173,10 @@ export default function BeamsTool() {
         });
     };
     const visibleCols = floorSel ? columns.filter((c) => floorOf(c) === floorSel) : [];
-    const addColumn = () => {
-        if (!floorSel) return;
-        const nc = { id: newId("c"), name: `P${columns.length + 1}`, floorId: floorSel, b: 300, h: 300, H: 3 };
-        setColumns((cs) => [...cs, nc]); setColSel(nc.id);
+    const addColumn = () => { if (floorSel) setForm("col"); };
+    const createColumn = (v) => {
+        const nc = { id: newId("c"), name: v.name.trim() || `P${columns.length + 1}`, floorId: v.floor, b: Math.max(1, num(v.b)), h: Math.max(1, num(v.h)), H: Math.max(0.1, num(v.H)) };
+        setColumns((cs) => [...cs, nc]); setColSel(nc.id); setFloorSel(v.floor);
     };
     const updColumn = (id, patch) => setColumns((cs) => cs.map((c) => (c.id === id ? { ...c, ...patch } : c)));
     const delColumn = (c) => {
@@ -208,7 +230,36 @@ export default function BeamsTool() {
 
     const section = secId && beam ? beam.sections.find((s) => s.id === secId) : null;
     const [fitRef, fitH] = useFitHeight();
-    const dialog = ask && <ConfirmModal {...ask} onClose={() => setAsk(null)} />;
+    const floorOpts = floors.map((f) => ({ value: f.id, label: f.name }));
+    const formModal = form === "floor" ? (
+        <FormModal title="Nuovo piano" submit="Crea il piano" onClose={() => setForm(null)} onSubmit={(v) => { createFloor(v); setForm(null); }}
+            fields={[{ key: "name", label: "Nome del piano", type: "text", value: floors.length ? `Piano ${floors.length}` : "Piano terra", required: true, span: 2 }]} />
+    ) : form === "beam" ? (
+        <FormModal title="Nuova trave" submit="Crea la trave" onClose={() => setForm(null)} onSubmit={(v) => { createBeam(v); setForm(null); }}
+            fields={[
+                { key: "name", label: "Nome", type: "text", value: `T${beams.length + 1}`, required: true },
+                { key: "floor", label: "Piano", type: "select", value: floorSel, options: floorOpts },
+                { key: "b", label: "Base b", unit: "mm", type: "number", value: 300, min: 1 },
+                { key: "h", label: "Altezza h", unit: "mm", type: "number", value: 500, min: 1 },
+                { key: "n", label: "Numero di campate", type: "number", value: 2, min: 1, step: 1 },
+                { key: "L", label: "Luce di ogni campata", unit: "m", type: "number", value: 5, min: 0.1 },
+                { key: "scheme", label: "Vincoli di partenza", type: "select", value: "pin", span: 2, options: [
+                    { value: "pin", label: "Appoggi (trave continua)" },
+                    { value: "fixed", label: "Incastri alle estremità, appoggi intermedi" },
+                    { value: "cantilever", label: "Incastro a sinistra, estremo destro libero" },
+                ] },
+            ]} note="Campate, vincoli, continuità e carichi si modificano poi nella pagina della trave." />
+    ) : form === "col" ? (
+        <FormModal title="Nuovo pilastro" submit="Crea il pilastro" onClose={() => setForm(null)} onSubmit={(v) => { createColumn(v); setForm(null); }}
+            fields={[
+                { key: "name", label: "Nome", type: "text", value: `P${columns.length + 1}`, required: true },
+                { key: "floor", label: "Piano", type: "select", value: floorSel, options: floorOpts },
+                { key: "b", label: "Base b", unit: "mm", type: "number", value: 300, min: 1 },
+                { key: "h", label: "Altezza h", unit: "mm", type: "number", value: 300, min: 1 },
+                { key: "H", label: "Altezza di interpiano H", unit: "m", type: "number", value: 3, min: 0.1, span: 2 },
+            ]} />
+    ) : null;
+    const dialog = <>{ask && <ConfirmModal {...ask} onClose={() => setAsk(null)} />}{formModal}</>;
 
     // pagina della trave: schema statico per primo, poi diagrammi, sezioni e cascata della sezione
     if (beam) {
@@ -293,6 +344,56 @@ function useFitHeight(minH = 420) {
     return [ref, h];
 }
 
+// tutti i modal e i pannelli sovrapposti si aprono su #modal-root (index.html),
+// come gli altri modal dell'hub; in mancanza, su document.body
+const toModalRoot = (node) => createPortal(node, document.getElementById("modal-root") ?? document.body);
+
+// modal con un modulo (nuovo piano, trave, pilastro): Invio crea, Esc o clic fuori annulla
+function FormModal({ title, fields, submit = "Crea", note = null, onSubmit, onClose }) {
+    const [vals, setVals] = useState(() => Object.fromEntries(fields.map((f) => [f.key, f.value ?? ""])));
+    const firstRef = useRef(null);
+    useEffect(() => {
+        firstRef.current?.focus();
+        firstRef.current?.select?.();
+        const onKey = (e) => { if (e.key === "Escape") onClose(); };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [onClose]);
+    const invalid = fields.some((f) => (f.required && !String(vals[f.key]).trim()) || (f.type === "number" && f.min !== undefined && !(num(vals[f.key]) >= f.min)));
+    const field = "w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100";
+    return toModalRoot(
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/30 p-4" role="dialog" aria-modal="true" aria-label={title}
+            onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+            <form className="w-full max-w-md rounded-2xl bg-white shadow-2xl" onSubmit={(e) => { e.preventDefault(); if (!invalid) onSubmit(vals); }}>
+                <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-5 py-3">
+                    <p className="text-sm font-bold text-slate-800">{title}</p>
+                    <button type="button" onClick={onClose} aria-label="Chiudi" className="rounded-full p-1.5 text-slate-500 hover:bg-slate-100"><X size={16} /></button>
+                </div>
+                <div className="grid grid-cols-2 gap-3 px-5 py-4">
+                    {fields.map((f, i) => (
+                        <label key={f.key} className={`block ${f.span === 2 ? "col-span-2" : ""}`}>
+                            <span className="mb-1 block text-xs font-semibold text-slate-500">{f.label}{f.unit && <span className="ml-1 font-normal text-slate-400">[{f.unit}]</span>}</span>
+                            {f.type === "select" ? (
+                                <select ref={i === 0 ? firstRef : undefined} value={vals[f.key]} onChange={(e) => setVals((v) => ({ ...v, [f.key]: e.target.value }))} className={`${field} cursor-pointer bg-white`}>
+                                    {f.options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                                </select>
+                            ) : (
+                                <input ref={i === 0 ? firstRef : undefined} type={f.type} step={f.step ?? "any"} value={vals[f.key]}
+                                    onChange={(e) => setVals((v) => ({ ...v, [f.key]: e.target.value }))} className={`${field} ${f.type === "number" ? "tabular-nums" : ""}`} />
+                            )}
+                        </label>
+                    ))}
+                    {note && <p className="col-span-2 text-[11px] leading-4 text-slate-500">{note}</p>}
+                </div>
+                <div className="flex justify-end gap-2 border-t border-slate-200 px-5 py-3">
+                    <button type="button" onClick={onClose} className="rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50">Annulla</button>
+                    <button type="submit" disabled={invalid} className="rounded-xl bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-40">{submit}</button>
+                </div>
+            </form>
+        </div>
+    );
+}
+
 // finestra di conferma (eliminazioni): Invio conferma, Esc o clic fuori annulla
 function ConfirmModal({ title, text, yes = "Conferma", onYes, onClose }) {
     const yesRef = useRef(null);
@@ -302,7 +403,7 @@ function ConfirmModal({ title, text, yes = "Conferma", onYes, onClose }) {
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
     }, [onClose]);
-    return (
+    return toModalRoot(
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/30 p-4" role="alertdialog" aria-modal="true" aria-label={title}
             onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
             <div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl">
@@ -430,7 +531,7 @@ function FloorsColumn({ floors, value, onChange, onAdd, onRename, onDelete, coun
     const desc = (k) => `${k.b} ${k.b === 1 ? "trave" : "travi"} · ${k.c} ${k.c === 1 ? "pilastro" : "pilastri"}`;
     return (
         <Column title="Piani" sub={`${floors.length} ${floors.length === 1 ? "piano" : "piani"}`}
-            action={<AddBtn label="Piano" onClick={() => { const f = onAdd(); setEditing({ id: f.id, name: f.name }); }} />}>
+            action={<AddBtn label="Piano" onClick={onAdd} />}>
             {floors.map((f) => {
                 const k = counts[f.id] ?? { b: 0, c: 0 }, active = value === f.id;
                 const canDelete = !k.b && !k.c;
@@ -466,7 +567,7 @@ function FloorsColumn({ floors, value, onChange, onAdd, onRename, onDelete, coun
             })}
             {floors.length === 0 && (
                 <p className="rounded-lg border border-dashed border-slate-200 px-2 py-4 text-center text-xs text-slate-500">
-                    Nessun piano. <button type="button" onClick={() => { const f = onAdd(); setEditing({ id: f.id, name: f.name }); }} className="font-semibold text-sky-700 hover:underline">Aggiungi il primo piano</button>
+                    Nessun piano. <button type="button" onClick={onAdd} className="font-semibold text-sky-700 hover:underline">Aggiungi il primo piano</button>
                 </p>
             )}
         </Column>
@@ -682,7 +783,7 @@ function BeamEditor({ beam, an, upd, addSection, addCharacteristic, openSection,
 
             {/* -------- SCHEMA, DIAGRAMMI, SEZIONI -------- */}
             <div className="space-y-4">
-                <CombinationCard beam={beam} upd={upd} />
+                <CombinationCard beam={beam} upd={upd} an={an} />
                 {!an.ok ? (
                     <Card right={editBtn}><div className="flex items-start gap-2 text-sm text-red-600"><AlertTriangle size={18} className="mt-0.5 shrink-0" /><ul>{an.errors.map((e) => <li key={e}>{e}</li>)}</ul></div></Card>
                 ) : (
@@ -720,6 +821,7 @@ function BeamEditor({ beam, an, upd, addSection, addCharacteristic, openSection,
                             <Legend items={[[C_V, "inviluppo SLU V_max / V_min"]]} />
                         </Card>
                         <CrackCard beam={beam} an={an} onPick={addSection} onOpen={openSection} />
+                        <DeflectionCard beam={beam} an={an} upd={upd} />
                         <SectionsTable beam={beam} an={an} upd={upd} openSection={openSection} />
                     </>
                 )}
@@ -732,12 +834,12 @@ function BeamEditor({ beam, an, upd, addSection, addCharacteristic, openSection,
 // COMBINAZIONE DI CARICO (NTC 2018 §2.5.3): carichi caratteristici per campata,
 // coefficienti γ e ψ, carichi di combinazione SLU e SLE
 // ---------------------------------------------------------------------------
-function CombinationCard({ beam, upd }) {
+function CombinationCard({ beam, upd, an }) {
     const g = beam.gamma;
-    const pp = beam.selfWeight ? (25 * beam.section.b * beam.section.h) / 1e6 : 0;
     const setG = (k) => (v) => upd((b) => ({ ...b, gamma: { ...b.gamma, [k]: v } }));
     const [edit, setEdit] = useState(null);         // { j, k } carico in composizione
     const [info, setInfo] = useState(false);        // modal con le formule delle combinazioni
+    const [list, setList] = useState(false);        // modal con tutte le combinazioni eseguite
     // conferma della composizione: totale nel carico della campata (o di tutte) e voci salvate
     const saveItems = (j, k, items, all) => upd((b) => ({
         ...b,
@@ -745,10 +847,11 @@ function CombinationCard({ beam, upd }) {
             ? { ...sp, [k]: Math.round(items.reduce((t, it) => t + itemValue(it), 0) * 1e4) / 1e4, items: { ...(sp.items ?? {}), [k]: items.map((it) => ({ ...it })) } }
             : sp)),
     }));
-    const rows = beam.spans.map((sp) => {
-        const g1 = num(sp.g1) + pp, g2 = num(sp.g2), v = spanVariable(sp, beam);
-        return { g1, g2, v, slu: g.g1 * g1 + g.g2 * g2 + g.q * v.u, rara: g1 + g2 + v.u, freq: g1 + g2 + v.f, qp: g1 + g2 + v.qp };
-    });
+    // carico di ogni stato per campata: il massimo sulle combinazioni dello stato
+    const LC = loadCombinations(beam);
+    const maxQ = (st, j) => Math.max(...LC.combos.filter((c) => c.state === st).map((c) => c.q[j]));
+    const rows = beam.spans.map((_, j) => ({ slu: maxQ("U", j), rara: maxQ("R", j), freq: maxQ("F", j), qp: maxQ("Q", j) }));
+    const nComb = LC.combos.length;
     const cell = "px-2 py-1.5 text-right tabular-nums";
     const unit = <span className="font-normal text-slate-400">[kN/m]</span>;   // unità nelle intestazioni
     const loadBtn = (sp, j, k) => {
@@ -771,6 +874,10 @@ function CombinationCard({ beam, upd }) {
                     className="rounded-full p-0.5 text-slate-400 transition hover:bg-sky-50 hover:text-sky-600"><Info size={15} /></button>
             </span>} subtitle={sub("Carichi distribuiti in kN/m: g_1 strutturali (più il peso proprio, se attivo), g_2 permanenti non strutturali, q_k variabile.")} right={
             <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold text-slate-500">
+                <button type="button" onClick={() => setList(true)} title="Elenco delle combinazioni eseguite, con la più gravosa"
+                    className="inline-flex items-center gap-1.5 rounded-full border border-slate-300 bg-white px-3 py-1 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50">
+                    <ListChecks size={13} /> Tutte le combinazioni <span className="rounded-full bg-slate-100 px-1.5 text-[10px] text-slate-500">{nComb}</span>
+                </button>
                 {/* coefficienti parziali compatti nell'intestazione */}
                 {[["g1", "γ_G1"], ["g2", "γ_G2"], ["q", "γ_Q"]].map(([k, l]) => (
                     <label key={k} className="inline-flex items-center gap-1">
@@ -790,7 +897,7 @@ function CombinationCard({ beam, upd }) {
                                 <th className={cell}>{sub("g_1")} {unit}</th>
                                 <th className={cell}>{sub("g_2")} {unit}</th>
                                 <th className={cell}>{sub("q_k")} {unit}</th>
-                                <th className={`${cell} bg-sky-50 text-sky-800`}>{sub("SLU q_d")} {unit}</th>
+                                <th className={`${cell} bg-sky-50 text-sky-800`} title="Massimo sulle combinazioni SLU">{sub("SLU q_d")} {unit}</th>
                                 <th className={cell}>SLE rara {unit}</th>
                                 <th className={cell}>SLE frequente {unit}</th>
                                 <th className={cell}>SLE quasi perm. {unit}</th>
@@ -812,75 +919,217 @@ function CombinationCard({ beam, upd }) {
                         </tbody>
                     </table>
                 </div>
+                {/* combinazioni più gravose: il dettaglio nel modal */}
+                {an.ok && (
+                    <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500">
+                        <span className="font-semibold text-slate-600">Più gravose:</span>
+                        {COMBO_STATES.map((st) => {
+                            const c = an.combos.find((x) => x.id === an.governing[st.id].id);
+                            return (
+                                <button key={st.id} type="button" onClick={() => setList(true)} className="rounded-md px-1 text-left transition hover:bg-sky-50 hover:text-sky-700">
+                                    {comboName(c, an.combos)}{c.lead !== null && an.acts.length > 1 && <> ({sub(`Q_${c.lead + 1}`)} principale)</>}
+                                </button>
+                            );
+                        })}
+                        <span className="text-slate-400">I valori in tabella sono i massimi per campata fra le combinazioni di ciascuno stato.</span>
+                    </div>
+                )}
             </div>
-            {info && <CombinationInfoModal beam={beam} onClose={() => setInfo(false)} />}
+            {info && <CombinationInfoModal onClose={() => setInfo(false)} />}
+            {list && <AllCombinationsModal beam={beam} an={an} lc={LC} onClose={() => setList(false)} />}
             {edit && <LoadModal beam={beam} j={edit.j} k={edit.k} onClose={() => setEdit(null)} onSave={(items, all) => { saveItems(edit.j, edit.k, items, all); setEdit(null); }} />}
         </Card>
     );
 }
 
 // ---------------------------------------------------------------------------
-// FORMULE DELLE COMBINAZIONI (NTC 2018 §2.5.3) con i coefficienti della trave
+// FORMULE DELLE COMBINAZIONI (NTC 2018 §2.5.3): solo la teoria della norma
 // ---------------------------------------------------------------------------
-const tx = (v, d = 2) => fmt(v, d).replace(/\./g, "").replace(",", "{,}");
-function CombinationInfoModal({ beam, onClose }) {
-    const g = beam.gamma;
-    const cat = USE_CATEGORIES.find((c) => c.id === beam.category) ?? USE_CATEGORIES[0];
-    const pp = beam.selfWeight ? (25 * beam.section.b * beam.section.h) / 1e6 : 0;
+function CombinationInfoModal({ onClose }) {
     useEffect(() => {
         const onKey = (e) => { if (e.key === "Escape") onClose(); };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
     }, [onClose]);
-    const block = (title, general, numeric, note) => (
-        <div className="rounded-xl border border-slate-200 bg-slate-50/50 px-4 py-3">
-            <p className="text-xs font-bold text-slate-700">{title}</p>
-            <div className="tex-left mt-1 space-y-0.5 text-sm">
-                <Tex display>{general}</Tex>
-                {numeric.map((t, i) => <Tex key={i} display>{t}</Tex>)}
+    const item = (n, title, tex) => (
+        <li className="space-y-1">
+            <p className="text-sm font-semibold text-slate-700">{n}. {title}</p>
+            <div className="text-base"><Tex display>{tex}</Tex></div>
+        </li>
+    );
+    return toModalRoot(
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/30 p-4" role="dialog" aria-modal="true" aria-label="Combinazioni di carico"
+            onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+            <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col rounded-2xl bg-white shadow-2xl">
+                <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-5 py-3">
+                    <p className="text-sm font-bold text-slate-800">Combinazioni di carico <span className="font-normal text-slate-400">· NTC 2018 §2.5.3</span></p>
+                    <button type="button" onClick={onClose} aria-label="Chiudi" className="rounded-full p-1.5 text-slate-500 hover:bg-slate-100"><X size={16} /></button>
+                </div>
+                <div className="scroll-thin min-h-0 flex-1 space-y-5 py-5 pl-6 pr-5">
+                    <section>
+                        <p className="text-sm font-bold text-slate-800">Ciclo sull'azione variabile dominante (<Tex>{String.raw`k=1\ldots n`}</Tex>):</p>
+                        <ol className="mt-2 space-y-3 pl-4">
+                            {item(1, "SLU (EQU / STR / GEO):", String.raw`\gamma_{G1}G_1+\gamma_{G2}G_2+\gamma_{Qk}Q_k+\sum_{j\neq k}\gamma_{Qj}\,\psi_{0j}\,Q_j`)}
+                            {item(2, "SLE Rara:", String.raw`G_1+G_2+Q_k+\sum_{j\neq k}\psi_{0j}\,Q_j`)}
+                        </ol>
+                    </section>
+                    <section>
+                        <p className="text-sm font-bold text-slate-800">Combinazioni SLE senza variabile dominante:</p>
+                        <ol className="mt-2 space-y-3 pl-4">
+                            {item(1, "SLE Frequente:", String.raw`G_1+G_2+\psi_{11}\,Q_1+\sum_{j>1}\psi_{2j}\,Q_j`)}
+                            {item(2, "SLE Quasi permanente:", String.raw`G_1+G_2+\sum_{j\geq 1}\psi_{2j}\,Q_j`)}
+                        </ol>
+                    </section>
+                </div>
             </div>
-            {note && <p className="mt-1 text-[11px] leading-4 text-slate-500">{sub(note)}</p>}
         </div>
     );
-    // sostituzione numerica per ogni campata
-    const rows = beam.spans.map((sp, j) => { const v = spanVariable(sp, beam); return { j, g1: num(sp.g1) + pp, g2: num(sp.g2), q: v.u, f: v.f, qp: v.qp, multi: v.multi }; });
-    const lab = (j) => (beam.spans.length > 1 ? `,${j + 1}` : "");   // q_{d,1}, q_{rara,2}…
-    return (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/30 p-4" role="dialog" aria-modal="true" aria-label="Formule delle combinazioni di carico"
+}
+
+// ---------------------------------------------------------------------------
+// TUTTE LE COMBINAZIONI ESEGUITE: per ogni stato limite il ciclo sull'azione
+// variabile dominante, i carichi per campata e gli effetti massimi; evidenziata
+// la combinazione più gravosa (massimo |M|) e, colonna per colonna, quella che
+// dà il massimo di ciascun effetto
+// ---------------------------------------------------------------------------
+const stateOf = (id) => COMBO_STATES.find((s) => s.id === id);
+function comboName(c, combos) {
+    const st = stateOf(c.state);
+    return combos.filter((x) => x.state === c.state).length > 1 ? `${st.label} ${c.index}` : st.label;
+}
+// numero per TeX con la virgola decimale
+const texN = (v) => String(Math.round(v * 1000) / 1000).replace(".", "{,}");
+// espressione della combinazione con i coefficienti numerici della norma
+function comboTex(c, acts, gm) {
+    const g = c.state === "U" ? String.raw`${texN(gm.g1)}\,G_1+${texN(gm.g2)}\,G_2` : "G_1+G_2";
+    const terms = acts.map((a, i) => {
+        const lead = i === c.lead, Q = `Q_{${i + 1}}`;
+        if (c.state === "U") return lead ? String.raw`${texN(gm.q)}\,${Q}` : a.c.psi0 ? String.raw`${texN(gm.q)}\cdot${texN(a.c.psi0)}\,${Q}` : null;
+        if (c.state === "R") return lead ? Q : a.c.psi0 ? String.raw`${texN(a.c.psi0)}\,${Q}` : null;
+        if (c.state === "F") return lead ? (a.c.psi1 ? String.raw`${texN(a.c.psi1)}\,${Q}` : null) : a.c.psi2 ? String.raw`${texN(a.c.psi2)}\,${Q}` : null;
+        return a.c.psi2 ? String.raw`${texN(a.c.psi2)}\,${Q}` : null;
+    }).filter(Boolean);
+    return [g, ...terms].join("+");
+}
+function AllCombinationsModal({ beam, an, lc, onClose }) {
+    useEffect(() => {
+        const onKey = (e) => { if (e.key === "Escape") onClose(); };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [onClose]);
+    const acts = lc.acts, nS = beam.spans.length;
+    const combos = an.ok ? an.combos : lc.combos;
+    const spansTxt = (sp) => (!sp?.length ? "variabili scaricati" : sp.length === nS && nS > 1 ? "Q su tutte le campate" : `Q su ${sp.length > 1 ? "campate" : "campata"} ${sp.map((k) => k + 1).join(", ")}`);
+    const th = "px-2 py-1.5 font-semibold";
+    const effect = (c, key, gov) => {
+        const e = c[key];
+        if (!an.ok || !e) return <td className="px-2 py-1.5 text-right text-slate-400">–</td>;
+        const isGov = gov[key] === c.id;
+        return (
+            <td className={`px-2 py-1.5 text-right align-top tabular-nums ${isGov ? "font-bold text-slate-900" : "text-slate-600"}`}>
+                <span className={isGov ? "rounded bg-amber-100 px-1" : ""}>{fmt(e.v, 1)}</span>
+                <span className="block whitespace-nowrap text-[10px] font-normal leading-3 text-slate-400">x = {fmt(e.x, 2)} m · {spansTxt(e.spans)}</span>
+            </td>
+        );
+    };
+    return toModalRoot(
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/30 p-4" role="dialog" aria-modal="true" aria-label="Combinazioni eseguite"
             onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-            <div className="flex h-[min(40rem,calc(100vh-2rem))] w-full max-w-3xl flex-col rounded-2xl bg-white shadow-2xl">
+            <div className="flex h-[min(44rem,calc(100vh-2rem))] w-full max-w-6xl flex-col rounded-2xl bg-white shadow-2xl">
                 <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-3">
                     <div>
-                        <p className="text-sm font-bold text-slate-800">Combinazioni di carico</p>
-                        <p className="text-[11px] text-slate-500">NTC 2018 §2.5.3 · con i coefficienti e i carichi della trave {beam.name} (kN/m)</p>
+                        <p className="text-sm font-bold text-slate-800">Combinazioni eseguite — {beam.name} <span className="font-normal text-slate-400">· NTC 2018 §2.5.3</span></p>
+                        <p className="text-[11px] text-slate-500">Per ogni combinazione i variabili si dispongono solo sulle campate dove aggravano l'effetto (alternanza dei carichi); evidenziata la più gravosa di ogni stato (massimo |M|) e, per colonna, il valore massimo.</p>
                     </div>
                     <button type="button" onClick={onClose} aria-label="Chiudi" className="rounded-full p-1.5 text-slate-500 hover:bg-slate-100"><X size={16} /></button>
                 </div>
-                <div className="scroll-thin min-h-0 flex-1 space-y-3 py-4 pl-5 pr-4">
-                    <p className="text-xs leading-5 text-slate-600">
-                        {sub(`Coefficienti parziali: γ_G1 = ${fmt(g.g1, 2)}, γ_G2 = ${fmt(g.g2, 2)}, γ_Q = ${fmt(g.q, 2)} (NTC Tab. 2.6.I: sfavorevoli 1,3 / 1,5 / 1,5; favorevoli 1,0 / 0,8 / 0). Categoria ${cat.label}: ψ_0 = ${fmt(cat.psi0, 1)}, ψ_1 = ${fmt(cat.psi1, 1)}, ψ_2 = ${fmt(cat.psi2, 1)} (Tab. 2.5.I).${pp ? ` In g_1 è compreso il peso proprio della trave, ${fmt(pp, 2)} kN/m.` : ""}`)}
-                    </p>
-                    {block("SLU – combinazione fondamentale",
-                        String.raw`q_d=\gamma_{G1}\,g_1+\gamma_{G2}\,g_2+\gamma_{Q}\,q_k`,
-                        rows.map((r) => String.raw`q_{d${lab(r.j)}}=${tx(g.g1)}\cdot ${tx(r.g1)}+${tx(g.g2)}\cdot ${tx(r.g2)}+${tx(g.q)}\cdot ${tx(r.q)}=${tx(g.g1 * r.g1 + g.g2 * r.g2 + g.q * r.q)}`),
-                        "Per l'inviluppo delle sollecitazioni i permanenti sono su tutte le campate e il variabile q_k è applicato campata per campata solo dove sfavorevole (alternanza dei carichi).")}
-                    {block("SLE – combinazione caratteristica (rara)",
-                        String.raw`q_{rara}=g_1+g_2+q_k`,
-                        rows.map((r) => String.raw`q_{rara${lab(r.j)}}=${tx(r.g1)}+${tx(r.g2)}+${tx(r.q)}=${tx(r.g1 + r.g2 + r.q)}`),
-                        "Verifiche delle tensioni in esercizio (limitazione delle tensioni).")}
-                    {block("SLE – combinazione frequente",
-                        String.raw`q_{freq}=g_1+g_2+\psi_{1}\,q_k`,
-                        rows.map((r) => (r.multi
-                            ? String.raw`q_{freq${lab(r.j)}}=${tx(r.g1)}+${tx(r.g2)}+${tx(r.f)}=${tx(r.g1 + r.g2 + r.f)}`
-                            : String.raw`q_{freq${lab(r.j)}}=${tx(r.g1)}+${tx(r.g2)}+${tx(cat.psi1, 1)}\cdot ${tx(r.q)}=${tx(r.g1 + r.g2 + r.f)}`)),
-                        "Fessurazione negli ambienti aggressivi e deformazioni.")}
-                    {block("SLE – combinazione quasi permanente",
-                        String.raw`q_{qp}=g_1+g_2+\psi_{2}\,q_k`,
-                        rows.map((r) => (r.multi
-                            ? String.raw`q_{qp${lab(r.j)}}=${tx(r.g1)}+${tx(r.g2)}+${tx(r.qp)}=${tx(r.g1 + r.g2 + r.qp)}`
-                            : String.raw`q_{qp${lab(r.j)}}=${tx(r.g1)}+${tx(r.g2)}+${tx(cat.psi2, 1)}\cdot ${tx(r.q)}=${tx(r.g1 + r.g2 + r.qp)}`)),
-                        "Fessurazione negli ambienti ordinari, effetti a lungo termine (viscosità).")}
-                    <p className="text-[11px] leading-4 text-slate-500">{sub("Con voci di q_k di categorie diverse (più azioni variabili) si prende ogni categoria come azione principale e si tiene la più gravosa: SLU e rara Q_k1 + Σ ψ_0i·Q_ki, frequente ψ_11·Q_k1 + Σ ψ_2i·Q_ki, quasi permanente Σ ψ_2i·Q_ki. Nelle righe di queste campate compare direttamente il valore combinato del variabile.")}</p>
+                <div className="scroll-thin min-h-0 flex-1 space-y-5 py-4 pl-5 pr-4">
+                    {/* azioni */}
+                    <section>
+                        <p className="mb-1.5 text-xs font-bold text-slate-700">Azioni [kN/m]</p>
+                        <div className="scroll-thin-x pb-1">
+                            <table className="w-full min-w-[560px] text-xs">
+                                <thead>
+                                    <tr className="border-b border-slate-200 text-[11px] text-slate-500">
+                                        <th className={`${th} text-left`}>Azione</th>
+                                        <th className={`${th} text-left`}>Categoria</th>
+                                        <th className={`${th} text-right`}>{sub("ψ_0")}</th>
+                                        <th className={`${th} text-right`}>{sub("ψ_1")}</th>
+                                        <th className={`${th} text-right`}>{sub("ψ_2")}</th>
+                                        {beam.spans.map((_, j) => <th key={j} className={`${th} text-right`}>Campata {j + 1}</th>)}
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {[["G_1", "permanenti strutturali" + (beam.selfWeight ? " (con peso proprio)" : ""), lc.G1], ["G_2", "permanenti non strutturali", lc.G2]].map(([n, d, v]) => (
+                                        <tr key={n} className="border-b border-slate-100">
+                                            <td className="px-2 py-1.5 font-semibold text-slate-700">{sub(n)}</td>
+                                            <td className="px-2 py-1.5 text-slate-500" colSpan={4}>{d}</td>
+                                            {v.map((x, j) => <td key={j} className="px-2 py-1.5 text-right tabular-nums">{fmt(x, 2)}</td>)}
+                                        </tr>
+                                    ))}
+                                    {acts.map((a, i) => (
+                                        <tr key={a.c.id} className="border-b border-slate-100">
+                                            <td className="px-2 py-1.5 font-semibold text-slate-700">{sub(`Q_${i + 1}`)}</td>
+                                            <td className="px-2 py-1.5 text-slate-600">{a.c.label}</td>
+                                            <td className="px-2 py-1.5 text-right tabular-nums">{fmt(a.c.psi0, 1)}</td>
+                                            <td className="px-2 py-1.5 text-right tabular-nums">{fmt(a.c.psi1, 1)}</td>
+                                            <td className="px-2 py-1.5 text-right tabular-nums">{fmt(a.c.psi2, 1)}</td>
+                                            {a.Q.map((x, j) => <td key={j} className="px-2 py-1.5 text-right tabular-nums">{fmt(x, 2)}</td>)}
+                                        </tr>
+                                    ))}
+                                    {!acts.length && <tr><td colSpan={5 + nS} className="px-2 py-1.5 text-slate-400">Nessun carico variabile.</td></tr>}
+                                </tbody>
+                            </table>
+                        </div>
+                    </section>
+                    {/* combinazioni per stato limite */}
+                    {COMBO_STATES.map((st) => {
+                        const list = combos.filter((c) => c.state === st.id);
+                        const gov = an.ok ? an.governing[st.id] : {};
+                        return (
+                            <section key={st.id}>
+                                <p className="mb-1.5 text-xs font-bold text-slate-700">{st.long}
+                                    <span className="ml-2 font-normal text-slate-400">{st.id === "Q" ? "senza variabile dominante"
+                                        : st.id === "F" ? `ψ₁ a rotazione su ciascuna azione, le altre con ψ₂ · ${list.length} ${list.length === 1 ? "combinazione" : "combinazioni"}`
+                                            : `ciclo sull'azione dominante k = 1…n · ${list.length} ${list.length === 1 ? "combinazione" : "combinazioni"}`}</span>
+                                </p>
+                                <div className="scroll-thin-x pb-1">
+                                    <table className="w-full min-w-[900px] text-xs">
+                                        <thead>
+                                            <tr className="border-b border-slate-200 text-[11px] text-slate-500">
+                                                <th className={`${th} w-36 text-left`}>Combinazione</th>
+                                                <th className={`${th} text-left`}>Espressione</th>
+                                                {beam.spans.map((_, j) => <th key={j} className={`${th} text-right`}>q camp. {j + 1} <span className="font-normal text-slate-400">[kN/m]</span></th>)}
+                                                <th className={`${th} text-right`}>{sub("M_max")} <span className="font-normal text-slate-400">[kNm]</span></th>
+                                                <th className={`${th} text-right`}>{sub("M_min")} <span className="font-normal text-slate-400">[kNm]</span></th>
+                                                <th className={`${th} text-right`}>|V|<sub>max</sub> <span className="font-normal text-slate-400">[kN]</span></th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {list.map((c) => {
+                                                const isGov = an.ok && gov.id === c.id;
+                                                return (
+                                                    <tr key={c.id} className={`border-b border-slate-100 ${isGov ? "bg-amber-50/70" : ""}`}>
+                                                        <td className="px-2 py-1.5 align-top">
+                                                            <p className="font-semibold text-slate-700">{comboName(c, combos)}</p>
+                                                            {c.lead !== null && acts.length > 1 && <p className="text-[10px] text-slate-500">{sub(`Q_${c.lead + 1}`)} principale</p>}
+                                                            {isGov && <span className="mt-0.5 inline-block rounded-full bg-amber-500 px-1.5 py-px text-[10px] font-bold text-white">più gravosa</span>}
+                                                        </td>
+                                                        <td className="whitespace-nowrap px-2 py-1.5 align-top text-[13px]"><Tex>{comboTex(c, acts, lc.gamma)}</Tex></td>
+                                                        {c.q.map((q, j) => <td key={j} className="px-2 py-1.5 text-right align-top tabular-nums text-slate-700">{fmt(q, 2)}</td>)}
+                                                        {effect(c, "Mmax", gov)}
+                                                        {effect(c, "Mmin", gov)}
+                                                        {effect(c, "Vabs", gov)}
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </section>
+                        );
+                    })}
+                    {!an.ok && <p className="text-xs text-red-600">Schema non risolvibile: gli effetti delle combinazioni non sono disponibili.</p>}
                 </div>
             </div>
         </div>
@@ -908,7 +1157,7 @@ function LoadModal({ beam, j, k, onClose, onSave }) {
         return () => window.removeEventListener("keydown", onKey);
     }, [onClose]);
     const field = "rounded-md border border-slate-200 px-2 py-1 text-xs outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100";
-    return (
+    return toModalRoot(
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/30 p-4" role="dialog" aria-modal="true" aria-label={`Carico ${sym} campata ${j + 1}`}
             onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
             {/* dimensioni fisse: aggiungendo voci il modal non cresce, scorre l'elenco */}
@@ -1227,6 +1476,213 @@ function CrackSVG({ an, combo, Mcr, marks, onPick, onOpen }) {
 }
 
 // ---------------------------------------------------------------------------
+// DEFORMABILITÀ (SLE): frecce per integrazione delle curvature (lib/concrete/deflection)
+// ---------------------------------------------------------------------------
+const C_DEF = "#0891b2", C_DINC = "#a855f7", C_DLIM = "#dc2626";
+
+// armatura per le frecce: dalla cascata (sezioni progettate) o inserita a mano.
+// pos[j]: tesa inferiore della campata j (+ compressa superiore); neg[i]: tesa
+// superiore sull'appoggio i (+ compressa inferiore)
+function deflReinf(beam, an) {
+    const o = beam.defl ?? {};
+    const near = (x, x0, tol) => Math.abs(x - x0) <= tol;
+    const pos = beam.spans.map((sp, j) => {
+        const x0 = an.xs0[j], x1 = x0 + sp.L;
+        const cands = beam.sections.filter((s) => s.x > x0 + 1e-6 && s.x < x1 - 1e-6 && s.adopted?.pos)
+            .map((s) => ({ s, M: valuesAt(an, s.x)?.MmaxU ?? 0 })).sort((a, b) => b.M - a.M);
+        const ad = cands[0]?.s.adopted.pos;
+        const auto = ad ? { As: ad.tensionTop ? ad.AC : ad.AT, As2: ad.tensionTop ? ad.AT : ad.AC } : null;
+        const man = o.pos?.[j];
+        return { auto, val: man !== undefined && man !== null && man !== "" ? { As: num(man), As2: auto?.As2 ?? 0 } : auto, manual: man !== undefined && man !== null && man !== "" };
+    });
+    const neg = beam.nodes.map((nd, i) => {
+        const x0 = an.xs0[i] ?? an.Ltot;
+        const Lmin = Math.min(beam.spans[i - 1]?.L ?? Infinity, beam.spans[i]?.L ?? Infinity);
+        const s = beam.sections.find((q) => near(q.x, x0, 0.1 * Lmin) && q.adopted?.neg);
+        const ad = s?.adopted.neg;
+        const auto = ad ? { As: ad.tensionTop ? ad.AT : ad.AC, As2: ad.tensionTop ? ad.AC : ad.AT } : null;
+        const man = o.neg?.[i];
+        return { auto, val: man !== undefined && man !== null && man !== "" ? { As: num(man), As2: auto?.As2 ?? 0 } : auto, manual: man !== undefined && man !== null && man !== "" };
+    });
+    return { pos, neg, reinf: { pos: pos.map((r) => r.val), neg: neg.map((r) => r.val) } };
+}
+
+function useDeflection(beam, an) {
+    const opts = { ...DEFL_DEFAULT, ...(beam.defl ?? {}) };
+    const R = an.ok ? deflReinf(beam, an) : null;
+    const res = R ? beamDeflection(beam, an, R.reinf, { phi: num(opts.phi), partitions: !!opts.partitions }) : { ok: false };
+    return { opts, R, res };
+}
+
+function DeflectionCard({ beam, an, upd, focusX = null }) {
+    const { opts, R, res } = useDeflection(beam, an);
+    if (!res.ok) return null;
+    const setD = (patch) => upd((b) => ({ ...b, defl: { ...DEFL_DEFAULT, ...(b.defl ?? {}), ...patch } }));
+    const setAs = (kind, i, v) => upd((b) => {
+        const d = { ...DEFL_DEFAULT, ...(b.defl ?? {}) };
+        return { ...b, defl: { ...d, [kind]: { ...(d[kind] ?? {}), [i]: v === "" ? undefined : v } } };
+    });
+    const cell = "px-2 py-1.5 text-right tabular-nums";
+    const unit = (u) => <span className="font-normal text-slate-400">[{u}]</span>;
+    const asInput = (kind, i, r) => (
+        <input type="number" min="0" step="any" value={r.manual ? (beam.defl?.[kind]?.[i] ?? "") : ""} placeholder={r.auto ? fmt(r.auto.As, 0) : "–"}
+            onChange={(e) => setAs(kind, i, e.target.value)} title={r.auto ? `Dalla cascata: ${fmt(r.auto.As, 0)} mm² (lascia vuoto per usarla)` : "Nessuna sezione progettata: inserisci l'armatura tesa"}
+            aria-label={`${kind === "pos" ? "Armatura inferiore campata" : "Armatura superiore appoggio"} ${i + 1}`}
+            className={`w-20 rounded-md border px-1.5 py-0.5 text-right text-xs tabular-nums outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100 ${r.manual ? "border-sky-300 bg-sky-50" : r.auto ? "border-slate-200" : "border-amber-300 bg-amber-50"}`} />
+    );
+    const status = (ok, missing) => (missing ? <span className="rounded bg-amber-50 px-1.5 text-[10px] font-semibold text-amber-700">armatura mancante</span>
+        : ok ? <CheckCircle2 size={15} className="ml-auto text-emerald-600" /> : <XCircle size={15} className="ml-auto text-red-600" />);
+    return (
+        <Card title="Deformabilità (SLE) – frecce [mm]" subtitle={sub("Combinazione quasi permanente, lungo termine: integrazione delle curvature con ζ fra stato non fessurato e fessurato (NTC 2018 §4.1.2.2.2, EC2 §7.4.3).")} right={
+            <div className="flex flex-wrap items-center gap-3 text-[11px] font-semibold text-slate-600">
+                <label className="inline-flex items-center gap-1" title="Coefficiente di viscosità φ(∞, t0)">
+                    φ(∞,t₀)
+                    <input type="number" step="0.1" min="0" value={opts.phi} onChange={(e) => setD({ phi: e.target.value })} aria-label="Coefficiente di viscosità"
+                        className="w-14 rounded-md border border-slate-200 px-1.5 py-0.5 text-right text-xs tabular-nums outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100" />
+                </label>
+                <label className="inline-flex cursor-pointer items-center gap-1.5" title="Verifica anche l'incremento di freccia dopo la costruzione dei tramezzi (L/500)">
+                    <input type="checkbox" checked={!!opts.partitions} onChange={(e) => setD({ partitions: e.target.checked })} className="accent-violet-600" /> Tramezzi fragili
+                </label>
+            </div>}>
+            <DeflectionSVG beam={beam} an={an} res={res} focusX={focusX} />
+            <Legend items={[[C_DEF, "freccia a lungo termine f∞ (q.p.)"], ...(opts.partitions ? [[C_DINC, "incremento f∞ − f₀(G₁)", true]] : []), [C_DLIM, "limite L/250", true]]} />
+            <div className="scroll-thin-x mt-3 pb-1">
+                <table className="w-full min-w-[980px] text-xs">
+                    <thead>
+                        <tr className="border-b border-slate-200 text-[11px] text-slate-500">
+                            <th className="px-2 py-1.5 text-left font-semibold">Campata</th>
+                            <th className="px-2 py-1.5 text-left font-semibold">Schema</th>
+                            <th className={cell} title="Armatura tesa inferiore di campata">{sub("A_s inf")} {unit("mm²")}</th>
+                            <th className={cell} title="Armatura tesa superiore sugli appoggi">{sub("A_s sup sx / dx")} {unit("mm²")}</th>
+                            <th className={cell}>λ = L/h</th>
+                            <th className={cell}>{sub("λ_lim")}</th>
+                            <th className={cell}>{sub("f_∞")} {unit("mm")}</th>
+                            <th className={cell}>L/250</th>
+                            {opts.partitions && <th className={cell}>{sub("Δf")} {unit("mm")}</th>}
+                            {opts.partitions && <th className={cell}>L/500</th>}
+                            <th className="px-2 py-1.5 text-right font-semibold">Esito</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {res.spans.map((s) => (
+                            <tr key={s.j} className="border-b border-slate-100">
+                                <td className="px-2 py-1.5 font-semibold text-slate-700">{s.j + 1} <span className="font-normal text-slate-400">· {fmt(s.L, 2)} m</span></td>
+                                <td className="px-2 py-1.5 text-slate-600">{s.kind} <span className="text-slate-400">(K = {fmt(s.K, 1)})</span></td>
+                                <td className={cell}>{s.cant ? <span className="text-slate-400">–</span> : asInput("pos", s.j, R.pos[s.j])}</td>
+                                <td className={cell}>
+                                    <span className="inline-flex gap-1">
+                                        {beam.nodes[s.j].type !== "free" ? asInput("neg", s.j, R.neg[s.j]) : <span className="w-20 text-slate-400">–</span>}
+                                        {beam.nodes[s.j + 1].type !== "free" ? asInput("neg", s.j + 1, R.neg[s.j + 1]) : <span className="w-20 text-slate-400">–</span>}
+                                    </span>
+                                </td>
+                                <td className={cell}>{fmt(s.lam, 1)}</td>
+                                <td className={cell}>
+                                    {s.lamLim !== null ? <span className={s.simpleOk ? "text-emerald-700" : "text-slate-700"} title={s.simpleOk ? "Snellezza entro il limite: il calcolo della freccia si può omettere" : "Snellezza oltre il limite: serve il calcolo della freccia"}>{fmt(s.lamLim, 1)}{s.simpleOk ? " ✓" : ""}</span> : "–"}
+                                </td>
+                                <td className={`${cell} font-semibold text-slate-800`}>{fmt(Math.abs(s.f), 2)}<span className="block text-[10px] font-normal text-slate-400">L/{fmt((s.Leff * 1000) / Math.max(Math.abs(s.f), 1e-9), 0)}</span></td>
+                                <td className={cell}>{fmt(s.fLim, 1)}</td>
+                                {opts.partitions && <td className={`${cell} font-semibold text-slate-800`}>{fmt(Math.abs(s.fIncr), 2)}</td>}
+                                {opts.partitions && <td className={cell}>{fmt(s.fIncrLim, 1)}</td>}
+                                <td className="px-2 py-1.5"><span className="flex justify-end">{status(s.ok && (!opts.partitions || s.okIncr), s.missing)}</span></td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            </div>
+            <p className="mt-2 text-[11px] leading-4 text-slate-500">
+                {sub(`E_cm = ${fmt(res.Ecm, 0)} MPa, E_c,eff = E_cm/(1 + φ) = ${fmt(res.Eeff, 0)} MPa, α_e = ${fmt(res.alphaE, 1)}, f_ctm = ${fmt(res.fctm, 2)} MPa. `)}
+                {sub("Armature: dalla cascata (sezione di campata con il massimo M⁺, sezioni sugli appoggi con M⁻) oppure inserite a mano (campo azzurro); campo giallo = nessuna sezione progettata. ")}
+                {sub("Variabili ψ_2·Q disposti, per ogni campata, sulle campate che ne aumentano la freccia. Mensole: L = 2·luce. λ_lim con A_s,eff/A_s,calc = 1.")}
+            </p>
+        </Card>
+    );
+}
+
+function DeflectionSVG({ beam, an, res, focusX }) {
+    const L = an.Ltot, X = useX(L), H = 210, top = 26, bot = H - 26;
+    const part = !!res.partitions;
+    const vals = res.spans.flatMap((s) => [...s.w, s.fLim, ...(part ? s.dw : [])]);
+    // limite dal lato della freccia (verso il basso o, per le mensole, anche verso l'alto)
+    const lim = (s) => (s.f >= 0 ? s.fLim : -s.fLim);
+    const hi = Math.max(1e-6, ...vals), lo = Math.min(0, ...res.spans.flatMap((s) => [...s.w, lim(s)]));
+    const k = (bot - top) / (hi - lo || 1), Y = (v) => top + (v - lo) * k, y0 = Y(0);
+    const xAt = (s, i) => X(an.xs0[s.j] + s.xs[i]);
+    return (
+        <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="Frecce della trave">
+            {[0, ...an.xs0.slice(1), L].map((x, i) => <line key={i} x1={X(x)} x2={X(x)} y1={top - 10} y2={bot + 6} stroke="#e2e8f0" />)}
+            <line x1={X(0)} x2={X(L)} y1={y0} y2={y0} stroke="#334155" strokeWidth="1.4" />
+            {beam.nodes.map((nd, i) => nd.type !== "free" && (
+                <path key={i} d={`M${X(an.xs0[i] ?? L)},${y0} l-6,10 h12 Z`} fill={nd.type === "fixed" ? "#334155" : "#fff"} stroke="#334155" strokeWidth="1" />
+            ))}
+            {res.spans.map((s) => {
+                const x0 = X(an.xs0[s.j]), x1 = X(an.xs0[s.j] + s.L);
+                const d = s.w.map((v, i) => `${i ? "L" : "M"}${xAt(s, i).toFixed(1)},${Y(v).toFixed(1)}`).join(" ");
+                const dInc = part ? s.dw.map((v, i) => `${i ? "L" : "M"}${xAt(s, i).toFixed(1)},${Y(v).toFixed(1)}`).join(" ") : null;
+                const xm = X(an.xs0[s.j] + s.xf), ym = Y(s.f);
+                const col = s.missing ? "#d97706" : s.ok ? "#059669" : "#dc2626";
+                return (
+                    <g key={s.j}>
+                        <line x1={x0} x2={x1} y1={Y(lim(s))} y2={Y(lim(s))} stroke={C_DLIM} strokeWidth="1" strokeDasharray="6 4" />
+                        <text x={x1 - 4} y={Y(lim(s)) + (s.f >= 0 ? -4 : 11)} fontSize="9" textAnchor="end" fill={C_DLIM}>{s.f >= 0 ? "" : "−"}{s.cant ? "2L" : "L"}/250 = {fmt(s.fLim, 1)}</text>
+                        <path d={`${d} L${x1},${y0} L${x0},${y0} Z`} fill={C_DEF} fillOpacity="0.08" />
+                        <path d={d} fill="none" stroke={C_DEF} strokeWidth="2" />
+                        {dInc && <path d={dInc} fill="none" stroke={C_DINC} strokeWidth="1.4" strokeDasharray="5 3" />}
+                        <circle cx={xm} cy={ym} r="4" fill={col} stroke="#fff" strokeWidth="1.5" />
+                        <text x={xm > W - 170 ? xm - 6 : xm < 170 ? xm + 6 : xm} y={s.f >= 0 ? ym + 16 : ym - 8} fontSize="10" textAnchor={xm > W - 170 ? "end" : xm < 170 ? "start" : "middle"} fill={col} fontWeight="bold" stroke="#fff" strokeWidth="3" paintOrder="stroke">
+                            f∞ = {fmt(Math.abs(s.f), 2)} mm (L/{fmt((s.Leff * 1000) / Math.max(Math.abs(s.f), 1e-9), 0)})
+                        </text>
+                    </g>
+                );
+            })}
+            {focusX !== null && <line x1={X(focusX)} x2={X(focusX)} y1={top - 12} y2={bot + 8} stroke={C_SEC} strokeWidth="1.1" strokeDasharray="3 2" />}
+        </svg>
+    );
+}
+
+// passo 5 della cascata: la freccia della campata che contiene la sezione e le
+// grandezze della sezione (rigidezze, M_cr, ζ, curvatura)
+function DeflectionStep({ beam, an, section, updateBeam }) {
+    const { res } = useDeflection(beam, an);
+    if (!res.ok) return <Card><p className="text-sm text-slate-500">Analisi non disponibile.</p></Card>;
+    const j = Math.max(0, an.xs0.findLastIndex((x0) => section.x >= x0 - 1e-9));
+    const s = res.spans[Math.min(j, res.spans.length - 1)];
+    const xl = section.x - an.xs0[s.j];
+    const i = Math.max(0, Math.min(s.xs.length - 1, Math.round((xl / s.L) * (s.xs.length - 1))));
+    const q = s.cv[i];
+    const row = (lab, val) => <div className="flex justify-between gap-3 border-b border-slate-100 py-1 text-xs"><span className="text-slate-500">{lab}</span><span className="font-semibold tabular-nums text-slate-800">{val}</span></div>;
+    return (
+        <div className="space-y-4">
+            <div className="flex flex-wrap gap-2">
+                <Status ok={!s.missing && s.ok} text={s.missing ? `Campata ${s.j + 1}: armatura mancante in una zona fessurata` : `Campata ${s.j + 1}: f∞ = ${fmt(Math.abs(s.f), 2)} mm ${s.ok ? "≤" : ">"} L/250 = ${fmt(s.fLim, 1)} mm`} />
+                {res.partitions && !s.missing && <Status ok={s.okIncr} text={`Δf = ${fmt(Math.abs(s.fIncr), 2)} mm ${s.okIncr ? "≤" : ">"} L/500 = ${fmt(s.fIncrLim, 1)} mm`} />}
+                {s.lamLim !== null && <Status ok={s.simpleOk} text={`Snellezza λ = ${fmt(s.lam, 1)} ${s.simpleOk ? "≤" : ">"} λ_lim = ${fmt(s.lamLim, 1)}${s.simpleOk ? " (calcolo omissibile)" : ""}`} />}
+            </div>
+            <div className="grid gap-4 lg:grid-cols-2">
+                <Card title={`Sezione ${section.label} – x = ${fmt(section.x, 2)} m`}>
+                    {row(sub("M_qp (disposizione della campata)"), `${fmt(q.M, 2)} kNm`)}
+                    {row(sub("Lato teso"), q.M >= 0 ? "inferiore" : "superiore")}
+                    {row(sub("I_I (omogeneizzata, α_e − 1)"), `${fmt(q.I1 / 1e6, 0)} ·10⁶ mm⁴`)}
+                    {row(sub("I_II (fessurata, α_e)"), q.I2 ? `${fmt(q.I2 / 1e6, 0)} ·10⁶ mm⁴` : "–")}
+                    {row(sub("x_II asse neutro fessurato"), q.x ? `${fmt(q.x, 1)} mm` : "–")}
+                    {row(sub("M_cr = f_ctm·I_I/(h − y_G)"), `${fmt(q.Mcr, 2)} kNm`)}
+                    {row("ζ", q.zeta === null ? "–" : fmt(q.zeta, 3))}
+                    {row("1/r", `${fmt(q.kap * 1000, 4)} ·10⁻³ 1/m`)}
+                </Card>
+                <Card title="Formule">
+                    <div className="space-y-2 text-sm">
+                        <Tex display>{String.raw`\frac{1}{r}=\zeta\,\frac{M}{E_{c,eff}\,I_{II}}+(1-\zeta)\,\frac{M}{E_{c,eff}\,I_{I}}`}</Tex>
+                        <Tex display>{String.raw`\zeta=1-\beta\left(\frac{M_{cr}}{M}\right)^2\quad(\beta=0{,}5),\qquad E_{c,eff}=\frac{E_{cm}}{1+\varphi}`}</Tex>
+                        <Tex display>{String.raw`f=\iint -\frac{1}{r}\,dx\,dx,\quad f_\infty\le\frac{L}{250}`}</Tex>
+                        <Tex display>{String.raw`\lambda=\frac{l}{h}\le K\left[11+\frac{0{,}0015\,f_{ck}}{\rho+\rho'}\right]\frac{500\,A_{s,eff}}{f_{yk}\,A_{s,calc}}`}</Tex>
+                    </div>
+                </Card>
+            </div>
+            <DeflectionCard beam={beam} an={an} upd={updateBeam} focusX={section.x} />
+        </div>
+    );
+}
+
+// ---------------------------------------------------------------------------
 // FORMULETTE DELLE REAZIONI: R = c·q·L (es. qL/2, 3/8 qL, 5/4 qL), M = m·q·L²
 // ---------------------------------------------------------------------------
 const gcd = (a, b) => (b ? gcd(b, a % b) : a);
@@ -1406,6 +1862,7 @@ const STEPS = [
     { id: "bending", label: "2. Verifica a flessione" },
     { id: "shear", label: "3. Verifica a taglio" },
     { id: "crack", label: "4. Fessurazione (SLE)" },
+    { id: "defl", label: "5. Deformabilità (SLE)" },
 ];
 
 function SectionWorkspace({ beam, an, section, onBack, updateBeam }) {
@@ -1469,7 +1926,7 @@ function SectionWorkspace({ beam, an, section, onBack, updateBeam }) {
                 <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-3">
                     <div className="flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1">
                         {STEPS.map((s) => (
-                            <button key={s.id} type="button" onClick={() => setStep(s.id)} disabled={s.id !== "design" && !bars}
+                            <button key={s.id} type="button" onClick={() => setStep(s.id)} disabled={s.id !== "design" && s.id !== "defl" && !bars}
                                 className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${step === s.id ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>{s.label}</button>
                         ))}
                     </div>
@@ -1504,6 +1961,7 @@ function SectionWorkspace({ beam, an, section, onBack, updateBeam }) {
                     <VerifyCrackTool key={`c${key(crackInput)}`} initialInput={crackInput} />
                 </>
             )}
+            {step === "defl" && <DeflectionStep beam={beam} an={an} section={section} updateBeam={updateBeam} />}
         </div>
     );
 }
@@ -1517,7 +1975,7 @@ function EditDrawer({ title, onClose, children }) {
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
     }, [onClose]);
-    return (
+    return toModalRoot(
         <div className="fixed inset-0 z-50" role="dialog" aria-modal="true" aria-label={title}>
             {/* sfondo trasparente: i diagrammi restano visibili e cliccando fuori si chiude */}
             <div className="absolute inset-0 bg-slate-900/10" onClick={onClose} />
