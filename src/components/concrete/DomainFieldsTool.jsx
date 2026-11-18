@@ -15,11 +15,11 @@
 // Fuori dagli accordion: dati, dominio con assi fissi, cursore ξ globale e ramo globale.
 
 import { createContext, memo, useContext, useDeferredValue, useMemo, useRef, useState } from "react";
-import { ChevronDown, CheckCircle2, XCircle, Hourglass } from "lucide-react";
+import { ChevronDown, CheckCircle2, XCircle } from "lucide-react";
 import Tex, { Eq, fmtNum, texNum as T } from "../Tex";
 import { CONCRETE_CLASSES, STEEL_GRADES } from "../../lib/concrete/sectionDesign";
 import {
-    DEFAULT_DOMAIN_INPUT, FIELDS, branchParams, concreteParams, domainExtents, field1, field2, field3, field4, field5, field6, fieldOf, numericPivotA, numericPivotB, numericPivotC, pureTension,
+    DEFAULT_DOMAIN_INPUT, FIELDS, buildDomainData, concreteParams, field3, fieldOf, numericPivotA, numericPivotB, numericPivotC, pointAt,
 } from "../../lib/concrete/domainFields";
 
 const FIELD_COL = { 1: "#7c3aed", 2: "#2563eb", 3: "#db2777", 4: "#ca8a04", 5: "#ea580c", 6: "#dc2626" };
@@ -176,72 +176,22 @@ function F({ lhs, sym, num, val, br = true }) {
 
 export default function DomainFieldsTool() {
     const [input, setInput] = useState(DEFAULT_DOMAIN_INPUT);
-    const [open, setOpen] = useState({ 1: true });
+    const S = useFieldsState(1);                 // stato dei campi (aperti, ramo, cursore, numeri)
     const [adim, setAdim] = useState(false);
     const [allMode, setAllMode] = useState("fields"); // vista del disegno unico (campi / profilo)
     const [gBranch, setGBranch] = useState(1);   // ramo globale
     const [gSlider, setGSlider] = useState(400); // ξ globale (−∞ … +∞)
-    // stato di ciascun campo: ramo, cursore, numeri sostituiti
-    // stato di tutti i campi creato subito: riferimenti stabili → i campi non toccati
-    // non si ridisegnano (React.memo) quando si muove il cursore di un altro campo
-    const [fs, setFs] = useState(() => Object.fromEntries(FIELDS.map((f) => [f.id, { branch: 1, slider: f.id === 1 ? 700 : 500, num: false }])));
-    const fState = (id) => fs[id];
-    const setters = useMemo(() => Object.fromEntries(FIELDS.map((f) => [f.id, (patch) => setFs((s) => ({ ...s, [f.id]: { ...s[f.id], ...patch } }))])), []);
-    const setF = (id) => setters[id];
     // il ramo globale si applica anche a tutti i campi (che restano modificabili)
-    const changeGlobalBranch = (v) => {
-        setGBranch(v);
-        setFs((s) => Object.fromEntries(Object.entries(s).map(([k, st]) => [k, { ...st, branch: v }])));
-    };
+    const changeGlobalBranch = (v) => { setGBranch(v); S.setAllBranch(v); };
 
     const setNum = (k) => (v) => setInput((s) => ({ ...s, [k]: Number(v) || 0 }));
     const valid = input.b > 0 && input.h > input.dInf + input.dSup && input.dInf > 0 && input.dSup > 0;
+    const data = useMemo(() => (valid ? buildDomainData(input) : null), [input, valid]);
 
-    const data = useMemo(() => {
-        if (!valid) return null;
-        const pos = branchParams(input, 1), neg = branchParams(input, -1);
-        return { pos, neg, f1pos: field1(pos), f1neg: field1(neg), f2pos: field2(pos), f2neg: field2(neg), f3pos: field3(pos), f3neg: field3(neg), f4pos: field4(pos), f4neg: field4(neg), f5pos: field5(pos), f5neg: field5(neg), f6pos: field6(pos), f6neg: field6(neg), pt: pureTension(input), ext: domainExtents(input) };
-    }, [input, valid]);
-
-    // punto del cursore globale (solo nei campi già implementati)
+    // punto del cursore globale e punti dei campi aperti
     const gXi = sliderToXi(gSlider, -Infinity, Infinity);
-    const global = data && (() => {
-        const p = gBranch > 0 ? data.pos : data.neg;
-        const field = fieldOf(p, gXi);
-        const pt = field === 1 ? (gBranch > 0 ? data.f1pos : data.f1neg).point(gXi)
-            : field === 2 ? (gBranch > 0 ? data.f2pos : data.f2neg).point(gXi)
-                : field === 3 ? (gBranch > 0 ? data.f3pos : data.f3neg).point(gXi)
-                    : field === 4 ? (gBranch > 0 ? data.f4pos : data.f4neg).point(gXi)
-                        : field === 5 ? (gBranch > 0 ? data.f5pos : data.f5neg).point(gXi)
-                            : (gBranch > 0 ? data.f6pos : data.f6neg).point(gXi);
-        return { field, pt };
-    })();
-    // punti dei campi aperti (cursore del campo)
-    const locals = data ? FIELDS.filter((f) => f.ready && open[f.id] && !(data.pos.ductile && f.id <= 2)).map((f) => {
-        const st = fState(f.id);
-        if (f.id === 6) {
-            const f6 = st.branch > 0 ? data.f6pos : data.f6neg;
-            return { id: 6, pt: f6.point(sliderToXi(st.slider, f6.xi0, Infinity)) };
-        }
-        if (f.id === 5) {
-            const f5 = st.branch > 0 ? data.f5pos : data.f5neg;
-            return { id: 5, pt: f5.point(sliderToXi(st.slider, 1, f5.xiE)) };
-        }
-        if (f.id === 4) {
-            const f4 = st.branch > 0 ? data.f4pos : data.f4neg;
-            return { id: 4, pt: f4.point(sliderToXi(st.slider, f4.xiN, 1)) };
-        }
-        if (f.id === 3) {
-            const f3 = st.branch > 0 ? data.f3pos : data.f3neg;
-            return { id: 3, pt: f3.point(sliderToXi(st.slider, f3.xiH, f3.xiN)) };
-        }
-        if (f.id === 2) {
-            const f2 = st.branch > 0 ? data.f2pos : data.f2neg;
-            return { id: 2, pt: f2.point(sliderToXi(st.slider, 0, f2.xiH)) };
-        }
-        const fl = st.branch > 0 ? data.f1pos : data.f1neg;
-        return { id: f.id, pt: fl.point(sliderToXi(st.slider, -Infinity, 0)) };
-    }) : [];
+    const global = data && (() => { const pt = pointAt(data, gBranch, gXi); return { field: pt.field, pt }; })();
+    const locals = data ? S.localsOf(data) : [];
 
     // pedici HTML piccoli e vicini alla lettera (abbassati di poco); KaTeX non usa <sub>
     return (
@@ -354,18 +304,7 @@ export default function DomainFieldsTool() {
                             </div>
                         </Card>
 
-                        {FIELDS.map((f) => (
-                            <Accordion key={f.id} field={f} isOpen={!!open[f.id]} onToggle={() => setOpen((s) => ({ ...s, [f.id]: !s[f.id] }))}>
-                                {f.id <= 2 && data.pos.ductile ? <DuctileAbsent field={f.id} data={data} />
-                                    : f.id === 1 ? <FieldOneM data={data} st={fState(1)} set={setF(1)} />
-                                    : f.id === 2 ? <FieldTwoM data={data} st={fState(2)} set={setF(2)} />
-                                        : f.id === 3 ? <FieldThreeM data={data} st={fState(3)} set={setF(3)} />
-                                            : f.id === 4 ? <FieldFourM data={data} st={fState(4)} set={setF(4)} />
-                                                : f.id === 5 ? <FieldFiveM data={data} st={fState(5)} set={setF(5)} />
-                                                    : f.id === 6 ? <FieldSixM data={data} st={fState(6)} set={setF(6)} />
-                                            : <Pending field={f} data={data} />}
-                            </Accordion>
-                        ))}
+                        <FieldsAccordions data={data} S={S} />
 
                         {/* disegno unico: tutti i campi, comandato dal cursore e dal ramo globali */}
                         <AllFieldsCard data={data} branch={gBranch} onBranch={changeGlobalBranch} slider={gSlider} onSlider={setGSlider}
@@ -373,6 +312,81 @@ export default function DomainFieldsTool() {
                     </>
                 )}
             </div>
+        </div>
+    );
+}
+
+// ---------------------------------------------------------------------------
+// STATO E ACCORDION DEI CAMPI (laboratorio e Verifica sezione)
+// ---------------------------------------------------------------------------
+// intervallo di ξ di un campo, per il suo cursore
+function fieldRange(data, sign, id) {
+    const g = (k) => data[`f${k}${sign > 0 ? "pos" : "neg"}`];
+    return id === 1 ? [-Infinity, 0] : id === 2 ? [0, g(2).xiH] : id === 3 ? [g(3).xiH, g(3).xiN]
+        : id === 4 ? [g(4).xiN, 1] : id === 5 ? [1, g(5).xiE] : [g(6).xi0, Infinity];
+}
+// inverso di sliderToXi: ξ → posizione del cursore (0…1000)
+function xiToSliderF(xi, a, b) {
+    if (a === -Infinity) { if (xi === -Infinity) return 0; const u = (b - xi) / (1 + b - xi); return Math.round(1000 * (1 - u)); }
+    if (b === Infinity) { if (xi === Infinity) return 1000; const u = (xi - a) / (1 + xi - a); return Math.round(1000 * u); }
+    return Math.round((1000 * (xi - a)) / (b - a));
+}
+// stato di tutti i campi creato subito: riferimenti stabili → i campi non toccati
+// non si ridisegnano (React.memo) quando si muove il cursore di un altro campo
+function useFieldsState(initialBranch = 1, initialOpen = { 1: true }, initialSliders = {}) {
+    const [open, setOpen] = useState(initialOpen);
+    const [fs, setFs] = useState(() => Object.fromEntries(FIELDS.map((f) => [f.id, { branch: initialBranch, slider: initialSliders[f.id] ?? (f.id === 1 ? 700 : 500), num: false }])));
+    const setters = useMemo(() => Object.fromEntries(FIELDS.map((f) => [f.id, (patch) => setFs((st) => ({ ...st, [f.id]: { ...st[f.id], ...patch } }))])), []);
+    return {
+        open, fs,
+        toggle: (id) => setOpen((o) => ({ ...o, [id]: !o[id] })),
+        setF: (id) => setters[id],
+        setAllBranch: (v) => setFs((st) => Object.fromEntries(Object.entries(st).map(([k, x]) => [k, { ...x, branch: v }]))),
+        // punto corrente di ogni campo aperto (per il dominio)
+        localsOf: (data) => FIELDS.filter((f) => open[f.id] && !(data.pos.ductile && f.id <= 2)).map((f) => {
+            const st = fs[f.id], [a, b] = fieldRange(data, st.branch, f.id);
+            return { id: f.id, pt: data[`f${f.id}${st.branch > 0 ? "pos" : "neg"}`].point(sliderToXi(st.slider, a, b)) };
+        }),
+    };
+}
+function FieldsAccordions({ data, S }) {
+    return (
+        <>
+            {FIELDS.map((f) => (
+                <Accordion key={f.id} field={f} isOpen={!!S.open[f.id]} onToggle={() => S.toggle(f.id)}>
+                    {f.id <= 2 && data.pos.ductile ? <DuctileAbsent field={f.id} data={data} />
+                        : f.id === 1 ? <FieldOneM data={data} st={S.fs[1]} set={S.setF(1)} />
+                            : f.id === 2 ? <FieldTwoM data={data} st={S.fs[2]} set={S.setF(2)} />
+                                : f.id === 3 ? <FieldThreeM data={data} st={S.fs[3]} set={S.setF(3)} />
+                                    : f.id === 4 ? <FieldFourM data={data} st={S.fs[4]} set={S.setF(4)} />
+                                        : f.id === 5 ? <FieldFiveM data={data} st={S.fs[5]} set={S.setF(5)} />
+                                            : <FieldSixM data={data} st={S.fs[6]} set={S.setF(6)} />}
+                </Accordion>
+            ))}
+        </>
+    );
+}
+// pannello completo dei campi (dominio + accordion), usato dalla Verifica sezione:
+// il campo dello stato di progetto si apre già posizionato su ξ di progetto
+export function FieldsPanel({ data, design = null }) {
+    const sign = design?.sign ?? 1, rd = design?.rd ?? null;
+    const S = useFieldsState(sign, rd ? { [rd.field]: true } : { 1: true },
+        rd ? { [rd.field]: xiToSliderF(rd.xi, ...fieldRange(data, sign, rd.field)) } : {});
+    const [adim, setAdim] = useState(false);
+    const [branch, setBranch] = useState(sign);
+    return (
+        <div className="space-y-4 [&_sub]:bottom-[-0.12em] [&_sub]:text-[0.72em]">
+            <Card title="Dominio M-N per campi" right={
+                <Segmented value={adim ? "adim" : "dim"} onChange={(v) => setAdim(v === "adim")}
+                    options={[{ value: "dim", label: "N, M" }, { value: "adim", label: "ν, μ" }]} />}>
+                <DomainChart data={data} adim={adim} locals={S.localsOf(data)} design={design} />
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3">
+                    <span className="text-xs leading-5 text-slate-600">Apri un campo per esplorarlo: il suo stato corrente compare nel dominio (punto verde).{rd ? ` Il campo ${rd.field} (stato di progetto) è già aperto su ξ = ${xiTxt(rd.xi)}.` : ""}</span>
+                    <Segmented value={branch} onChange={(v) => { setBranch(v); S.setAllBranch(v); }}
+                        options={[{ value: 1, label: "Ramo M > 0" }, { value: -1, label: "Ramo M < 0" }]} />
+                </div>
+            </Card>
+            <FieldsAccordions data={data} S={S} />
         </div>
     );
 }
@@ -2051,7 +2065,7 @@ function FieldSix({ data, st, set }) {
 }
 
 // colonne della tabella dei punti caratteristici (comuni a tutti i campi)
-const COL_EPSSP = { key: "es", h: <>ε′<sub>s</sub> [‰]</>, v: (pt) => fmtNum(pt.epsSP * 1000, 3) };
+const COL_EPSSP = { key: "esp", h: <>ε′<sub>s</sub> [‰]</>, v: (pt) => fmtNum(pt.epsSP * 1000, 3) };
 const COL_ALPHA = { key: "a", h: <>α′<sub>s</sub></>, v: (pt) => fmtNum(pt.alphaSP, 4) };
 const COL_EPSC = { key: "ec", h: <>ε<sub>c</sub> [‰]</>, v: (pt) => fmtNum(pt.epsC * 1000, 3) };
 const COL_PSI = { key: "psi", h: "ψ", v: (pt) => fmtNum(pt.psi, 4) };
@@ -2425,7 +2439,7 @@ function StrainDiagram({ p, f, xi, branch, mode = "fields", tri = "cur", onSlide
 }
 
 // Dominio con assi fissi centrati in 0 (campi implementati, cursore globale e dei campi)
-function DomainChart({ data, adim, global, locals }) {
+export function DomainChart({ data, adim, global = null, locals = [], design = null }) {
     const W = 560, H = 340, m = 34;
     const X = (pt) => (adim ? pt.nu : pt.N), Y = (pt) => (adim ? pt.mu : pt.M);
     const pos = data.f1pos, neg = data.f1neg;
@@ -2437,7 +2451,9 @@ function DomainChart({ data, adim, global, locals }) {
         const e = Math.pow(10, Math.floor(Math.log10(v || 1)));
         return [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10].map((k) => k * e).find((k) => k >= v * 1.05);
     };
-    const xMax = nice(adim ? data.ext.nu : data.ext.N), yMax = nice(adim ? data.ext.mu : data.ext.M);
+    // il punto di progetto (anche fuori dominio) resta dentro il grafico
+    const xMax = nice(Math.max(adim ? data.ext.nu : data.ext.N, design ? Math.abs(adim ? design.nu : design.N) : 0));
+    const yMax = nice(Math.max(adim ? data.ext.mu : data.ext.M, design ? Math.abs(adim ? design.mu : design.M) : 0));
     const cx = W / 2, cy = H / 2, kx = (W / 2 - m) / xMax, ky = (H / 2 - m) / yMax;
     const sx = (v) => cx + v * kx;
     const sy = (v) => cy - v * ky;
@@ -2510,6 +2526,18 @@ function DomainChart({ data, adim, global, locals }) {
                         <text x={sx(X(l.pt)) + 7} y={sy(Y(l.pt)) + 12} fontSize="9" fill={CUR_COL} fontWeight="bold">{l.id}</text>
                     </g>
                 ))}
+                {/* punto di progetto E_d (N_Ed, M_Ed) e M_Rd allo stesso N_Ed */}
+                {design && (() => {
+                    const col = design.ok ? "#0284c7" : "#dc2626", ex = sx(X(design)), ey = sy(Y(design));
+                    return (
+                        <g>
+                            {design.rd && <line x1={ex} y1={ey} x2={sx(X(design.rd))} y2={sy(Y(design.rd))} stroke={col} strokeWidth="1" strokeDasharray="3 3" />}
+                            {design.rd && <circle cx={sx(X(design.rd))} cy={sy(Y(design.rd))} r="4.5" fill="#fff" stroke={col} strokeWidth="2"><title>M_Rd(N_Ed)</title></circle>}
+                            <circle cx={ex} cy={ey} r="5.5" fill={col} stroke="#fff" strokeWidth="1.5"><title>E_d = (N_Ed, M_Ed)</title></circle>
+                            <text x={ex + 8} y={ey - 8} fontSize="10.5" fontWeight="bold" fill={col} stroke="#fff" strokeWidth="3" paintOrder="stroke">{ss("E_d")}</text>
+                        </g>
+                    );
+                })()}
                 {/* punto del cursore globale */}
                 {global?.pt && <rect x={sx(X(global.pt)) - 4.5} y={sy(Y(global.pt)) - 4.5} width="9" height="9" fill="none" stroke={GLB_COL} strokeWidth="2" transform={`rotate(45 ${sx(X(global.pt))} ${sy(Y(global.pt))})`} />}
             </svg>
@@ -2529,27 +2557,10 @@ function DomainChart({ data, adim, global, locals }) {
                 <span><span className="mr-1 inline-block h-2 w-2 rounded-full align-middle" style={{ background: LIMINF_COL }} />compressione uniforme (ξ → ∞)</span>
                 <span><span className="mr-1 inline-block h-2 w-2 rounded-full border-2 align-middle" style={{ borderColor: SUB_COL }} />trazione / compressione pura (M = 0)</span>
                 <span><span className="mr-1 inline-block h-2 w-2 rounded-full align-middle" style={{ background: CUR_COL }} />cursore del campo</span>
-                <span><span className="mr-1 inline-block h-2 w-2 rotate-45 border-2 align-middle" style={{ borderColor: GLB_COL }} />cursore globale</span>
+                {global && <span><span className="mr-1 inline-block h-2 w-2 rotate-45 border-2 align-middle" style={{ borderColor: GLB_COL }} />cursore globale</span>}
+                {design && <span><span className="mr-1 inline-block h-2 w-2 rounded-full align-middle" style={{ background: design.ok ? "#0284c7" : "#dc2626" }} />{hs("E_d = (N_Ed, M_Ed)")}, cerchio vuoto: {hs("M_Rd(N_Ed)")}</span>}
             </div>
             <p className="mt-1 text-center text-[11px] text-slate-400">N &gt; 0 compressione. Assi fissi, dimensionati sull'intero dominio: il dominio è completo (campi 1–6). Pieno: ramo M &gt; 0; tratteggiato: ramo M &lt; 0.</p>
-        </div>
-    );
-}
-
-function Pending({ field, data }) {
-    const p = data.pos;
-    const xiH = p.epsCu / (p.epsSu + p.epsCu);
-    return (
-        <div className="flex items-start gap-3 rounded-xl bg-slate-50 p-3 text-sm text-slate-500">
-            <Hourglass size={16} className="mt-0.5 shrink-0 text-slate-400" />
-            <div>
-                <p>In attesa delle pagine degli appunti per il {field.title.toLowerCase()}.</p>
-                {field.id === 2 && (
-                    <div className="tex-left mt-1">
-                        <Tex display>{String.raw`0\le\xi\le\xi_{2/3}=\dfrac{\varepsilon_{cu}}{\varepsilon_{su}+\varepsilon_{cu}}=\dfrac{${T(p.epsCu, 4)}}{${T(p.epsSu, 4)}+${T(p.epsCu, 4)}}=${T(xiH, 4)}`}</Tex>
-                    </div>
-                )}
-            </div>
         </div>
     );
 }
@@ -2737,24 +2748,28 @@ function specAll(p, F, xi) {
     };
 }
 
-function AllFieldsCard({ data, branch, onBranch, slider, onSlider, mode, onMode, pt }) {
+export function AllFieldsCard({ data, branch, onBranch, slider, onSlider, mode, onMode, pt: ptIn = null, actions = null, title = "Disegno unico: tutti i campi", intro = null, xi: xiExact = null }) {
     const p = branch > 0 ? data.pos : data.neg;
     const F = branch > 0
         ? { f1: data.f1pos, f2: data.f2pos, f3: data.f3pos, f4: data.f4pos, f5: data.f5pos, f6: data.f6pos }
         : { f1: data.f1neg, f2: data.f2neg, f3: data.f3neg, f4: data.f4neg, f5: data.f5neg, f6: data.f6neg };
-    const xi = sliderToXi(slider, -Infinity, Infinity);
+    const xi = xiExact ?? sliderToXi(slider, -Infinity, Infinity); // ξ esatto se passato (es. stato di progetto)
+    const pt = ptIn ?? pointAt(data, branch, xi);
     const spec = specAll(p, F, xi);
     const field = fieldOf(p, xi);
     const fin = Number.isFinite(xi);
     return (
-        <Card title="Disegno unico: tutti i campi" right={
-            <Segmented value={branch} onChange={onBranch} options={[{ value: 1, label: "Ramo M > 0" }, { value: -1, label: "Ramo M < 0" }]} />}>
-            <p className="mb-3 text-xs leading-5 text-slate-600">
+        <Card title={title} right={
+            <div className="flex flex-wrap items-center gap-2">
+                {actions}
+                <Segmented value={branch} onChange={onBranch} options={[{ value: 1, label: "Ramo M > 0" }, { value: -1, label: "Ramo M < 0" }]} />
+            </div>}>
+            {intro ?? <p className="mb-3 text-xs leading-5 text-slate-600">
                 L'asse neutro percorre tutta la sezione, da ξ → −∞ (trazione uniforme) a ξ → +∞ (compressione uniforme): il piano di
                 deformazione ruota attorno al pivot A (campi 1–2, acciaio a ε<sub>su</sub>), B (campi 3–5, calcestruzzo a ε<sub>cu</sub>)
                 e F (campo 6, ε<sub>c2</sub> a profondità t). Trascina la freccia dell'asse neutro o usa il cursore (lo stesso del dominio,
                 dove il rombo segue lo stato corrente).
-            </p>
+            </p>}
             <div className="flex w-full flex-col items-center gap-3">
                 <div className="flex w-full flex-wrap items-start justify-center gap-3">
                     <div className="flex justify-center">

@@ -4,6 +4,7 @@
 // (es. l'editor CAD), lo renderizza; altrimenti mostra un segnaposto
 // "in sviluppo" coerente col resto dell'hub.
 
+import { useLayoutEffect, useRef } from "react";
 import { Navigate, useOutletContext, useParams } from "react-router-dom";
 import { Construction } from "lucide-react";
 import { getTool, FALLBACK_ICON } from "../config/disciplines";
@@ -13,6 +14,20 @@ export default function ToolPage() {
     const { toolId } = useParams();
 
     const tool = getTool(discipline.id, toolId);
+    const sticky = !!tool?.stickyHeader;
+    const headerRef = useRef(null);
+    // intestazione fissa (strumenti con stickyHeader): la sua altezza va in
+    // --tool-header-h sull'area che scorre, così le barre sticky dello strumento
+    // si fermano subito sotto
+    useLayoutEffect(() => {
+        const el = headerRef.current, main = el?.closest("main");
+        if (!sticky || !el || !main) return undefined;
+        const set = () => main.style.setProperty("--tool-header-h", `${el.offsetHeight}px`);
+        set();
+        const ro = new ResizeObserver(set);
+        ro.observe(el);
+        return () => { ro.disconnect(); main.style.removeProperty("--tool-header-h"); };
+    }, [sticky]);
 
     if (!tool) {
         return <Navigate to={`/${discipline.id}`} replace />;
@@ -22,7 +37,9 @@ export default function ToolPage() {
 
     return (
         <div className="mx-auto max-w-6xl">
-            <header className="mb-6 flex items-start gap-4">
+            <header ref={headerRef} className={sticky
+                ? "sticky top-0 z-20 -mx-4 -mt-4 flex items-start gap-4 bg-slate-100 px-4 pb-6 pt-4 sm:-mx-6 sm:-mt-6 sm:px-6 sm:pt-6"
+                : "mb-6 flex items-start gap-4"}>
                 <div
                     className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl ${discipline.accent.bg} ${discipline.accent.text}`}
                 >

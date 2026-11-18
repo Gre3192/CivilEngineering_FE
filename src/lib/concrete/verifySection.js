@@ -1,22 +1,19 @@
 // src/lib/concrete/verifySection.js
 //
 // Verifica a pressoflessione retta (SLU) di una sezione rettangolare in c.a.
-// con armatura assegnata, mediante costruzione del dominio di resistenza M-N.
-// Impostazione Tecnica delle Costruzioni (NTC2018 / EC2).
+// con armatura assegnata, mediante il dominio di resistenza M-N costruito
+// CAMPO PER CAMPO in forma chiusa (vedi domainFields.js e il laboratorio
+// "Dominio M-N per campi"): pivot A (acciaio a ε_su), B (cls a ε_cu),
+// C (cls a ε_c2 / ε_c3, sezione interamente compressa); ψ, λ e α dai legami.
 //
-// Ipotesi:
-//  - conservazione delle sezioni piane, perfetta aderenza;
-//  - calcestruzzo: stress-block (lambda=0.8, eta=1.0 per fck<=50), non reagente
-//    a trazione;
-//  - acciaio elasto-plastico, Es=200 GPa, deformazione limite eps_su;
-//  - rottura definita dai pivot A (acciaio teso a eps_su), B (cls a eps_cu),
-//    C (cls a eps_c2, sezione interamente compressa).
-//
-// Convenzioni: compressione POSITIVA; N>0 compressione; M riferito al
-// baricentro geometrico, M>0 tende le fibre inferiori (armatura As).
-// Lunghezze mm, forze N, momenti N*mm. Input NEd in kN, MEd in kNm.
+// Convenzioni: N > 0 compressione; M riferito a h/2, M > 0 tende le fibre
+// inferiori (armatura A_s, copriferro c). Input NEd in kN, MEd in kNm.
+// Il punto (N_Ed, M_Ed) è verificato se, allo stesso N, M_Rd,− ≤ M_Ed ≤ M_Rd,+.
+
+import { buildDomainData, concreteParams, verifyDomain } from "./domainFields";
 
 const ES = 200000; // modulo elastico acciaio [MPa]
+const EPS_UD = 0.0675; // ε_ud = 0,9·ε_uk (B450C)
 
 export const DEFAULT_VERIFY_INPUT = {
     b: 300,
@@ -33,22 +30,16 @@ export const DEFAULT_VERIFY_INPUT = {
     NEd: 0, // sforzo normale di progetto [kN] (compressione +)
     MEd: 150, // momento di progetto [kNm]
     concreteModel: "rectangular", // diagramma costitutivo del cls
-    steelModel: "ep", // "ep" elasto-plastico | "hardening" incrudente
+    steelModel: "ep", // "ep" | "hardening" | "ductile"
     ks: 1.15, // ft/fy (incrudimento acciaio; B450C: k >= 1.15)
 };
 
 // Modelli costitutivi dell'acciaio selezionabili.
 export const STEEL_MODELS = [
-    { id: "ep", label: "Elasto-plastico" },
+    { id: "ep", label: "Elasto-plastico (εud = 67,5‰)" },
     { id: "hardening", label: "Incrudente (k_s)" },
+    { id: "ductile", label: "Indefinitamente duttile" },
 ];
-
-const EPS_CU = 0.0035; // 3.5 permille (deformazione ultima cls)
-const EPS_C2 = 0.002; // 2.0 permille (parabola-rettangolo)
-const EPS_C3 = 0.00175; // 1.75 permille (triangolo-rettangolo / bilineare)
-const EPS_SU = 0.0675; // eps_ud ~ 0.9*eps_uk (B450C)
-const LAMBDA = 0.8;
-const ETA = 1.0;
 
 // Diagrammi costitutivi del calcestruzzo selezionabili.
 export const CONCRETE_MODELS = [
@@ -57,339 +48,75 @@ export const CONCRETE_MODELS = [
     { id: "bilinear", label: "Triangolo-rettangolo (bilineare)" },
 ];
 
-// Deformazione al "ginocchio" del diagramma (inizio del tratto costante),
-// usata anche come deformazione del pivot C (sezione tutta compressa).
-function pivotStrain(model) {
-    return model === "bilinear" ? EPS_C3 : EPS_C2;
-}
-
-// Tensione del calcestruzzo per un dato diagramma costitutivo (compressione +).
-function sigmaC(eps, model, fcd) {
-    if (eps <= 0) return 0;
-    if (model === "parabola") {
-        return eps >= EPS_C2 ? fcd : fcd * (1 - Math.pow(1 - eps / EPS_C2, 2));
-    }
-    if (model === "bilinear") {
-        return eps >= EPS_C3 ? fcd : (fcd * eps) / EPS_C3;
-    }
-    return fcd; // rettangolo: tensione costante eta*fcd (gestito a parte)
-}
-
-// Coefficienti psi (riempimento) e lambda (posizione baricentro, dalla fibra
-// compressa estrema, in frazione di x) del diagramma parabola-rettangolo, in
-// funzione della deformazione eps_c della fibra estrema (n=2, fck<=50).
-// Formule da "Coefficienti parabola-rettangolo" (appunti).
-export function psiLambdaParabola(epsC) {
-    const e2 = EPS_C2;
-    if (epsC <= e2) {
-        const psi = (epsC / (3 * e2 * e2)) * (3 * e2 - epsC);
-        const lam = (4 * e2 - epsC) / (4 * (3 * e2 - epsC));
-        return { psi, lam };
-    }
-    const psi = 1 - (1 / 3) * (e2 / epsC);
-    const lam = (6 * epsC * epsC - 4 * epsC * e2 + e2 * e2) / (4 * epsC * (3 * epsC - e2));
-    return { psi, lam };
-}
-
-// Tensione dell'acciaio (compressione/trazione) secondo il modello scelto.
-//  - "ep": elasto-plastico (plateau a fyd)
-//  - "hardening": incrudente, sigma sale da fyd (a eps_yd) a ks*fyd (a eps_ud)
-function sigmaSteel(eps, fyd, model, ks) {
-    const epsYd = fyd / ES;
-    const a = Math.abs(eps);
-    const s = Math.sign(eps);
-    if (a <= epsYd) return ES * eps; // tratto elastico
-    if (model === "hardening") {
-        if (a >= EPS_SU) return s * ks * fyd;
-        return s * (fyd + ((a - epsYd) / (EPS_SU - epsYd)) * (ks - 1) * fyd);
-    }
-    return s * fyd; // elasto-plastico
-}
-
-// Risultante di compressione del calcestruzzo e suo momento rispetto al
-// baricentro. Il rettangolo (stress-block) e' in forma chiusa; parabola e
-// bilineare sono integrati numericamente sulla zona compressa.
-function concreteResultant(x, curv, p) {
-    const { b, h, fcd, model } = p;
-    if (x <= 0) return { Nc: 0, Mc: 0 };
-
-    if (model === "rectangular") {
-        const a = Math.min(LAMBDA * x, h);
-        const Nc = ETA * fcd * b * a;
-        return { Nc, Mc: Nc * (h / 2 - a / 2) };
-    }
-
-    // Parabola-rettangolo: forma chiusa con psi/lambda quando l'asse neutro e'
-    // interno alla sezione (x <= h); altrimenti integrazione numerica.
-    if (model === "parabola" && x <= h) {
-        const epsTop = Math.min(curv * x, EPS_CU);
-        const { psi, lam } = psiLambdaParabola(epsTop);
-        const Nc = psi * fcd * b * x;
-        return { Nc, Mc: Nc * (h / 2 - lam * x) };
-    }
-
-    const yEnd = Math.min(x, h);
-    const n = 48;
-    const dy = yEnd / n;
-    let Nc = 0;
-    let Mc = 0;
-    for (let i = 0; i < n; i++) {
-        const y = (i + 0.5) * dy;
-        const s = sigmaC(curv * (x - y), model, fcd);
-        if (s <= 0) continue;
-        const dN = s * b * dy;
-        Nc += dN;
-        Mc += dN * (h / 2 - y);
-    }
-    return { Nc, Mc };
-}
-
 // Metadati dei campi di rottura (1..6).
 export const FAILURE_FIELDS = {
-    1: { id: 1, label: "Campo 1", desc: "Trazione (asse neutro esterno)" },
+    1: { id: 1, label: "Campo 1", desc: "Trazione, asse neutro esterno (pivot A)" },
     2: { id: 2, label: "Campo 2", desc: "Pivot A: acciaio a ε_su, cls non al limite" },
-    3: { id: 3, label: "Campo 3", desc: "Pivot B: acciaio snervato (duttile)" },
+    3: { id: 3, label: "Campo 3", desc: "Pivot B: acciaio teso snervato" },
     4: { id: 4, label: "Campo 4", desc: "Pivot B: acciaio teso non snervato" },
     5: { id: 5, label: "Campo 5", desc: "Pivot B: asse neutro sotto l'armatura tesa" },
     6: { id: 6, label: "Campo 6", desc: "Pivot C: sezione interamente compressa" },
 };
 
-// Classifica il campo di rottura in base alla posizione x dell'asse neutro.
-function classifyField(x, p) {
-    if (x <= 0) return 1; // tutta la sezione tesa
-    if (x <= p.xAB) return 2; // pivot A
-    if (x <= p.xLim) return 3; // pivot B, acciaio snervato
-    if (x <= p.d) return 4; // pivot B, acciaio teso non snervato
-    if (x <= p.h) return 5; // pivot B, asse neutro sotto As
-    return 6; // pivot C
-}
-
-// Punto del dominio per una data posizione x dell'asse neutro (dal lembo
-// compresso). Restituisce {x, N, M} in N e N*mm.
-function domainPoint(x, p) {
-    const { h, d, dPrime, As, AsPrime, fyd, xAB, yC, epsC0, steelModel, ks } = p;
-
-    let curv; // curvatura (deformazione per unita' di lunghezza)
-    if (x <= xAB) {
-        // pivot A: acciaio teso a eps_su (comprende x<=0, trazione)
-        curv = EPS_SU / (d - x);
-    } else if (x <= h) {
-        // pivot B: fibra compressa a eps_cu
-        curv = EPS_CU / x;
-    } else {
-        // pivot C: rotazione attorno al punto a eps_c0 (2 o 1.75 permille)
-        curv = epsC0 / (x - yC);
-    }
-
-    // deformazione a profondita' y (compressione positiva)
-    const strainAt = (y) => curv * (x - y);
-
-    // Risultante di compressione del calcestruzzo (diagramma scelto)
-    const { Nc, Mc } = concreteResultant(x, curv, p);
-
-    // Acciai (modello elasto-plastico o incrudente)
-    const sigmaS = sigmaSteel(strainAt(d), fyd, steelModel, ks);
-    const sigmaSp = sigmaSteel(strainAt(dPrime), fyd, steelModel, ks);
-    const Fs = As * sigmaS;
-    const Fsp = AsPrime * sigmaSp;
-
-    const N = Nc + Fs + Fsp;
-    const M = Mc + Fs * (h / 2 - d) + Fsp * (h / 2 - dPrime);
-
-    return { x, N, M, field: classifyField(x, p) };
-}
-
-// Traccia un ramo del dominio (M>0, armatura As tesa in basso).
-function buildBranch(p) {
-    const pts = [];
-    const xStart = -3 * p.h;
-    const xEnd = 12 * p.h;
-    const steps = 700;
-
-    for (let i = 0; i <= steps; i++) {
-        const x = xStart + ((xEnd - xStart) * i) / steps;
-        pts.push(domainPoint(x, p));
-    }
-    return pts;
-}
-
-// Interpola M sul ramo per un dato N (N monotono crescente con x).
-// Restituisce { M, x, field } oppure null se fuori dal range assiale.
-function momentAtN(branch, Ntarget) {
-    for (let i = 1; i < branch.length; i++) {
-        const a = branch[i - 1];
-        const b = branch[i];
-        if (
-            (Ntarget >= a.N && Ntarget <= b.N) ||
-            (Ntarget <= a.N && Ntarget >= b.N)
-        ) {
-            const t = b.N === a.N ? 0 : (Ntarget - a.N) / (b.N - a.N);
-            return {
-                M: a.M + t * (b.M - a.M),
-                x: a.x + t * (b.x - a.x),
-                field: t < 0.5 ? a.field : b.field,
-            };
-        }
-    }
-    return null; // fuori dominio (N eccessivo)
+// dati della verifica → dati del dominio per campi
+export function toFieldsInput(input) {
+    return {
+        b: input.b, h: input.h,
+        dInf: input.c, dSup: input.cPrime,
+        As: input.As, AsP: input.AsPrime,
+        fck: input.fck, fyk: input.fyk,
+        alphaCc: input.alphaCc, gammaC: input.gammaC, gammaS: input.gammaS,
+        epsSu: EPS_UD,
+        epsCu: concreteParams(input.fck).epsCu,
+        concLaw: { rectangular: "stressblock", parabola: "parabola", bilinear: "bilinear" }[input.concreteModel] ?? "stressblock",
+        steelLaw: { ep: "epp", hardening: "hard", ductile: "ductile" }[input.steelModel] ?? "epp",
+        k: input.ks ?? 1.15,
+    };
 }
 
 export function verifySection(input) {
-    const {
-        b,
-        h,
-        c,
-        cPrime,
-        As,
-        AsPrime,
-        fck,
-        fyk,
-        alphaCc,
-        gammaC,
-        gammaS,
-        NEd: NEd_kN,
-        MEd: MEd_kNm,
-        concreteModel = "rectangular",
-        steelModel = "ep",
-        ks = 1.15,
-    } = input;
+    const { b, h, c, cPrime, As, AsPrime, fck, fyk, gammaS, NEd, MEd, concreteModel = "rectangular", steelModel = "ep", ks = 1.15 } = input;
 
     const errors = [];
     if (!(b > 0)) errors.push("La base b deve essere positiva.");
     if (!(h > 0)) errors.push("L'altezza h deve essere positiva.");
+    if (!(c > 0) || !(cPrime > 0)) errors.push("I copriferri c e c' devono essere positivi.");
+    if (h > 0 && c > 0 && cPrime > 0 && !(h > c + cPrime)) errors.push("I copriferri sono troppo grandi rispetto ad h (serve h > c + c').");
     if (!(As >= 0)) errors.push("L'armatura tesa As non e' valida.");
     if (!(AsPrime >= 0)) errors.push("L'armatura compressa As' non e' valida.");
     if (!(fck > 0)) errors.push("Selezionare una classe di calcestruzzo.");
-
-    const d = h - c;
-    const dPrime = cPrime;
-    if (!(d > 0)) errors.push("Il copriferro c e' troppo grande rispetto ad h.");
-
+    if (!(fyk > 0) || !(gammaS > 0)) errors.push("Acciaio non valido.");
+    if (steelModel === "hardening" && !(ks >= 1)) errors.push("k_s deve essere almeno 1.");
     if (errors.length > 0) return { ok: false, errors };
 
-    const fcd = (alphaCc * fck) / gammaC;
-    const fyd = fyk / gammaS;
-    const epsYd = fyd / ES;
-    const epsC0 = pivotStrain(concreteModel); // deformazione del pivot C
-    const yC = h * (1 - epsC0 / EPS_CU);
-
-    // xAB: confine campo 2/3 (pivot A/B); xLim: confine campo 3/4 (snervamento).
-    const xAB = (d * EPS_CU) / (EPS_CU + EPS_SU);
-    const xLim = (d * EPS_CU) / (EPS_CU + epsYd);
-
-    const p = {
-        b, h, d, dPrime, As, AsPrime, fcd, fyd, xAB, xLim, yC, epsC0,
-        model: concreteModel, steelModel, ks,
-    };
-
-    // Ramo positivo (As tesa in basso)
-    const posBranch = buildBranch(p);
-
-    // Ramo negativo: sezione ribaltata, momento cambiato di segno.
-    // I confini dei campi vanno ricalcolati sull'altezza utile ribaltata.
-    const dFlip = h - dPrime;
-    const pFlip = {
-        ...p,
-        As: AsPrime,
-        AsPrime: As,
-        d: dFlip,
-        dPrime: h - d,
-        xAB: (dFlip * EPS_CU) / (EPS_CU + EPS_SU),
-        xLim: (dFlip * EPS_CU) / (EPS_CU + epsYd),
-    };
-    const negBranch = buildBranch(pFlip).map((pt) => ({
-        x: pt.x,
-        N: pt.N,
-        M: -pt.M,
-        field: pt.field,
-    }));
-
-    // Estremi assiali
-    const NRdMin = posBranch[0].N; // trazione pura (~ -(As+As')*fyd)
-    const NRdMax = posBranch[posBranch.length - 1].N; // compressione ~ massima
-
-    // Verifica al valore NEd
-    const NEd = NEd_kN * 1000;
-    const MEd = MEd_kNm * 1e6;
-    const resAtN = momentAtN(posBranch, NEd); // {M,x,field} o null
-    const res0 = momentAtN(posBranch, 0);
-    const MRdAtN = resAtN ? resAtN.M : null;
-    const MRd0 = res0 ? res0.M : null;
-
-    // Momento resistente massimo (punto bilanciato) del ramo positivo
-    let MRdMax = -Infinity;
-    let NatMmax = 0;
-    for (const pt of posBranch) {
-        if (pt.M > MRdMax) {
-            MRdMax = pt.M;
-            NatMmax = pt.N;
-        }
-    }
-
-    const axialInRange = NEd >= NRdMin && NEd <= NRdMax;
-    const utilization =
-        MRdAtN && MRdAtN > 0 ? Math.abs(MEd) / MRdAtN : Infinity;
-    const verified = axialInRange && MRdAtN !== null && Math.abs(MEd) <= MRdAtN;
-    const failureField = resAtN ? resAtN.field : null;
-
-    // Coefficienti psi/lambda del cls al punto di progetto (solo parabola, x<=h)
-    let psiDesign = null;
-    let lamDesign = null;
-    if (resAtN && concreteModel === "parabola" && resAtN.x > 0 && resAtN.x <= h) {
-        const xD = resAtN.x;
-        let curvD;
-        if (xD <= xAB) curvD = EPS_SU / (d - xD);
-        else if (xD <= h) curvD = EPS_CU / xD;
-        else curvD = epsC0 / (xD - yC);
-        const { psi, lam } = psiLambdaParabola(Math.min(curvD * xD, EPS_CU));
-        psiDesign = psi;
-        lamDesign = lam;
-    }
-
-    // Dominio chiuso per il disegno (kN, kNm), con il campo di ciascun punto
-    const toKN = (pt) => ({ N: pt.N / 1000, M: pt.M / 1e6, field: pt.field });
-    const domain = [
-        ...posBranch.map(toKN),
-        ...negBranch.slice().reverse().map(toKN),
-    ];
+    const fin = toFieldsInput(input);
+    const data = buildDomainData(fin);
+    const v = verifyDomain(data, NEd, MEd);
+    const p = v.sign > 0 ? data.pos : data.neg;   // ramo del momento sollecitante
 
     return {
         ok: true,
         errors: [],
-        fcd,
-        fyd,
-        epsYd,
-        d,
-        dPrime,
-        xAB,
-        // risultati (kN, kNm)
-        NEd: NEd_kN,
-        MEd: MEd_kNm,
-        NRdMin: NRdMin / 1000,
-        NRdMax: NRdMax / 1000,
-        MRd0: MRd0 !== null ? MRd0 / 1e6 : null,
-        MRdAtN: MRdAtN !== null ? MRdAtN / 1e6 : null,
-        MRdMax: MRdMax / 1e6,
-        NatMmax: NatMmax / 1000,
-        axialInRange,
-        utilization,
-        verified,
-        failureField,
-        domain,
-        // dati per il diagramma dei piani di rottura
-        h,
-        yC,
-        xLim,
-        xDesign: resAtN ? resAtN.x : null,
-        epsCu: EPS_CU,
-        epsC2: EPS_C2,
-        epsC3: EPS_C3,
-        epsC0,
-        epsSu: EPS_SU,
+        data,
+        fcd: data.pos.fcd,
+        fyd: data.pos.fyd,
+        epsYd: data.pos.fyd / ES,
+        epsCu: data.pos.epsCu,
+        epsSu: data.pos.epsSu,
+        d: data.pos.d,
+        dPrime: cPrime,
+        NEd,
+        MEd,
+        ...v,
+        failureField: v.rd ? v.rd.field : null,
+        failureSub: v.rd ? v.rd.sub : null,
+        xiDesign: v.rd ? v.rd.xi : null,
+        xDesign: v.rd && Number.isFinite(v.rd.xi) ? v.rd.xi * p.d : null,
+        dBranch: p.d,
+        // punto di progetto per il grafico (anche adimensionale, sul ramo del momento)
+        design: { N: NEd, M: MEd, nu: (NEd * 1000) / p.bdf, mu: (MEd * 1e6) / p.bd2f, ok: v.verified, sign: v.sign, rd: v.rd },
         concreteModel,
         steelModel,
         ks,
-        psiDesign,
-        lamDesign,
     };
 }

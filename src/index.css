@@ -26,3 +26,58 @@
 .tex-left .katex-display > .katex {
     text-align: left;
 }
+
+/* Barre di scorrimento sottili e senza binario dentro i box.
+   .scroll-thin   verticale: scrollbar-gutter riserva sempre lo spazio;
+   .scroll-thin-x orizzontale (tabelle larghe): barra sempre presente, così
+                  l'altezza non cambia quando compare (il binario è trasparente). */
+.scroll-thin {
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+}
+.scroll-thin-x { overflow-x: scroll; }
+.scroll-thin::-webkit-scrollbar,
+.scroll-thin-x::-webkit-scrollbar { width: 5px; height: 5px; }
+.scroll-thin::-webkit-scrollbar-track,
+.scroll-thin-x::-webkit-scrollbar-track,
+.scroll-thin-x::-webkit-scrollbar-corner { background: transparent; }
+.scroll-thin::-webkit-scrollbar-thumb,
+.scroll-thin-x::-webkit-scrollbar-thumb { background: rgb(148 163 184 / 0.45); border-radius: 9999px; }
+.scroll-thin::-webkit-scrollbar-thumb:hover,
+.scroll-thin-x::-webkit-scrollbar-thumb:hover { background: rgb(100 116 139 / 0.7); }
+/* Firefox (niente ::-webkit-scrollbar): versione standard */
+@supports not selector(::-webkit-scrollbar) {
+    .scroll-thin, .scroll-thin-x { scrollbar-width: thin; scrollbar-color: rgb(148 163 184 / 0.45) transparent; }
+}
+
+/* Barra di scorrimento della pagina: sottile come quelle degli elenchi, senza
+   binario, con lo spazio sempre riservato (niente scatto quando compare o
+   scompare). Lo sfondo della pagina riempie anche lo spazio della barra. */
+html {
+    /* barra sempre presente (binario trasparente: senza scorrimento si vede solo
+       lo sfondo): Chrome non riserva lo spazio con scrollbar-gutter sulla radice */
+    overflow-y: scroll;
+    background-color: #f1f5f9; /* slate-100, come lo sfondo dei layout */
+}
+html::-webkit-scrollbar { width: 6px; height: 6px; }
+/* binario dello stesso colore dello sfondo (sulla radice "transparent" può
+   diventare nero): non si vede, resta solo la maniglia */
+html::-webkit-scrollbar-track,
+html::-webkit-scrollbar-corner { background: #f1f5f9; }
+html::-webkit-scrollbar-thumb { background: rgb(148 163 184 / 0.5); border-radius: 9999px; }
+html::-webkit-scrollbar-thumb:hover { background: rgb(100 116 139 / 0.75); }
+@supports not selector(::-webkit-scrollbar) {
+    html { scrollbar-width: thin; scrollbar-color: rgb(148 163 184 / 0.5) transparent; }
+}
+
+/* Area del contenuto delle pagine (sotto la navbar): stessa barra sottile della
+   pagina, sempre presente così il contenuto non scatta quando compare. */
+.page-scroll { overflow-y: scroll; background-color: #f1f5f9; }
+.page-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+.page-scroll::-webkit-scrollbar-track,
+.page-scroll::-webkit-scrollbar-corner { background: #f1f5f9; }
+.page-scroll::-webkit-scrollbar-thumb { background: rgb(148 163 184 / 0.5); border-radius: 9999px; }
+.page-scroll::-webkit-scrollbar-thumb:hover { background: rgb(100 116 139 / 0.75); }
+@supports not selector(::-webkit-scrollbar) {
+    .page-scroll { scrollbar-width: thin; scrollbar-color: rgb(148 163 184 / 0.5) transparent; }
+}

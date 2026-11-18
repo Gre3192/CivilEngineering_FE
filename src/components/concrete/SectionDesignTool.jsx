@@ -34,8 +34,10 @@ function fmt(value, dec = 2) {
     });
 }
 
-export default function SectionDesignTool() {
-    const [input, setInput] = useState(DEFAULT_INPUT);
+// initialInput: dati di partenza (es. dalla sezione di una trave); onAdopted: riceve
+// l'armatura adottata a ogni modifica (per verifica, taglio e fessurazione)
+export default function SectionDesignTool({ initialInput = null, onAdopted = null } = {}) {
+    const [input, setInput] = useState(() => (initialInput ? { ...DEFAULT_INPUT, ...initialInput } : DEFAULT_INPUT));
     const [adoptedDimensions, setAdoptedDimensions] = useState({});
     const [adoptedReinforcement, setAdoptedReinforcement] = useState({});
     const [cardCommand, setCardCommand] = useState({ id: 0, open: null });
@@ -199,6 +201,16 @@ export default function SectionDesignTool() {
     // 2 barre costruttive (reggistaffa) sul lato compresso se l'armatura compressa non serve
     const hanger = result.ok && input.hangerBars && !(adoptedCompressionBars > 0) ? { n: 2, phi: input.phiHanger || 12 } : null;
     const adoptedD = result.ok ? Math.max(1, adoptedH - coverT) : 0;
+    // armatura adottata comunicata al chiamante (travi dell'edificio)
+    const adoptedSummary = result.ok ? JSON.stringify({
+        tensionTop: !!result.tensionTop, B: adoptedB, h: adoptedH, d: adoptedD,
+        nT: adoptedTensionBars, phiT: adoptedTensionPhi, AT: checkedTensionArea,
+        nC: adoptedCompressionBars > 0 ? adoptedCompressionBars : hanger ? hanger.n : 0,
+        phiC: adoptedCompressionBars > 0 ? adoptedCompressionPhi : hanger ? hanger.phi : 0,
+        AC: adoptedCompressionBars > 0 ? (adoptedCompressionArea ?? result.AsPrimeProvided ?? 0) : hanger ? (hanger.n * Math.PI * hanger.phi ** 2) / 4 : 0,
+        hanger: !!hanger, phiStirrup: input.phiStirrup,
+    }) : null;
+    useEffect(() => { if (onAdopted && adoptedSummary) onAdopted(JSON.parse(adoptedSummary)); }, [adoptedSummary, onAdopted]);
     const drawingResult = result.ok ? {
         ...result,
         h: adoptedH,
@@ -287,7 +299,7 @@ export default function SectionDesignTool() {
             {/* -------- INPUT -------- */}
             <div className="space-y-4">
                 <div className="flex items-center justify-between gap-2">
-                    <button type="button" onClick={() => { setInput(DEFAULT_INPUT); setAdoptedDimensions({}); setAdoptedReinforcement({}); }} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50">
+                    <button type="button" onClick={() => { setInput(initialInput ? { ...DEFAULT_INPUT, ...initialInput } : DEFAULT_INPUT); setAdoptedDimensions({}); setAdoptedReinforcement({}); }} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50">
                         <RotateCcw size={14} /> Valori predefiniti
                     </button>
                     <div className="flex gap-2">
@@ -433,18 +445,21 @@ export default function SectionDesignTool() {
                 ) : (
                     <>
                         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                            <BigResult title="Larghezza B" titleSuffix="richiesta" value={fmt(result.mode === "fixH" ? result.Breq : result.B, result.mode === "fixH" ? 1 : 0)} unit="mm"
+                            <BigResult title="Larghezza B" titleSuffix={result.mode === "fixH" ? "richiesta" : "assegnata"}
+                                fixedNote={result.mode === "fixB" ? "Fissata nei dati di progetto" : null} value={fmt(result.mode === "fixH" ? result.Breq : result.B, result.mode === "fixH" ? 1 : 0)} unit="mm"
                                 {...(result.mode === "fixH" || result.mode === "fixBH" ? { onReset: () => setAdoptedDimensions((p) => ({ ...p, B: undefined })), resetLabel: "Ripristina larghezza adottata minima" } : {})}>
                                 {(result.mode === "fixH" || result.mode === "fixBH") && <NumberField label="Larghezza adottata B" unit="mm" value={adoptedDimensions.B ?? String(calculatedB)} onChange={(v) => setAdoptedDimensions((p) => ({ ...p, B: v }))} />}
                                 {result.mode === "fixH" && <AdoptionUtilization adopted={adoptedB} required={result.Breq} label="Sfruttamento larghezza" errorText="dimensione insufficiente" />}
                             </BigResult>
-                            <BigResult title="Altezza h" titleSuffix="richiesta" value={fmt(result.mode === "fixB" ? result.dReq + result.cT : result.h, result.mode === "fixB" ? 1 : 0)} unit="mm"
+                            <BigResult title="Altezza h" titleSuffix={result.mode === "fixB" ? "richiesta" : "assegnata"}
+                                fixedNote={result.mode === "fixH" ? "Fissata nei dati di progetto" : null} value={fmt(result.mode === "fixB" ? result.dReq + result.cT : result.h, result.mode === "fixB" ? 1 : 0)} unit="mm"
                                 {...(result.mode === "fixB" || result.mode === "fixBH" ? { onReset: () => setAdoptedDimensions((p) => ({ ...p, d: undefined, h: undefined })), resetLabel: "Ripristina altezza adottata minima" } : {})}>
                                 {result.mode === "fixB" && <NumberField label="Altezza adottata h" unit="mm" value={adoptedDimensions.h ?? String(calculatedH)} onChange={setAdoptedH} />}
                                 {result.mode === "fixB" && <AdoptionUtilization adopted={adoptedH} required={result.dReq + result.cT} label="Sfruttamento altezza" errorText="dimensione insufficiente" />}
                                 {result.mode === "fixBH" && <NumberField label="Altezza adottata h" unit="mm" value={adoptedDimensions.h ?? String(calculatedH)} onChange={setAdoptedH} />}
                             </BigResult>
-                            <BigResult title="Altezza utile d" titleSuffix="richiesta" value={fmt(result.mode === "fixB" ? result.dReq : result.d, result.mode === "fixB" ? 1 : 0)} unit="mm"
+                            <BigResult title="Altezza utile d" titleSuffix={result.mode === "fixB" ? "richiesta" : "risultante"}
+                                fixedNote={result.mode === "fixB" ? null : <>d = h − copriferro del lato teso</>} value={fmt(result.mode === "fixB" ? result.dReq : result.d, result.mode === "fixB" ? 1 : 0)} unit="mm"
                                 {...(result.mode === "fixB" ? { onReset: () => setAdoptedDimensions((p) => ({ ...p, d: undefined, h: undefined })), resetLabel: "Ripristina altezza utile adottata minima" } : {})}>
                                 {result.mode === "fixB" && <NumberField label="Altezza utile adottata d" unit="mm" value={shownD} onChange={setAdoptedD} />}
                                 {result.mode === "fixB" && <AdoptionUtilization adopted={adoptedD} required={result.dReq} label="Sfruttamento altezza utile" errorText="dimensione insufficiente" />}
@@ -474,7 +489,7 @@ export default function SectionDesignTool() {
                                     </p>
                                     <AdoptionUtilization adopted={adoptedTensionArea} required={result.As} />
                                 </div>
-                                {result.AsPrime > 0 && (
+                                {result.AsPrime > 0 ? (
                                     <div className="rounded-xl bg-sky-50 p-4">
                                         <div className="flex items-center justify-between gap-2">
                                             <p className="flex items-baseline gap-1.5 text-xs font-semibold uppercase tracking-wide text-sky-700">Armatura compressa <span className="normal-case">A'<sub>s</sub></span> <span className="text-[10px] font-medium normal-case tracking-normal text-slate-400">{topGiven ? "assegnata" : "richiesta"}</span></p>
@@ -495,6 +510,17 @@ export default function SectionDesignTool() {
                                         </p>
                                         <AdoptionUtilization adopted={adoptedCompressionArea} required={result.AsPrime} />
                                     </div>
+                                ) : (
+                                    <div className="flex flex-col rounded-xl border border-dashed border-slate-200 bg-slate-50/70 p-4">
+                                        <p className="flex items-baseline gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">Armatura compressa <span className="normal-case">A'<sub>s</sub></span> <span className="text-[10px] font-medium normal-case tracking-normal text-slate-400">non richiesta</span></p>
+                                        <p className="mt-1 flex flex-wrap items-baseline gap-x-1.5 text-2xl font-bold text-slate-300">0<span className="text-sm font-medium text-slate-400">mm²</span></p>
+                                        <p className="mt-3 text-xs leading-5 text-slate-500">
+                                            {hanger
+                                                ? <>Barre {input.MEd < 0 ? "inferiori" : "superiori"} costruttive: <b>{hanger.n} φ {hanger.phi}</b> reggistaffa, non considerate nel calcolo.</>
+                                                : <>Semplice armatura: il calcolo non richiede barre compresse (β = 0).</>}
+                                        </p>
+                                        <p className="mt-auto pt-3 text-[11px] leading-4 text-slate-400">Per tenerne conto: β &gt; 0 nei dati di progetto, oppure reggistaffa considerati nel calcolo (box Barre).</p>
+                                    </div>
                                 )}
                             </div>
                             <div className="mt-3 space-y-2">
@@ -511,8 +537,9 @@ export default function SectionDesignTool() {
                             </div>
                         </Card>
 
-                        <Card>
-                            <div className="mb-3 flex items-center justify-between gap-3">
+                        <div className="grid grid-cols-1 gap-4">
+                        <Card className="flex flex-col">
+                            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                                 <h3 className="text-sm font-bold text-slate-800">Sezione progettata</h3>
                                 <div className="flex items-center gap-2">
                                     <select
@@ -550,13 +577,13 @@ export default function SectionDesignTool() {
                                 </div>
                             </div>
                             {exportMessage && <p role="status" className="mb-2 text-right text-xs text-slate-500">{exportMessage}</p>}
-                            <div className="mx-auto max-w-[560px]">
+                            <div className="mx-auto flex w-full max-w-[560px] flex-1 flex-col justify-center">
                                 <DesignDrawing result={drawingResult} B={adoptedB} layT={adoptedLayT} layC={adoptedLayC} hanger={hanger} dTNom={result.dTNom} dCNom={result.dCNom} phiStirrup={input.phiStirrup} cLeft={input.cLeft} cRight={input.cRight} moment={input.MEd} mode="fixBH" unit={drawUnit} svgRef={drawingSvgRef} />
                             </div>
                         </Card>
 
-                        <Card>
-                            <div className="mb-3 flex items-center justify-between gap-3">
+                        <Card className="flex flex-col">
+                            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                                 <h3 className="text-sm font-bold text-slate-800">Forze interne (sezione di lato)</h3>
                                 <div className="flex items-center gap-2">
                                     <select
@@ -593,10 +620,11 @@ export default function SectionDesignTool() {
                                     </button>
                                 </div>
                             </div>
-                            <div className="mx-auto max-w-[480px]">
+                            <div className="mx-auto flex w-full max-w-[480px] flex-1 flex-col justify-center">
                                 <SideForcesDiagram result={result} unit={drawUnit} svgRef={forcesSvgRef} />
                             </div>
                         </Card>
+                        </div>
 
                         <Card>
                             <div className="flex items-center gap-2">
@@ -2103,8 +2131,8 @@ function AdoptionUtilization({ adopted, required, label = "Sfruttamento barre", 
 }
 
 // -------- primitivi UI --------
-function Card({ children }) {
-    return <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">{children}</div>;
+function Card({ children, className = "" }) {
+    return <div className={`rounded-2xl border border-slate-200 bg-white p-4 shadow-sm ${className}`}>{children}</div>;
 }
 function CollapsibleCard({ title, children, defaultOpen = true, command }) {
     const [isOpen, setIsOpen] = useState(defaultOpen);
@@ -2167,9 +2195,9 @@ function AnimatedPanel({ isOpen, children }) {
 function CardTitle({ children }) {
     return <h3 className="mb-3 text-sm font-bold text-slate-800">{children}</h3>;
 }
-function BigResult({ title, titleSuffix, value, unit, note, children, onReset, resetLabel = "Ripristina valore adottato minimo" }) {
+function BigResult({ title, titleSuffix, value, unit, note, children, fixedNote, onReset, resetLabel = "Ripristina valore adottato minimo" }) {
     return (
-        <div className="min-w-0 rounded-2xl border border-sky-200 bg-gradient-to-br from-sky-50 to-white p-4">
+        <div className="flex min-w-0 flex-col rounded-2xl border border-sky-200 bg-gradient-to-br from-sky-50 to-white p-4">
             <div className="relative min-h-4">
                 <p className={`flex flex-wrap items-baseline gap-x-1.5 text-xs font-semibold uppercase tracking-wide text-sky-700 ${onReset ? "pr-7" : ""}`}>
                     {title}
@@ -2185,6 +2213,8 @@ function BigResult({ title, titleSuffix, value, unit, note, children, onReset, r
             </div>
             {note && <p className="mt-1 text-sm text-slate-500">{note}</p>}
             {children && <div className="mt-3">{children}</div>}
+            {/* valore non adottabile: nota in basso, allineata ai campi degli altri box */}
+            {fixedNote && <p className="mt-auto rounded-xl border border-dashed border-sky-200 bg-white/70 px-3 py-2 text-xs text-slate-500">{fixedNote}</p>}
         </div>
     );
 }

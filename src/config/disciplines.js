@@ -35,6 +35,7 @@ import {
 
 import CadGeometryCanvas from "../components/CadGeometryCanvas";
 import SectionDesignTool from "../components/concrete/SectionDesignTool";
+import BeamsTool from "../components/concrete/BeamsTool";
 import CoverCalcTool from "../components/concrete/CoverCalcTool";
 import VerifySectionTool from "../components/concrete/VerifySectionTool";
 import DomainFieldsTool from "../components/concrete/DomainFieldsTool";
@@ -78,6 +79,21 @@ export const DISCIPLINES = [
             softBg: "bg-sky-100",
         },
         sections: [
+            {
+                title: "Edificio",
+                tools: [
+                    {
+                        id: "struttura",
+                        name: "Struttura",
+                        stickyHeader: true,   // titolo fisso in cima mentre scorre la pagina della trave
+                        description:
+                            "Piani, travi e pilastri dell'edificio: schema statico delle travi, reazioni, inviluppi di M e V anche traslati, sezioni da progettare e verificare in cascata.",
+                        icon: Columns3,
+                        status: "ready",
+                        component: BeamsTool,
+                    },
+                ],
+            },
             {
                 title: "Sezioni",
                 tools: [

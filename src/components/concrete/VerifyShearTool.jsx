@@ -23,8 +23,9 @@ function fmt(v, dec = 0) {
     });
 }
 
-export default function VerifyShearTool() {
-    const [input, setInput] = useState(DEFAULT_SHEAR_INPUT);
+// initialInput: dati di partenza (es. dalla sezione di una trave dell'edificio)
+export default function VerifyShearTool({ initialInput = null } = {}) {
+    const [input, setInput] = useState(() => (initialInput ? { ...DEFAULT_SHEAR_INPUT, ...initialInput } : DEFAULT_SHEAR_INPUT));
     const [showAdvanced, setShowAdvanced] = useState(false);
 
     const result = useMemo(() => shearCheck(input), [input]);
@@ -37,7 +38,7 @@ export default function VerifyShearTool() {
         setField(field, Number.isNaN(n) ? 0 : n);
     }
     function reset() {
-        setInput(DEFAULT_SHEAR_INPUT);
+        setInput(initialInput ? { ...DEFAULT_SHEAR_INPUT, ...initialInput } : DEFAULT_SHEAR_INPUT);
     }
 
     return (

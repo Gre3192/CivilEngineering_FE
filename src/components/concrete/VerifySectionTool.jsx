@@ -1,10 +1,13 @@
 // src/components/concrete/VerifySectionTool.jsx
 //
 // Strumento: Verifica a pressoflessione retta (SLU) di una sezione
-// rettangolare in c.a. con dominio di resistenza M-N.
+// rettangolare in c.a. con il dominio di resistenza M-N costruito campo per
+// campo (forme chiuse del laboratorio "Dominio M-N per campi"): dominio con il
+// punto di progetto, disegno dei campi sullo stato di rottura e, in un modal,
+// gli accordion con la teoria completa di ciascun campo.
 
-import { useMemo, useState } from "react";
-import { CheckCircle2, XCircle, Info, RotateCcw } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { CheckCircle2, XCircle, Info, RotateCcw, Layers, X, Crosshair } from "lucide-react";
 import {
     verifySection,
     DEFAULT_VERIFY_INPUT,
@@ -12,33 +15,42 @@ import {
     CONCRETE_MODELS,
     STEEL_MODELS,
 } from "../../lib/concrete/verifySection";
+import { pointAt, uToXi, xiToU } from "../../lib/concrete/domainFields";
 import { CONCRETE_CLASSES, STEEL_GRADES } from "../../lib/concrete/sectionDesign";
 import ConcreteDiagram from "./ConcreteDiagram";
 import SteelDiagram from "./SteelDiagram";
+import { AllFieldsCard, DomainChart, FieldsPanel } from "./DomainFieldsTool";
 
-// Colori dei campi di rottura (dal violetto=trazione al rosso=compressione).
-const FIELD_COLORS = {
-    1: "#7c3aed",
-    2: "#2563eb",
-    3: "#16a34a",
-    4: "#ca8a04",
-    5: "#ea580c",
-    6: "#dc2626",
-};
+// Colori dei campi di rottura (gli stessi del laboratorio)
+const FIELD_COLORS = { 1: "#7c3aed", 2: "#2563eb", 3: "#db2777", 4: "#ca8a04", 5: "#ea580c", 6: "#dc2626" };
 
 function fmt(v, dec = 0) {
     if (v === undefined || v === null || Number.isNaN(v)) return "-";
-    return Number(v).toLocaleString("it-IT", {
-        minimumFractionDigits: dec,
-        maximumFractionDigits: dec,
-    });
+    if (v === Infinity) return "+∞";
+    if (v === -Infinity) return "−∞";
+    return Number(v).toLocaleString("it-IT", { minimumFractionDigits: dec, maximumFractionDigits: dec });
 }
 
-export default function VerifySectionTool() {
-    const [input, setInput] = useState(DEFAULT_VERIFY_INPUT);
+// initialInput: dati di partenza (es. dalla sezione di una trave dell'edificio)
+export default function VerifySectionTool({ initialInput = null } = {}) {
+    const [input, setInput] = useState(() => (initialInput ? { ...DEFAULT_VERIFY_INPUT, ...initialInput } : DEFAULT_VERIFY_INPUT));
     const [showAdvanced, setShowAdvanced] = useState(false);
+    const [adim, setAdim] = useState(false);
+    const [showFields, setShowFields] = useState(false);
+    const [allMode, setAllMode] = useState("fields");
 
     const result = useMemo(() => verifySection(input), [input]);
+
+    // disegno dei campi: parte dallo stato di rottura di progetto e ci torna
+    // ogni volta che cambia (cambiando i dati il cursore si riallinea)
+    const designKey = result.ok && result.rd ? `${result.sign}:${result.rd.xi}` : "none";
+    const designSlider = result.ok && result.rd ? Math.round(1000 * xiToU(result.rd.xi)) : 500;
+    const [view, setView] = useState({ key: null, slider: 500, branch: 1 });
+    const cur = view.key === designKey ? view : { key: designKey, slider: designSlider, branch: result.ok ? result.sign : 1 };
+    const atDesign = cur.slider === designSlider && cur.branch === (result.ok ? result.sign : 1);
+    const closeFields = useCallback(() => setShowFields(false), []);
+    // sullo stato di progetto si usa ξ esatto (il cursore ha passi finiti)
+    const viewXi = atDesign && result.ok && result.rd ? result.rd.xi : uToXi(cur.slider / 1000);
 
     function setField(field, value) {
         setInput((prev) => ({ ...prev, [field]: value }));
@@ -46,9 +58,6 @@ export default function VerifySectionTool() {
     function setNumber(field, value) {
         const n = Number(value);
         setField(field, Number.isNaN(n) ? 0 : n);
-    }
-    function reset() {
-        setInput(DEFAULT_VERIFY_INPUT);
     }
 
     return (
@@ -60,16 +69,16 @@ export default function VerifySectionTool() {
                     <div className="grid grid-cols-2 gap-3">
                         <NumberField label="Base b" unit="mm" value={input.b} onChange={(v) => setNumber("b", v)} />
                         <NumberField label="Altezza h" unit="mm" value={input.h} onChange={(v) => setNumber("h", v)} />
-                        <NumberField label="Copriferro c (teso)" unit="mm" value={input.c} onChange={(v) => setNumber("c", v)} />
-                        <NumberField label="Copriferro c' (compr.)" unit="mm" value={input.cPrime} onChange={(v) => setNumber("cPrime", v)} />
+                        <NumberField label="Copriferro c (inferiore)" unit="mm" value={input.c} onChange={(v) => setNumber("c", v)} />
+                        <NumberField label="Copriferro c' (superiore)" unit="mm" value={input.cPrime} onChange={(v) => setNumber("cPrime", v)} />
                     </div>
                 </Card>
 
                 <Card>
                     <CardTitle>Armatura</CardTitle>
                     <div className="grid grid-cols-2 gap-3">
-                        <NumberField label="A_s (tesa)" unit="mm²" value={input.As} onChange={(v) => setNumber("As", v)} />
-                        <NumberField label="A_s' (compressa)" unit="mm²" value={input.AsPrime} onChange={(v) => setNumber("AsPrime", v)} />
+                        <NumberField label="A_s (inferiore)" unit="mm²" value={input.As} onChange={(v) => setNumber("As", v)} />
+                        <NumberField label="A_s' (superiore)" unit="mm²" value={input.AsPrime} onChange={(v) => setNumber("AsPrime", v)} />
                     </div>
                 </Card>
 
@@ -79,76 +88,57 @@ export default function VerifySectionTool() {
                         <NumberField label="N_Ed (compr. +)" unit="kN" value={input.NEd} onChange={(v) => setNumber("NEd", v)} />
                         <NumberField label="M_Ed" unit="kNm" value={input.MEd} onChange={(v) => setNumber("MEd", v)} />
                     </div>
+                    <p className="mt-2 text-[11px] leading-4 text-slate-400">M_Ed &gt; 0 tende le fibre inferiori (A_s), M_Ed &lt; 0 quelle superiori: si usa il ramo del dominio con lo stesso segno.</p>
                 </Card>
 
                 <Card>
                     <CardTitle>Materiali</CardTitle>
                     <div className="grid grid-cols-2 gap-3">
-                        <SelectField
-                            label="Calcestruzzo"
-                            value={input.fck}
-                            onChange={(v) => setNumber("fck", v)}
-                            options={CONCRETE_CLASSES.map((c) => ({ value: c.fck, label: c.id }))}
-                        />
-                        <SelectField
-                            label="Acciaio"
-                            value={input.fyk}
-                            onChange={(v) => setNumber("fyk", v)}
-                            options={STEEL_GRADES.map((s) => ({ value: s.fyk, label: s.id }))}
-                        />
+                        <SelectField label="Calcestruzzo" value={input.fck} onChange={(v) => setNumber("fck", v)}
+                            options={CONCRETE_CLASSES.map((c) => ({ value: c.fck, label: c.id }))} />
+                        <SelectField label="Acciaio" value={input.fyk} onChange={(v) => setNumber("fyk", v)}
+                            options={STEEL_GRADES.map((s) => ({ value: s.fyk, label: s.id }))} />
                     </div>
                 </Card>
 
                 <Card>
                     <CardTitle>Diagramma calcestruzzo</CardTitle>
-                    <SelectField
-                        label="Modello costitutivo"
-                        value={input.concreteModel}
-                        onChange={(v) => setField("concreteModel", v)}
-                        options={CONCRETE_MODELS.map((m) => ({ value: m.id, label: m.label }))}
-                    />
-                    {result.ok && <ConcreteDiagram fcd={result.fcd} model={result.concreteModel} />}
+                    <SelectField label="Modello costitutivo" value={input.concreteModel} onChange={(v) => setField("concreteModel", v)}
+                        options={CONCRETE_MODELS.map((m) => ({ value: m.id, label: m.label }))} />
+                    {result.ok && <ConcreteDiagram fcd={result.fcd} model={input.concreteModel} />}
                 </Card>
 
                 <Card>
                     <CardTitle>Diagramma acciaio</CardTitle>
-                    <SelectField
-                        label="Modello costitutivo"
-                        value={input.steelModel}
-                        onChange={(v) => setField("steelModel", v)}
-                        options={STEEL_MODELS.map((m) => ({ value: m.id, label: m.label }))}
-                    />
+                    <SelectField label="Modello costitutivo" value={input.steelModel} onChange={(v) => setField("steelModel", v)}
+                        options={STEEL_MODELS.map((m) => ({ value: m.id, label: m.label }))} />
                     {input.steelModel === "hardening" && (
                         <div className="mt-3">
-                            <NumberField label="k_s = f_t/f_y" value={input.ks} onChange={(v) => setNumber("ks", v)} />
+                            <NumberField label="k_s = f_t/f_y" value={input.ks} step="0.01" onChange={(v) => setNumber("ks", v)} />
                         </div>
                     )}
-                    {result.ok && <SteelDiagram fyd={result.fyd} model={input.steelModel} ks={input.ks} />}
+                    {input.steelModel === "ductile" && (
+                        <p className="mt-2 text-[11px] leading-4 text-slate-400">Senza limite di deformazione dell'acciaio non c'è il pivot A: i campi 1 e 2 non esistono, la crisi è sempre lato calcestruzzo.</p>
+                    )}
+                    {result.ok && <SteelDiagram fyd={result.fyd} model={input.steelModel === "hardening" ? "hardening" : "ep"} ks={input.ks} />}
                 </Card>
 
                 <Card>
-                    <button
-                        type="button"
-                        onClick={() => setShowAdvanced((p) => !p)}
-                        className="flex w-full items-center justify-between text-sm font-semibold text-slate-600"
-                    >
+                    <button type="button" onClick={() => setShowAdvanced((p) => !p)} className="flex w-full items-center justify-between text-sm font-semibold text-slate-600">
                         Coefficienti parziali
                         <span className="text-xs text-slate-400">{showAdvanced ? "nascondi" : "mostra"}</span>
                     </button>
                     {showAdvanced && (
                         <div className="mt-3 grid grid-cols-3 gap-3">
-                            <NumberField label="α_cc" value={input.alphaCc} onChange={(v) => setNumber("alphaCc", v)} />
-                            <NumberField label="γ_c" value={input.gammaC} onChange={(v) => setNumber("gammaC", v)} />
-                            <NumberField label="γ_s" value={input.gammaS} onChange={(v) => setNumber("gammaS", v)} />
+                            <NumberField label="α_cc" value={input.alphaCc} step="0.05" onChange={(v) => setNumber("alphaCc", v)} />
+                            <NumberField label="γ_c" value={input.gammaC} step="0.05" onChange={(v) => setNumber("gammaC", v)} />
+                            <NumberField label="γ_s" value={input.gammaS} step="0.05" onChange={(v) => setNumber("gammaS", v)} />
                         </div>
                     )}
                 </Card>
 
-                <button
-                    type="button"
-                    onClick={reset}
-                    className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-50"
-                >
+                <button type="button" onClick={() => setInput(initialInput ? { ...DEFAULT_VERIFY_INPUT, ...initialInput } : DEFAULT_VERIFY_INPUT)}
+                    className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-50">
                     <RotateCcw size={15} />
                     Valori predefiniti
                 </button>
@@ -163,9 +153,7 @@ export default function VerifySectionTool() {
                             <div>
                                 <p className="font-semibold">Dati non validi</p>
                                 <ul className="mt-1 list-disc pl-5 text-sm text-slate-600">
-                                    {result.errors.map((e) => (
-                                        <li key={e}>{e}</li>
-                                    ))}
+                                    {result.errors.map((e) => <li key={e}>{e}</li>)}
                                 </ul>
                             </div>
                         </div>
@@ -174,39 +162,45 @@ export default function VerifySectionTool() {
                     <>
                         <VerdictBanner result={result} />
 
-                        <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
-                            <Card>
-                                <CardTitle>Dominio di resistenza M-N</CardTitle>
-                                <DomainChart result={result} />
-                                <FieldLegend result={result} />
+                        <Card>
+                                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                                    <h3 className="text-sm font-bold text-slate-800">Dominio di resistenza M-N</h3>
+                                    <Segmented value={adim ? "adim" : "dim"} onChange={(v) => setAdim(v === "adim")}
+                                        options={[{ value: "dim", label: "N, M" }, { value: "adim", label: "ν, μ" }]} />
+                                </div>
+                                <DomainChart data={result.data} adim={adim} design={result.design}
+                                    global={{ pt: pointAt(result.data, cur.branch, viewXi) }} />
                             </Card>
 
-                            <div className="space-y-4">
+                            <div className="grid gap-4 md:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
                                 <Card>
                                     <CardTitle>Risultati</CardTitle>
                                     <ResultGrid>
-                                        <ResultRow label="M_Rd @ N_Ed" value={fmt(result.MRdAtN, 1)} unit="kNm" strong />
+                                        <ResultRow label={`M_Rd @ N_Ed (ramo M ${result.sign > 0 ? ">" : "<"} 0)`} value={fmt(result.MRdAtN, 1)} unit="kNm" strong />
                                         <ResultRow label="M_Ed" value={fmt(result.MEd, 1)} unit="kNm" />
-                                        <ResultRow label="M_Rd (N=0)" value={fmt(result.MRd0, 1)} unit="kNm" />
-                                        <ResultRow label="M_Rd,max" value={fmt(result.MRdMax, 1)} unit="kNm" />
+                                        <ResultRow label="M_Rd (N = 0)" value={fmt(result.MRd0, 1)} unit="kNm" />
+                                        <ResultRow label="M_Rd,max (ramo +)" value={fmt(result.MRdMax, 1)} unit="kNm" />
                                         <ResultRow label="N @ M_Rd,max" value={fmt(result.NatMmax, 0)} unit="kN" />
+                                        <ResultRow label="M_Rd,min (ramo −)" value={fmt(result.MRdMin, 1)} unit="kNm" />
                                         <ResultRow label="N_Rd trazione" value={fmt(result.NRdMin, 0)} unit="kN" />
-                                        <ResultRow label="N_Rd compress." value={fmt(result.NRdMax, 0)} unit="kN" />
+                                        <ResultRow label="N_Rd compressione" value={fmt(result.NRdMax, 0)} unit="kN" />
                                     </ResultGrid>
 
                                     {result.failureField && (
-                                        <div className="mt-3 flex items-center gap-2 rounded-xl bg-slate-50 p-3">
-                                            <span
-                                                className="h-3 w-3 shrink-0 rounded-full"
-                                                style={{ background: FIELD_COLORS[result.failureField] }}
-                                            />
-                                            <span className="text-xs text-slate-600">
-                                                Rottura in{" "}
-                                                <b>{FAILURE_FIELDS[result.failureField].label}</b> –{" "}
-                                                {FAILURE_FIELDS[result.failureField].desc}
-                                            </span>
+                                        <div className="mt-3 space-y-1 rounded-xl bg-slate-50 p-3 text-xs text-slate-600">
+                                            <p className="flex items-center gap-2">
+                                                <span className="h-3 w-3 shrink-0 rounded-full" style={{ background: FIELD_COLORS[result.failureField] }} />
+                                                <span>Rottura in <b>{FAILURE_FIELDS[result.failureField].label}</b>{result.failureSub && result.failureSub !== String(result.failureField) ? <> (sottocampo <b>{result.failureSub}</b>)</> : ""} – {FAILURE_FIELDS[result.failureField].desc}</span>
+                                            </p>
+                                            <p className="pl-5 text-slate-500">ξ = x/d = <b>{fmt(result.xiDesign, 4)}</b>{result.xDesign !== null ? <>, x = <b>{fmt(result.xDesign, 1)}</b> mm</> : ""}</p>
                                         </div>
                                     )}
+
+                                    <button type="button" onClick={() => setShowFields(true)}
+                                        className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-sky-600 px-3 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-700">
+                                        <Layers size={16} />
+                                        Campi di rottura: teoria e formule
+                                    </button>
                                 </Card>
 
                                 <Card>
@@ -214,195 +208,66 @@ export default function VerifySectionTool() {
                                     <ResultGrid>
                                         <ResultRow label="f_cd" value={fmt(result.fcd, 2)} unit="MPa" />
                                         <ResultRow label="f_yd" value={fmt(result.fyd, 2)} unit="MPa" />
-                                        <ResultRow label="d" value={fmt(result.d, 0)} unit="mm" />
-                                        {result.psiDesign !== null && (
-                                            <>
-                                                <ResultRow label="ψ (riempimento)" value={fmt(result.psiDesign, 3)} />
-                                                <ResultRow label="λ (baricentro/x)" value={fmt(result.lamDesign, 3)} />
-                                            </>
-                                        )}
+                                        <ResultRow label="ε_cu" value={fmt(result.epsCu * 1000, 2)} unit="‰" />
+                                        <ResultRow label="ε_su" value={result.epsSu === Infinity ? "∞" : fmt(result.epsSu * 1000, 1)} unit="‰" />
+                                        <ResultRow label="d (ramo +)" value={fmt(result.d, 0)} unit="mm" />
                                     </ResultGrid>
-                                    {result.psiDesign !== null && (
-                                        <p className="mt-2 text-[11px] leading-tight text-slate-400">
-                                            Risultante cls parabola-rettangolo: N_c = ψ·f_cd·b·x,
-                                            baricentro a λ·x dal lembo compresso (forma chiusa).
-                                        </p>
-                                    )}
                                 </Card>
                             </div>
-                        </div>
 
-                        <Card>
-                            <CardTitle>Piani di rottura (campi)</CardTitle>
-                            <p className="mb-2 text-xs text-slate-500">
-                                Ventaglio dei diagrammi di deformazione ultimi:
-                                i campi sono regioni piene, definite dalla rotazione
-                                attorno ai pivot A (acciaio a ε_su), B (cls a ε_cu) e
-                                C (cls a ε_c2). La linea marcata è il piano di rottura
-                                per la sollecitazione corrente.
-                            </p>
-                            <RuptureFieldsDiagram result={result} />
-                            <FieldLegend result={result} />
-                        </Card>
+                        <AllFieldsCard data={result.data} branch={cur.branch} onBranch={(v) => setView({ ...cur, branch: v })}
+                            slider={cur.slider} onSlider={(v) => setView({ ...cur, slider: v })} mode={allMode} onMode={setAllMode} xi={viewXi}
+                            title="Campi di rottura sulla sezione"
+                            actions={
+                                <button type="button" disabled={atDesign} onClick={() => setView({ key: designKey, slider: designSlider, branch: result.sign })}
+                                    className="inline-flex items-center gap-1.5 rounded-full border border-slate-300 bg-white px-3 py-1 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:cursor-default disabled:opacity-50">
+                                    <Crosshair size={13} />
+                                    Stato di progetto
+                                </button>}
+                            intro={
+                                <p className="mb-3 text-xs leading-5 text-slate-600">
+                                    Il disegno parte dallo <b>stato di rottura di progetto</b> (stesso N<sub>Ed</sub>, ramo del segno di M<sub>Ed</sub>): asse neutro,
+                                    deformazioni, legami percorsi e forze interne. Trascina la freccia dell'asse neutro o usa il cursore per percorrere tutti
+                                    i campi: il rombo nel dominio segue lo stato del disegno.
+                                </p>} />
 
                         <AssumptionsBox />
                     </>
                 )}
             </div>
+
+            {showFields && result.ok && <FieldsModal result={result} onClose={closeFields} />}
         </div>
     );
 }
 
-// -------- Grafico del legame costitutivo del calcestruzzo (sigma-eps) --------
-// -------- Diagramma dei piani di rottura (campi come regioni piene) --------
-function RuptureFieldsDiagram({ result }) {
-    const { d, dPrime, h, yC, xAB, epsCu, epsC0, epsSu, epsYd, xDesign, failureField } = result;
-
-    const W = 460;
-    const H = 340;
-    const yTop = 40;
-    const yBot = 300;
-    const yOf = (depth) => yTop + (depth / h) * (yBot - yTop);
-
-    // Scala schematica delle deformazioni (compressione positiva a sinistra).
-    const anchors = [
-        { v: -epsSu, x: 410 },
-        { v: -epsYd, x: 300 },
-        { v: 0, x: 250 },
-        { v: epsC0, x: 150 },
-        { v: epsCu, x: 110 },
-    ];
-    const sEps = (v) => {
-        if (v <= anchors[0].v) return anchors[0].x;
-        if (v >= anchors[anchors.length - 1].v) return anchors[anchors.length - 1].x;
-        for (let i = 1; i < anchors.length; i++) {
-            if (v <= anchors[i].v) {
-                const a = anchors[i - 1];
-                const b = anchors[i];
-                const t = (v - a.v) / (b.v - a.v);
-                return a.x + t * (b.x - a.x);
-            }
-        }
-        return anchors[anchors.length - 1].x;
-    };
-
-    const x0 = sEps(0);
-    // Punti notevoli
-    const A = { x: sEps(-epsSu), y: yOf(d) }; // pivot A
-    const B = { x: sEps(epsCu), y: yOf(0) }; // pivot B
-    const C = { x: sEps(epsC0), y: yOf(yC) }; // pivot C
-    const topEsu = { x: sEps(-epsSu), y: yTop };
-    const topZero = { x: x0, y: yTop };
-    const steelYd = { x: sEps(-epsYd), y: yOf(d) };
-    const steelZero = { x: x0, y: yOf(d) };
-    const bottomZero = { x: x0, y: yBot };
-    const topC2 = { x: sEps(epsC0), y: yTop };
-    const bottomC2 = { x: sEps(epsC0), y: yBot };
-
-    const poly = (pts) => pts.map((p) => `${p.x},${p.y}`).join(" ");
-
-    const fields = [
-        { f: 1, pts: [A, topEsu, topZero] },
-        { f: 2, pts: [A, topZero, B] },
-        { f: 3, pts: [B, A, steelYd] },
-        { f: 4, pts: [B, steelYd, steelZero] },
-        { f: 5, pts: [B, steelZero, bottomZero] },
-        { f: 6, pts: [B, bottomZero, bottomC2, topC2] },
-    ];
-
-    // Linea di rottura corrente
-    let designLine = null;
-    let naMarker = null;
-    if (xDesign !== null && xDesign !== undefined) {
-        const curv =
-            xDesign <= xAB
-                ? epsSu / (d - xDesign)
-                : xDesign <= h
-                ? epsCu / xDesign
-                : epsC0 / (xDesign - yC);
-        const vTop = curv * xDesign;
-        const vBot = curv * (xDesign - h);
-        designLine = {
-            x1: sEps(vTop),
-            y1: yTop,
-            x2: sEps(vBot),
-            y2: yBot,
-        };
-        if (xDesign > 0 && xDesign < h) {
-            naMarker = { x: x0, y: yOf(xDesign) };
-        }
-    }
-
-    const refLines = [
-        { v: epsCu, label: `${(epsCu * 1000).toFixed(1)}‰` },
-        { v: epsC0, label: `${(epsC0 * 1000).toFixed(1)}‰` },
-        { v: -epsYd, label: `${(epsYd * 1000).toFixed(2)}‰` },
-        { v: -epsSu, label: `${(epsSu * 1000).toFixed(1)}‰` },
-    ];
-
+// -------- Modal con gli accordion dei campi della sezione corrente --------
+function FieldsModal({ result, onClose }) {
+    useEffect(() => {
+        const onKey = (e) => { if (e.key === "Escape") onClose(); };
+        window.addEventListener("keydown", onKey);
+        const prev = document.body.style.overflow;
+        document.body.style.overflow = "hidden";
+        return () => { window.removeEventListener("keydown", onKey); document.body.style.overflow = prev; };
+    }, [onClose]);
     return (
-        <svg width="100%" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Diagramma dei campi di rottura">
-            {/* regioni dei campi */}
-            {fields.map(({ f, pts }) => (
-                <polygon
-                    key={f}
-                    points={poly(pts)}
-                    fill={FIELD_COLORS[f]}
-                    fillOpacity="0.18"
-                    stroke={FIELD_COLORS[f]}
-                    strokeOpacity="0.5"
-                    strokeWidth="1"
-                />
-            ))}
-
-            {/* sezione (a sinistra) */}
-            <rect x="14" y={yTop} width="22" height={yBot - yTop} fill="#e2e8f0" stroke="#94a3b8" strokeWidth="1" />
-            {/* armature */}
-            <circle cx="25" cy={yOf(d)} r="3" fill="#0f172a" />
-            <circle cx="25" cy={yOf(dPrime)} r="3" fill="#64748b" />
-            <text x="6" y={yOf(d) + 3} fontSize="9" fill="#475569">As</text>
-            <text x="4" y={yOf(dPrime) + 3} fontSize="9" fill="#475569">As'</text>
-
-            {/* riferimenti di deformazione */}
-            {refLines.map((r) => {
-                const x = sEps(r.v);
-                return (
-                    <g key={r.label + r.v}>
-                        <line x1={x} y1={yTop - 6} x2={x} y2={yBot} stroke="#cbd5e1" strokeWidth="0.75" strokeDasharray="3 3" />
-                        <text x={x} y={yTop - 10} textAnchor="middle" fontSize="9" fill="#94a3b8">{r.label}</text>
-                    </g>
-                );
-            })}
-            {/* asse a deformazione nulla */}
-            <line x1={x0} y1={yTop - 6} x2={x0} y2={yBot} stroke="#94a3b8" strokeWidth="1" />
-            <text x={x0} y={yBot + 14} textAnchor="middle" fontSize="9" fill="#64748b">ε = 0</text>
-            <text x="120" y={yBot + 14} textAnchor="middle" fontSize="9" fill="#64748b">compressione</text>
-            <text x="360" y={yBot + 14} textAnchor="middle" fontSize="9" fill="#64748b">trazione</text>
-
-            {/* linea di rottura corrente */}
-            {designLine && (
-                <line
-                    x1={designLine.x1}
-                    y1={designLine.y1}
-                    x2={designLine.x2}
-                    y2={designLine.y2}
-                    stroke={FIELD_COLORS[failureField] || "#0f172a"}
-                    strokeWidth="2.5"
-                    strokeDasharray="7 4"
-                />
-            )}
-            {naMarker && (
-                <circle cx={naMarker.x} cy={naMarker.y} r="4" fill="#fff" stroke={FIELD_COLORS[failureField] || "#0f172a"} strokeWidth="2" />
-            )}
-
-            {/* pivot */}
-            {[{ p: A, l: "A" }, { p: B, l: "B" }, { p: C, l: "C" }].map(({ p, l }) => (
-                <g key={l}>
-                    <circle cx={p.x} cy={p.y} r="4" fill="#0f172a" />
-                    <text x={p.x + 6} y={p.y - 6} fontSize="11" fontWeight="bold" fill="#0f172a">{l}</text>
-                </g>
-            ))}
-        </svg>
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/40 p-3 backdrop-blur-[2px] sm:p-6"
+            role="dialog" aria-modal="true" aria-label="Campi di rottura" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+            <div className="flex max-h-full w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-slate-50 shadow-2xl">
+                <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-white px-5 py-3">
+                    <div>
+                        <p className="text-sm font-bold text-slate-800">Campi di rottura della sezione</p>
+                        <p className="text-xs text-slate-500">Per ogni campo: stati deformativi, legami, congruenza e sottocampi, equazioni, stato corrente con il controllo numerico.</p>
+                    </div>
+                    <button type="button" onClick={onClose} aria-label="Chiudi" title="Chiudi (Esc)" className="rounded-full p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-800">
+                        <X size={18} />
+                    </button>
+                </div>
+                <div className="overflow-y-auto p-4 sm:p-5">
+                    <FieldsPanel data={result.data} design={result.design} />
+                </div>
+            </div>
+        </div>
     );
 }
 
@@ -410,175 +275,33 @@ function RuptureFieldsDiagram({ result }) {
 function VerdictBanner({ result }) {
     const ok = result.verified;
     const util = result.utilization;
-
     return (
-        <div
-            className={`flex items-center gap-4 rounded-2xl border p-4 ${
-                ok ? "border-emerald-200 bg-emerald-50" : "border-red-200 bg-red-50"
-            }`}
-        >
-            {ok ? (
-                <CheckCircle2 size={28} className="shrink-0 text-emerald-600" />
-            ) : (
-                <XCircle size={28} className="shrink-0 text-red-600" />
-            )}
-
+        <div className={`flex items-center gap-4 rounded-2xl border p-4 ${ok ? "border-emerald-200 bg-emerald-50" : "border-red-200 bg-red-50"}`}>
+            {ok ? <CheckCircle2 size={28} className="shrink-0 text-emerald-600" /> : <XCircle size={28} className="shrink-0 text-red-600" />}
             <div className="flex-1">
-                <p className="text-lg font-bold text-slate-800">
-                    {ok ? "Verifica soddisfatta" : "Verifica NON soddisfatta"}
-                </p>
+                <p className="text-lg font-bold text-slate-800">{ok ? "Verifica soddisfatta" : "Verifica NON soddisfatta"}</p>
                 <p className="mt-0.5 text-sm text-slate-600">
-                    {result.axialInRange
-                        ? `M_Ed / M_Rd = ${fmt(util, 3)} · sfruttamento ${fmt(util * 100, 0)}%`
-                        : "Sforzo normale N_Ed fuori dal dominio resistente."}
+                    {!result.axialInRange
+                        ? `Sforzo normale N_Ed fuori dal dominio resistente (${fmt(result.NRdMin, 0)} ≤ N_Rd ≤ ${fmt(result.NRdMax, 0)} kN).`
+                        : !ok && util <= 1
+                            ? "Il punto esce dal dominio dal lato del ramo opposto: la sezione asimmetrica non ammette un momento così piccolo a questo N_Ed."
+                            : Number.isFinite(util)
+                                ? `M_Ed / M_Rd(N_Ed) = ${fmt(util, 3)} · sfruttamento ${fmt(util * 100, 0)}%`
+                                : `A N_Ed = ${fmt(result.NEd, 0)} kN il dominio non raggiunge momenti di questo segno: il punto è fuori.`}
                 </p>
+                {result.axialInRange && (
+                    <p className="mt-0.5 text-xs text-slate-500">
+                        A N_Ed = {fmt(result.NEd, 0)} kN: M_Rd,− = {fmt(result.rdNeg.M, 1)} kNm ≤ M ≤ M_Rd,+ = {fmt(result.rdPos.M, 1)} kNm
+                    </p>
+                )}
             </div>
-
-            {result.axialInRange && (
+            {result.axialInRange && Number.isFinite(util) && (ok || util > 1) && (
                 <div className="w-40">
                     <div className="h-2.5 w-full overflow-hidden rounded-full bg-white/70">
-                        <div
-                            className={`h-full rounded-full ${ok ? "bg-emerald-500" : "bg-red-500"}`}
-                            style={{ width: `${Math.min(util * 100, 100)}%` }}
-                        />
+                        <div className={`h-full rounded-full ${ok ? "bg-emerald-500" : "bg-red-500"}`} style={{ width: `${Math.min(util * 100, 100)}%` }} />
                     </div>
                 </div>
             )}
-        </div>
-    );
-}
-
-// -------- Grafico dominio M-N con regioni dei campi di rottura --------
-function DomainChart({ result }) {
-    const { domain, MEd, NEd, verified } = result;
-
-    const W = 460;
-    const H = 360;
-    const m = { top: 20, right: 20, bottom: 40, left: 56 };
-    const iw = W - m.left - m.right;
-    const ih = H - m.top - m.bottom;
-
-    // Bounds
-    const Ms = domain.map((p) => p.M).concat(MEd, 0);
-    const Ns = domain.map((p) => p.N).concat(NEd, 0);
-    let minM = Math.min(...Ms);
-    let maxM = Math.max(...Ms);
-    let minN = Math.min(...Ns);
-    let maxN = Math.max(...Ns);
-
-    const padM = (maxM - minM) * 0.08 || 1;
-    const padN = (maxN - minN) * 0.08 || 1;
-    minM -= padM;
-    maxM += padM;
-    minN -= padN;
-    maxN += padN;
-
-    const sx = (M) => m.left + ((M - minM) / (maxM - minM)) * iw;
-    const sy = (N) => m.top + (1 - (N - minN) / (maxN - minN)) * ih;
-
-    const toXY = (p) => `${sx(p.M).toFixed(1)},${sy(p.N).toFixed(1)}`;
-
-    // Path di riempimento (dominio chiuso)
-    const fillPath =
-        domain.map((p, i) => `${i === 0 ? "M" : "L"}${toXY(p)}`).join(" ") + " Z";
-
-    // Contorno spezzato per campo: raggruppo punti consecutivi con stesso campo.
-    const closed = [...domain, domain[0]];
-    const groups = [];
-    let cur = { field: closed[0].field, pts: [closed[0]] };
-    for (let i = 1; i < closed.length; i++) {
-        const p = closed[i];
-        cur.pts.push(p);
-        if (p.field !== cur.field) {
-            groups.push(cur);
-            cur = { field: p.field, pts: [p] };
-        }
-    }
-    groups.push(cur);
-
-    const px = sx(MEd);
-    const py = sy(NEd);
-    const zeroN = minN <= 0 && maxN >= 0 ? sy(0) : null;
-    const zeroM = minM <= 0 && maxM >= 0 ? sx(0) : null;
-
-    return (
-        <svg width="100%" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Dominio M-N con campi di rottura">
-            {/* assi di riferimento (N=0, M=0) */}
-            {zeroN !== null && (
-                <line x1={m.left} y1={zeroN} x2={W - m.right} y2={zeroN} stroke="#e2e8f0" strokeWidth="1" />
-            )}
-            {zeroM !== null && (
-                <line x1={zeroM} y1={m.top} x2={zeroM} y2={H - m.bottom} stroke="#e2e8f0" strokeWidth="1" />
-            )}
-
-            {/* riempimento neutro del dominio */}
-            <path d={fillPath} fill="#f8fafc" stroke="none" />
-
-            {/* contorno colorato per campo di rottura */}
-            {groups.map((g, i) => (
-                <polyline
-                    key={i}
-                    points={g.pts.map(toXY).join(" ")}
-                    fill="none"
-                    stroke={FIELD_COLORS[g.field] || "#334155"}
-                    strokeWidth="3"
-                    strokeLinejoin="round"
-                    strokeLinecap="round"
-                />
-            ))}
-
-            {/* linea dal punto agli assi */}
-            <line x1={px} y1={py} x2={zeroM ?? m.left} y2={py} stroke="#0284c7" strokeWidth="0.75" strokeDasharray="3 3" />
-
-            {/* punto sollecitante */}
-            <circle cx={px} cy={py} r="5.5" fill={verified ? "#0284c7" : "#dc2626"} stroke="#fff" strokeWidth="1.5" />
-            <text x={px + 8} y={py - 8} fontSize="11" fill={verified ? "#0369a1" : "#b91c1c"} fontWeight="bold">
-                ({fmt(MEd, 0)}; {fmt(NEd, 0)})
-            </text>
-
-            {/* etichette assi */}
-            <text x={m.left + iw / 2} y={H - 8} textAnchor="middle" fontSize="12" fill="#475569">
-                M [kNm]
-            </text>
-            <text x={16} y={m.top + ih / 2} textAnchor="middle" fontSize="12" fill="#475569" transform={`rotate(-90 16 ${m.top + ih / 2})`}>
-                N [kN]
-            </text>
-
-            {/* tacche numeriche minime */}
-            <text x={m.left} y={H - m.bottom + 14} textAnchor="middle" fontSize="10" fill="#94a3b8">
-                {fmt(minM, 0)}
-            </text>
-            <text x={W - m.right} y={H - m.bottom + 14} textAnchor="middle" fontSize="10" fill="#94a3b8">
-                {fmt(maxM, 0)}
-            </text>
-            <text x={m.left - 6} y={m.top + 4} textAnchor="end" fontSize="10" fill="#94a3b8">
-                {fmt(maxN, 0)}
-            </text>
-            <text x={m.left - 6} y={H - m.bottom} textAnchor="end" fontSize="10" fill="#94a3b8">
-                {fmt(minN, 0)}
-            </text>
-        </svg>
-    );
-}
-
-// -------- Legenda dei campi di rottura --------
-function FieldLegend({ result }) {
-    const present = [...new Set(result.domain.map((p) => p.field))].sort();
-
-    return (
-        <div className="mt-3 grid grid-cols-1 gap-1.5 border-t border-slate-100 pt-3 sm:grid-cols-2">
-            {present.map((f) => (
-                <div key={f} className="flex items-center gap-2">
-                    <span
-                        className="h-1.5 w-5 shrink-0 rounded-full"
-                        style={{ background: FIELD_COLORS[f] }}
-                    />
-                    <span className="text-[11px] leading-tight text-slate-500">
-                        <b className="text-slate-700">{FAILURE_FIELDS[f].label}</b>{" "}
-                        {FAILURE_FIELDS[f].desc}
-                    </span>
-                </div>
-            ))}
         </div>
     );
 }
@@ -590,13 +313,12 @@ function AssumptionsBox() {
             <div>
                 <p className="font-semibold text-slate-600">Ipotesi di calcolo</p>
                 <p className="mt-1 leading-6">
-                    Pressoflessione retta, SLU. Dominio M-N costruito spazzando l'asse
-                    neutro nei campi di rottura (pivot A: acciaio a ε_su; B: cls a
-                    ε_cu=3,5‰; C: cls a ε_c2=2‰ / ε_c3=1,75‰). Diagramma del
-                    calcestruzzo selezionabile (rettangolo stress-block λ=0,8 η=1,0,
-                    parabola-rettangolo o triangolo-rettangolo), non reagente a
-                    trazione; acciaio elasto-plastico, Es=200 GPa. Convenzione: N&gt;0
-                    compressione, M&gt;0 tende A_s. Verifica: M_Ed ≤ M_Rd(N_Ed).
+                    Pressoflessione retta, SLU, sezioni piane e perfetta aderenza. Dominio M-N costruito campo per campo in forma chiusa:
+                    pivot A (acciaio a ε_ud = 67,5‰), B (cls a ε_cu), C (cls a ε_c2 = 2‰, o ε_c3 = 1,75‰ con il triangolo-rettangolo).
+                    Calcestruzzo non reagente a trazione, con ψ e λ del diagramma scelto (lo stress-block è σ = f_cd per ε ≥ 0,2·ε_cu:
+                    0,8x nei campi 3–5); acciaio con E_s = 200 GPa. N &gt; 0 compressione, M riferito a h/2, M &gt; 0 tende A_s.
+                    Verifica: allo stesso N_Ed, M_Rd,− ≤ M_Ed ≤ M_Rd,+. Le formule di ogni campo, con il confronto numerico, sono nel pannello
+                    «Campi di rottura».
                 </p>
             </div>
         </div>
@@ -609,6 +331,18 @@ function Card({ children }) {
 }
 function CardTitle({ children }) {
     return <h3 className="mb-3 text-sm font-bold text-slate-800">{children}</h3>;
+}
+function Segmented({ value, onChange, options }) {
+    return (
+        <div className="inline-flex rounded-xl bg-slate-100 p-1">
+            {options.map((o) => (
+                <button key={o.value} type="button" onClick={() => onChange(o.value)}
+                    className={`cursor-pointer rounded-lg px-3 py-1 text-xs font-semibold transition ${value === o.value ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
+                    {o.label}
+                </button>
+            ))}
+        </div>
+    );
 }
 function ResultGrid({ children }) {
     return <div className="grid grid-cols-1 gap-y-1">{children}</div>;
@@ -624,20 +358,15 @@ function ResultRow({ label, value, unit, strong }) {
         </div>
     );
 }
-function NumberField({ label, unit, value, onChange }) {
+function NumberField({ label, unit, value, onChange, step = "1" }) {
     return (
         <label className="block">
             <span className="mb-1 block text-xs font-semibold text-slate-500">
                 {label}
                 {unit && <span className="ml-1 text-slate-400">[{unit}]</span>}
             </span>
-            <input
-                type="number"
-                value={value}
-                step="1"
-                onChange={(e) => onChange(e.target.value)}
-                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100"
-            />
+            <input type="number" value={value} step={step} onChange={(e) => onChange(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100" />
         </label>
     );
 }
@@ -645,16 +374,9 @@ function SelectField({ label, value, onChange, options }) {
     return (
         <label className="block">
             <span className="mb-1 block text-xs font-semibold text-slate-500">{label}</span>
-            <select
-                value={value}
-                onChange={(e) => onChange(e.target.value)}
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100"
-            >
-                {options.map((opt) => (
-                    <option key={String(opt.value) + opt.label} value={opt.value}>
-                        {opt.label}
-                    </option>
-                ))}
+            <select value={value} onChange={(e) => onChange(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100">
+                {options.map((opt) => <option key={String(opt.value) + opt.label} value={opt.value}>{opt.label}</option>)}
             </select>
         </label>
     );

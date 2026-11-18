@@ -534,3 +534,64 @@ export const FIELDS = [
     { id: 5, title: "Campo 5", subtitle: "Pivot B, asse neutro sotto l'armatura tesa", ready: true },
     { id: 6, title: "Campo 6", subtitle: "Pivot C, sezione interamente compressa", ready: true },
 ];
+
+// ---------------------------------------------------------------------------
+// DOMINIO COMPLETO (entrambi i rami) e VERIFICA a pressoflessione
+// ---------------------------------------------------------------------------
+// tutti i campi dei due rami, più trazione pura ed estensione per gli assi
+export function buildDomainData(input) {
+    const pos = branchParams(input, 1), neg = branchParams(input, -1);
+    return {
+        pos, neg,
+        f1pos: field1(pos), f1neg: field1(neg), f2pos: field2(pos), f2neg: field2(neg),
+        f3pos: field3(pos), f3neg: field3(neg), f4pos: field4(pos), f4neg: field4(neg),
+        f5pos: field5(pos), f5neg: field5(neg), f6pos: field6(pos), f6neg: field6(neg),
+        pt: pureTension(input), ext: domainExtents(input),
+    };
+}
+const fieldSet = (data, sign) => (sign > 0
+    ? [data.f1pos, data.f2pos, data.f3pos, data.f4pos, data.f5pos, data.f6pos]
+    : [data.f1neg, data.f2neg, data.f3neg, data.f4neg, data.f5neg, data.f6neg]);
+// punto del dominio (forma chiusa) per un ξ qualsiasi del ramo, con il campo
+export function pointAt(data, sign, xi) {
+    const p = sign > 0 ? data.pos : data.neg;
+    const field = fieldOf(p, xi);
+    return { ...fieldSet(data, sign)[field - 1].point(xi), field };
+}
+// ξ ∈ (−∞, +∞) ↔ u ∈ [0, 1] (stessa mappa del cursore globale)
+export const uToXi = (u) => { const t = 2 * u - 1; return t <= -1 ? -Infinity : t >= 1 ? Infinity : t / (1 - Math.abs(t)); };
+export const xiToU = (xi) => (xi === -Infinity ? 0 : xi === Infinity ? 1 : (xi / (1 + Math.abs(xi)) + 1) / 2);
+// stato di rottura del ramo con sforzo normale N [kN]: N(ξ) è non decrescente,
+// bisezione su u; null se N è fuori da [N(−∞), N(+∞)]
+export function solveAtN(data, sign, N) {
+    const lo = pointAt(data, sign, -Infinity), hi = pointAt(data, sign, Infinity);
+    if (N < lo.N - 1e-9 || N > hi.N + 1e-9) return null;
+    let a = 0, b = 1;
+    for (let k = 0; k < 80; k++) {
+        const m = (a + b) / 2;
+        if (pointAt(data, sign, uToXi(m)).N < N) a = m; else b = m;
+    }
+    return pointAt(data, sign, uToXi((a + b) / 2));
+}
+// verifica del punto (N_Ed, M_Ed) [kN, kNm]: dentro il dominio se, a N = N_Ed,
+// M_Rd,− ≤ M_Ed ≤ M_Rd,+; M_Rd del ramo con il segno di M_Ed
+export function verifyDomain(data, NEd, MEd) {
+    const sign = MEd < 0 ? -1 : 1;
+    const NRdMin = pointAt(data, 1, -Infinity).N, NRdMax = pointAt(data, 1, Infinity).N;
+    const rdPos = solveAtN(data, 1, NEd), rdNeg = solveAtN(data, -1, NEd);
+    const rd = sign > 0 ? rdPos : rdNeg;
+    const axialInRange = !!(rdPos && rdNeg);
+    const inside = axialInRange && MEd <= rdPos.M + 1e-9 && MEd >= rdNeg.M - 1e-9;
+    const reach = rd ? rd.M * sign : 0;                    // M_Rd nel verso di M_Ed
+    const utilization = !axialInRange ? Infinity : MEd === 0 ? (inside ? 0 : Infinity) : reach > 0 ? Math.abs(MEd) / reach : Infinity;
+    // momenti estremi dei due rami (dalle curve dei campi)
+    const curve = (s) => fieldSet(data, s).flatMap((f) => f.curve ?? []);
+    const top = curve(1).reduce((m, q) => (q.M > m.M ? q : m), { M: -Infinity });
+    const bot = curve(-1).reduce((m, q) => (q.M < m.M ? q : m), { M: Infinity });
+    const at0 = solveAtN(data, sign, 0);
+    return {
+        sign, rd, rdPos, rdNeg, axialInRange, inside, verified: inside, utilization,
+        NRdMin, NRdMax, MRdAtN: rd ? rd.M : null, MRd0: at0 ? at0.M : null,
+        MRdMax: top.M, NatMmax: top.N, MRdMin: bot.M, NatMmin: bot.N,
+    };
+}

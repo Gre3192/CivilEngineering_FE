@@ -21,6 +21,15 @@ export default function DisciplineLayout() {
     const { pathname } = useLocation();
     const [isSidebarOpen, setIsSidebarOpen] = useState(isDesktop);
 
+    // la pagina non scorre: scorre solo l'area del contenuto sotto la navbar
+    // (la sua barra parte sotto la navigazione); ripristino uscendo dal layout
+    useEffect(() => {
+        const html = document.documentElement;
+        const prev = html.style.overflowY;
+        html.style.overflowY = "hidden";
+        return () => { html.style.overflowY = prev; };
+    }, []);
+
     // su schermi stretti la sidebar si chiude quando si cambia pagina
     useEffect(() => {
         if (!isDesktop()) setIsSidebarOpen(false);
@@ -63,10 +72,11 @@ export default function DisciplineLayout() {
                 onToggleSidebar={handleToggleSidebar}
             />
 
+            {/* area del contenuto: fissa sotto la navbar, con la propria barra di scorrimento */}
             <main
                 className={`
-                    min-h-screen pt-16 transition-all duration-300
-                    ${isSidebarOpen ? "lg:pl-64" : "lg:pl-20"}
+                    page-scroll fixed inset-x-0 bottom-0 top-16 transition-all duration-300
+                    ${isSidebarOpen ? "lg:left-64" : "lg:left-20"}
                 `}
             >
                 <div className="p-4 sm:p-6">

@@ -21,8 +21,9 @@ function fmt(v, dec = 0) {
 
 const BAR_DIAMETERS = [8, 10, 12, 14, 16, 18, 20, 24, 26];
 
-export default function VerifyCrackTool() {
-    const [input, setInput] = useState(DEFAULT_CRACK_INPUT);
+// initialInput: dati di partenza (es. dalla sezione di una trave dell'edificio)
+export default function VerifyCrackTool({ initialInput = null } = {}) {
+    const [input, setInput] = useState(() => (initialInput ? { ...DEFAULT_CRACK_INPUT, ...initialInput } : DEFAULT_CRACK_INPUT));
 
     const result = useMemo(() => crackCheck(input), [input]);
 
@@ -34,7 +35,7 @@ export default function VerifyCrackTool() {
         setField(field, Number.isNaN(n) ? 0 : n);
     }
     function reset() {
-        setInput(DEFAULT_CRACK_INPUT);
+        setInput(initialInput ? { ...DEFAULT_CRACK_INPUT, ...initialInput } : DEFAULT_CRACK_INPUT);
     }
 
     return (

@@ -1,0 +1,1599 @@
+// src/components/concrete/BeamsTool.jsx
+//
+// Struttura: piani, travi e pilastri dell'edificio; ogni trave con il suo schema statico
+// composto (campate, vincoli, continuità sugli appoggi) e i carichi; inviluppi
+// del momento (anche traslato) e del taglio; sezioni scelte cliccando sullo
+// schema o sui diagrammi; per ogni sezione la cascata progetto → verifica a
+// flessione → taglio → fessurazione con i dati precompilati.
+// Le travi sono salvate nel browser (localStorage).
+
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { ArrowLeft, Building, Check, Copy, Info, Pencil, Plus, Trash2, ChevronRight, Search, X, Wand2, CheckCircle2, XCircle, AlertTriangle, Download, Upload } from "lucide-react";
+import { sub } from "../Sym";
+import Tex from "../Tex";
+import { CONCRETE_CLASSES, STEEL_GRADES } from "../../lib/concrete/sectionDesign";
+import { USE_CATEGORIES } from "../../lib/actions/loadData";
+import { SUPPORT_TYPES, analyzeBeam, characteristicSections, itemValue, newBeam, newId, spanVariable, valuesAt } from "../../lib/concrete/beamAnalysis";
+import { verifySection } from "../../lib/concrete/verifySection";
+import { crackCheck } from "../../lib/concrete/crackCheck";
+import SectionDesignTool from "./SectionDesignTool";
+import VerifySectionTool from "./VerifySectionTool";
+import VerifyShearTool from "./VerifyShearTool";
+import VerifyCrackTool from "./VerifyCrackTool";
+
+const STORAGE_KEY = "ce-beams-v1";
+const FLOORS_KEY = "ce-floors-v1";
+const COLUMNS_KEY = "ce-columns-v1";
+const C_POS = "#0284c7", C_NEG = "#dc2626", C_TRASL = "#7c3aed", C_SLE = "#16a34a", C_V = "#ca8a04", C_SEC = "#0f172a";
+
+const fmt = (v, dec = 1) => (v === null || v === undefined || Number.isNaN(v) ? "–" : Number(v).toLocaleString("it-IT", { minimumFractionDigits: dec, maximumFractionDigits: dec }));
+const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+
+function loadBeams() {
+    try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        const arr = raw ? JSON.parse(raw) : null;
+        return Array.isArray(arr) ? arr : null; // anche vuoto: si possono eliminare tutte le travi
+    } catch { return null; }
+}
+
+function loadFloors() {
+    try {
+        const raw = localStorage.getItem(FLOORS_KEY);
+        const arr = raw ? JSON.parse(raw) : null;
+        return Array.isArray(arr) ? arr : null;   // anche vuoto: la struttura parte senza piani
+    } catch { return null; }
+}
+const firstFloor = () => ({ id: newId("f"), name: "Piano terra" });
+function loadColumns() {
+    try {
+        const raw = localStorage.getItem(COLUMNS_KEY);
+        const arr = raw ? JSON.parse(raw) : null;
+        return Array.isArray(arr) ? arr : null;
+    } catch { return null; }
+}
+
+// valori di calcolo di una sezione: inviluppo (traslato o no) con le eventuali sovrascritture
+function sectionValues(beam, an, sec) {
+    const v = an?.ok ? valuesAt(an, sec.x) : null;
+    const useT = beam.useTranslated !== false;
+    const o = sec.over ?? {};
+    // valori arrotondati a 0,01 (kN, kNm): passano così negli strumenti della cascata
+    const r2 = (x) => Math.round(x * 100) / 100 + 0;
+    const pick = (k, auto) => (o[k] !== undefined && o[k] !== null && o[k] !== "" ? Number(o[k]) : r2(auto));
+    const gov = (mx, mn) => (Math.abs(mn) > Math.abs(mx) ? mn : mx);
+    return {
+        Mpos: pick("Mpos", v ? Math.max(0, useT ? v.MmaxT : v.MmaxU) : 0),
+        Mneg: pick("Mneg", v ? Math.min(0, useT ? v.MminT : v.MminU) : 0),
+        V: pick("V", v ? v.VabsU : 0),
+        Mrara: pick("Mrara", v ? gov(v.MmaxR, v.MminR) : 0),
+        Mqp: pick("Mqp", v ? gov(v.MmaxQ, v.MminQ) : 0),
+        raw: v,
+    };
+}
+
+export default function BeamsTool() {
+    // piani dell'edificio; ogni trave appartiene a un piano (floorId)
+    // si parte senza piani, travi e pilastri; travi salvate prima dei piani → un piano «Piano terra»
+    const [floors, setFloors] = useState(() => {
+        const fl = loadFloors() ?? [];
+        const anyOrphan = !fl.length && ((loadBeams() ?? []).length || (loadColumns() ?? []).length);
+        return anyOrphan ? [firstFloor()] : fl;
+    });
+    const [beams, setBeams] = useState(() => loadBeams() ?? []);
+    const [floorSel, setFloorSel] = useState(() => floors[0]?.id ?? null);
+    const [selId, setSelId] = useState(() => beams[0]?.id ?? null);
+    // pagine della trave, della sezione e del pilastro: nell'indirizzo, così funziona anche «indietro» del browser
+    const [params, setParams] = useSearchParams();
+    const beamParam = params.get("trave"), secId = params.get("sezione"), colParam = params.get("pilastro");
+    // pilastri dell'edificio: { id, name, floorId, b, h [mm], H [m] }
+    const [columns, setColumns] = useState(() => loadColumns() ?? []);
+    const [colSel, setColSel] = useState(null);
+    useEffect(() => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(beams)); } catch { /* memoria non disponibile */ } }, [beams]);
+    useEffect(() => { try { localStorage.setItem(COLUMNS_KEY, JSON.stringify(columns)); } catch { /* memoria non disponibile */ } }, [columns]);
+    useEffect(() => { try { localStorage.setItem(FLOORS_KEY, JSON.stringify(floors)); } catch { /* memoria non disponibile */ } }, [floors]);
+    // piano effettivo: le travi senza un piano valido (create prima dei piani) stanno nel primo
+    const floorOf = (b) => (floors.some((f) => f.id === b.floorId) ? b.floorId : floors[0]?.id ?? null);
+    const visible = floorSel ? beams.filter((b) => floorOf(b) === floorSel) : [];
+    const selected = visible.find((b) => b.id === selId) ?? visible[0] ?? null;        // evidenziata nell'elenco
+    const beam = beamParam ? beams.find((b) => b.id === beamParam) ?? null : null;     // trave aperta
+    const openedCol = colParam ? columns.find((c) => c.id === colParam) ?? null : null;
+    const goHome = () => setParams({});
+    const openBeam = (id) => { setSelId(id); setParams({ trave: id }); };
+    const openCol = (id) => { setColSel(id); setParams({ pilastro: id }); };
+    const openSection = (sid) => { if (beam) setParams({ trave: beam.id, sezione: sid }); };
+    const floorName = (id) => floors.find((f) => f.id === id)?.name ?? "—";
+    const changeFloor = (id) => {
+        setFloorSel(id);
+        const first = beams.filter((b) => floorOf(b) === id)[0];
+        if (first) setSelId(first.id);
+    };
+    const addFloor = () => {
+        const f = floors.length ? { id: newId("f"), name: `Piano ${floors.length}` } : firstFloor();
+        setFloors((fs) => [...fs, f]); setFloorSel(f.id);
+        return f;
+    };
+    const renameFloor = (id, name) => setFloors((fs) => fs.map((f) => (f.id === id ? { ...f, name: name.trim() || f.name } : f)));
+    const delFloor = (id) => {
+        if (beams.some((b) => floorOf(b) === id) || columns.some((c) => floorOf(c) === id)) return;
+        const rest = floors.filter((f) => f.id !== id);
+        setFloors(rest); setFloorSel(rest[0]?.id ?? null);
+    };
+    const an = useMemo(() => (beam ? analyzeBeam(beam) : null), [beam]);
+    const updateBeam = useCallback((id, fn) => setBeams((bs) => bs.map((b) => (b.id === id ? fn(b) : b))), []);
+    const upd = (fn) => { if (beam) updateBeam(beam.id, fn); };
+
+    const addBeam = () => {
+        if (!floorSel) return;
+        const nb = { ...newBeam(`T${beams.length + 1}`), floorId: floorSel };
+        setBeams((bs) => [...bs, nb]); setSelId(nb.id);
+    };
+    const dupBeam = (b) => {
+        const nb = { ...JSON.parse(JSON.stringify(b)), id: newId("b"), name: `${b.name} (copia)` };
+        nb.sections = nb.sections.map((s) => ({ ...s, id: newId("s") }));
+        setBeams((bs) => [...bs, nb]); setSelId(nb.id);
+    };
+    // conferma dentro la pagina: window.confirm in alcuni browser (es. quello integrato
+    // nell'app) non compare e risponde sempre «annulla»
+    const [ask, setAsk] = useState(null);           // { title, text, yes, onYes }
+    const [notice, setNotice] = useState(null);     // avviso nell'intestazione (es. file non valido)
+    const delBeam = (b) => {
+        setAsk({
+            title: `Eliminare la trave ${b.name}?`,
+            text: `Si perdono lo schema statico, i carichi e ${b.sections.length ? `le ${b.sections.length} sezioni di calcolo con i risultati della cascata` : "le impostazioni della trave"}. L'operazione non si può annullare.`,
+            yes: "Elimina la trave",
+            onYes: () => {
+                setBeams((bs) => bs.filter((x) => x.id !== b.id));
+                if (b.id === selId) setSelId((beams.find((x) => x.id !== b.id && floorOf(x) === floorSel) ?? beams.find((x) => x.id !== b.id))?.id ?? null);
+                if (b.id === beamParam) goHome();
+            },
+        });
+    };
+    const visibleCols = floorSel ? columns.filter((c) => floorOf(c) === floorSel) : [];
+    const addColumn = () => {
+        if (!floorSel) return;
+        const nc = { id: newId("c"), name: `P${columns.length + 1}`, floorId: floorSel, b: 300, h: 300, H: 3 };
+        setColumns((cs) => [...cs, nc]); setColSel(nc.id);
+    };
+    const updColumn = (id, patch) => setColumns((cs) => cs.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+    const delColumn = (c) => {
+        setAsk({
+            title: `Eliminare il pilastro ${c.name}?`,
+            text: "L'operazione non si può annullare.",
+            yes: "Elimina il pilastro",
+            onYes: () => {
+                setColumns((cs) => cs.filter((x) => x.id !== c.id));
+                if (c.id === colParam) goHome();
+            },
+        });
+    };
+    const exportJson = () => {
+        const blob = new Blob([JSON.stringify({ version: 3, floors, beams, columns }, null, 2)], { type: "application/json" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob); a.download = "travi-edificio.json"; a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    };
+    const fileRef = useRef(null);
+    const importJson = (file) => {
+        if (!file) return;
+        file.text().then((t) => {
+            try {
+                const data = JSON.parse(t);
+                // formato con i piani ({ floors, beams }) o vecchio formato (solo l'elenco delle travi)
+                const bs = Array.isArray(data) ? data : data?.beams;
+                const fs = !Array.isArray(data) && Array.isArray(data?.floors) && data.floors.length ? data.floors : [firstFloor()];
+                if (Array.isArray(bs) && bs.length && bs[0].spans) {
+                    const fixed = bs.map((b) => (fs.some((f) => f.id === b.floorId) ? b : { ...b, floorId: fs[0].id }));
+                    const cols = !Array.isArray(data) && Array.isArray(data?.columns) ? data.columns : [];
+                    setFloors(fs); setBeams(fixed); setColumns(cols); setFloorSel(fs[0].id); setSelId(fixed[0].id); goHome();
+                    setNotice(null);
+                } else setNotice("File non valido: nessuna trave trovata.");
+            } catch { setNotice("File non valido: non è un JSON esportato da questa pagina."); }
+        });
+    };
+
+    const addSection = (x, label) => {
+        if (!an.ok) return null;
+        const xr = Math.round(Math.min(an.Ltot, Math.max(0, x)) * 100) / 100;
+        const id = newId("s");
+        upd((b) => ({ ...b, sections: [...b.sections, { id, x: xr, label: label ?? `S${b.sections.length + 1}`, over: {} }].sort((p, q) => p.x - q.x) }));
+        return id;
+    };
+    const addCharacteristic = () => {
+        if (!an.ok) return;
+        const cs = characteristicSections(beam, an).filter((c) => !beam.sections.some((s) => Math.abs(s.x - c.x) < 0.02));
+        upd((b) => ({ ...b, sections: [...b.sections, ...cs.map((c) => ({ id: newId("s"), x: Math.round(c.x * 100) / 100, label: c.label, over: {} }))].sort((p, q) => p.x - q.x) }));
+    };
+
+    const section = secId && beam ? beam.sections.find((s) => s.id === secId) : null;
+    const [fitRef, fitH] = useFitHeight();
+    const dialog = ask && <ConfirmModal {...ask} onClose={() => setAsk(null)} />;
+
+    // pagina della trave: schema statico per primo, poi diagrammi, sezioni e cascata della sezione
+    if (beam) {
+        return <>{section
+            ? <SectionWorkspace key={section.id} beam={beam} an={an} section={section} onBack={() => setParams({ trave: beam.id })} updateBeam={upd} />
+            : (
+                <div className="space-y-4">
+                    <PageBar onBack={goHome} onDelete={() => delBeam(beam)} deleteLabel="Elimina trave" crumbs={[floorName(floorOf(beam)), beam.name]} sub={`Trave · ${beam.spans.length} ${beam.spans.length === 1 ? "campata" : "campate"} · sezione ${beam.section.b}×${beam.section.h} mm`} />
+                    <BeamEditor beam={beam} an={an} upd={upd} addSection={addSection} addCharacteristic={addCharacteristic} openSection={openSection}
+                        floors={floors} floorId={floorOf(beam)} onMoveFloor={(fid) => upd((b) => ({ ...b, floorId: fid }))} />
+                </div>
+            )}{dialog}</>;
+    }
+    // pagina del pilastro
+    if (openedCol) {
+        return (
+            <div className="space-y-4">
+                <PageBar onBack={goHome} onDelete={() => delColumn(openedCol)} deleteLabel="Elimina pilastro" crumbs={[floorName(floorOf(openedCol)), openedCol.name]} sub={`Pilastro · ${openedCol.b}×${openedCol.h} mm · H = ${fmt(num(openedCol.H), 2)} m`} />
+                <PillarPage col={openedCol} floors={floors} floorId={floorOf(openedCol)} onUpdate={(patch) => updColumn(openedCol.id, patch)} />
+                {dialog}
+            </div>
+        );
+    }
+    // elenco dell'edificio: il box occupa tutta la finestra, a scorrere sono solo gli elenchi
+    return (
+        <section ref={fitRef} style={fitH ? { height: fitH } : undefined} className="flex flex-col rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                    <h3 className="text-sm font-bold text-slate-800">Piani, travi e pilastri</h3>
+                    <p className="text-xs text-slate-500">Scegli il piano; doppio clic (o «Apri») su una trave o un pilastro per aprirne la pagina con schema statico, sezioni, progetto e verifiche.</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                    {notice && (
+                        <span role="alert" className="inline-flex items-center gap-1.5 rounded-lg bg-red-50 px-2 py-1 text-xs font-semibold text-red-700">
+                            <AlertTriangle size={13} /> {notice}
+                            <button type="button" onClick={() => setNotice(null)} aria-label="Chiudi l'avviso" className="rounded p-0.5 hover:bg-red-100"><X size={12} /></button>
+                        </span>
+                    )}
+                    <IconBtn onClick={exportJson} title="Esporta l'edificio (JSON)"><Download size={14} /> Esporta</IconBtn>
+                    <IconBtn onClick={() => fileRef.current?.click()} title="Importa l'edificio (JSON)"><Upload size={14} /> Importa</IconBtn>
+                    <input ref={fileRef} type="file" accept="application/json" className="hidden" onChange={(e) => { importJson(e.target.files?.[0]); e.target.value = ""; }} />
+                </div>
+            </div>
+            <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.3fr)_minmax(0,1fr)]">
+                <FloorsColumn floors={floors} value={floorSel} onChange={changeFloor} onAdd={addFloor} onRename={renameFloor} onDelete={delFloor}
+                    counts={Object.fromEntries(floors.map((f) => [f.id, { b: beams.filter((b) => floorOf(b) === f.id).length, c: columns.filter((c) => floorOf(c) === f.id).length }]))}
+ />
+                <BeamsColumn beams={visible} activeId={selected?.id} onSelect={setSelId} onOpen={openBeam} onAdd={addBeam} onDup={dupBeam} onDel={delBeam}
+                    noFloor={!floorSel} floorTitle={floorSel ? floorName(floorSel) : "nessun piano"} />
+                <PillarsColumn columns={visibleCols} activeId={colSel} onSelect={setColSel} onOpen={openCol} onAdd={addColumn} onDel={delColumn}
+                    noFloor={!floorSel} floorTitle={floorSel ? floorName(floorSel) : "nessun piano"} />
+            </div>
+            {dialog}
+        </section>
+    );
+}
+
+// altezza che porta il box fino al fondo della finestra, senza far scorrere la
+// pagina: spazio dalla sua cima al fondo, meno i padding/margini inferiori dei
+// contenitori. Sotto 1024 px (colonne impilate) altezza naturale.
+function useFitHeight(minH = 420) {
+    const ref = useRef(null);
+    const [h, setH] = useState(null);
+    useLayoutEffect(() => {
+        const fit = () => {
+            const el = ref.current;
+            if (!el) return;
+            if (window.innerWidth < 1024) { setH(null); return; }
+            let below = 0;
+            for (let n = el; n && n !== document.body; n = n.parentElement) {
+                const cs = getComputedStyle(n);
+                below += (n === el ? 0 : parseFloat(cs.paddingBottom) || 0) + (parseFloat(cs.marginBottom) || 0) + (n === el ? 0 : parseFloat(cs.borderBottomWidth) || 0);
+            }
+            const scroller = el.closest("main");            // area del contenuto che scorre (layout)
+            const top = el.getBoundingClientRect().top + (scroller ? scroller.scrollTop : window.scrollY);
+            setH(Math.max(minH, Math.floor(window.innerHeight - top - below)));
+        };
+        fit();
+        window.addEventListener("resize", fit);
+        return () => window.removeEventListener("resize", fit);
+    }, [minH]);
+    return [ref, h];
+}
+
+// finestra di conferma (eliminazioni): Invio conferma, Esc o clic fuori annulla
+function ConfirmModal({ title, text, yes = "Conferma", onYes, onClose }) {
+    const yesRef = useRef(null);
+    useEffect(() => {
+        yesRef.current?.focus();
+        const onKey = (e) => { if (e.key === "Escape") onClose(); };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [onClose]);
+    return (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/30 p-4" role="alertdialog" aria-modal="true" aria-label={title}
+            onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+            <div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl">
+                <div className="flex items-start gap-3">
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-red-50 text-red-600"><Trash2 size={17} /></span>
+                    <div>
+                        <p className="text-sm font-bold text-slate-800">{title}</p>
+                        {text && <p className="mt-1 text-xs leading-5 text-slate-500">{text}</p>}
+                    </div>
+                </div>
+                <div className="mt-5 flex justify-end gap-2">
+                    <button type="button" onClick={onClose} className="rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50">Annulla</button>
+                    <button ref={yesRef} type="button" onClick={() => { onYes(); onClose(); }} className="rounded-xl bg-red-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-red-700">{yes}</button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// barra in cima alle pagine di trave e pilastro: torna all'elenco della struttura
+function PageBar({ onBack, crumbs, sub: subtitle, onDelete = null, deleteLabel = "Elimina" }) {
+    // sticky subito sotto l'intestazione fissa della pagina (titolo «Struttura»):
+    // insieme restano in cima all'area che scorre
+    return (
+        <div className="sticky z-20 bg-slate-100 pb-1" style={{ top: "var(--tool-header-h, 0px)" }}>
+        <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+            <button type="button" onClick={onBack} className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50">
+                <ArrowLeft size={14} /> Struttura
+            </button>
+            <div className="min-w-0">
+                <p className="truncate text-sm font-bold text-slate-800">{crumbs.join(" › ")}</p>
+                {subtitle && <p className="truncate text-xs text-slate-500">{subtitle}</p>}
+            </div>
+            {onDelete && (
+                <button type="button" onClick={onDelete} className="ml-auto inline-flex items-center gap-1.5 rounded-xl border border-red-200 px-3 py-1.5 text-xs font-semibold text-red-600 transition hover:bg-red-50">
+                    <Trash2 size={14} /> {deleteLabel}
+                </button>
+            )}
+        </div>
+        </div>
+    );
+}
+
+// pagina del pilastro: dati e sezione (progetto e verifica a pressoflessione: prossimo passo)
+function PillarPage({ col, floors, floorId, onUpdate }) {
+    const set = (k) => (v) => onUpdate({ [k]: v });
+    const b = num(col.b), h = num(col.h), c = num(col.c ?? 40);
+    const S = 150 / Math.max(b, h, 1), W2 = 300, H2 = 260, x0 = W2 / 2 - (b * S) / 2, y0 = H2 / 2 - (h * S) / 2 - 10;
+    return (
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <Card title="Pilastro">
+                <div className="grid grid-cols-2 gap-3">
+                    <TextField label="Nome" value={col.name} onChange={set("name")} />
+                    <SelField label="Piano" value={floorId} onChange={set("floorId")} options={floors.map((f) => ({ value: f.id, label: f.name }))} />
+                    <NumField label="Base b" unit="mm" value={col.b} onChange={set("b")} />
+                    <NumField label="Altezza h" unit="mm" value={col.h} onChange={set("h")} />
+                    <NumField label="Altezza di interpiano H" unit="m" value={col.H} onChange={set("H")} />
+                    <NumField label="Copriferro (asse barre)" unit="mm" value={col.c ?? 40} onChange={set("c")} />
+                    <SelField label="Calcestruzzo" value={col.fck ?? 25} onChange={(v) => onUpdate({ fck: num(v) })} options={CONCRETE_CLASSES.map((k) => ({ value: k.fck, label: k.id }))} />
+                    <SelField label="Acciaio" value={col.fyk ?? 450} onChange={(v) => onUpdate({ fyk: num(v) })} options={STEEL_GRADES.filter((g, i, a) => a.findIndex((t) => t.fyk === g.fyk) === i).map((g) => ({ value: g.fyk, label: g.id }))} />
+                </div>
+            </Card>
+            <Card title="Sezione">
+                <svg viewBox={`0 0 ${W2} ${H2}`} width="100%" className="mx-auto max-w-[360px]" role="img" aria-label={`Sezione del pilastro ${col.name}`}>
+                    <rect x={x0} y={y0} width={b * S} height={h * S} fill="#f1f5f9" stroke="#334155" strokeWidth="1.6" />
+                    <rect x={x0 + c * S} y={y0 + c * S} width={Math.max(0, (b - 2 * c) * S)} height={Math.max(0, (h - 2 * c) * S)} fill="none" stroke="#94a3b8" strokeDasharray="4 3" />
+                    {[[x0 + c * S, y0 + c * S], [x0 + (b - c) * S, y0 + c * S], [x0 + c * S, y0 + (h - c) * S], [x0 + (b - c) * S, y0 + (h - c) * S]].map(([x, y], i) => <circle key={i} cx={x} cy={y} r="4" fill="#0f172a" />)}
+                    <line x1={x0} x2={x0 + b * S} y1={y0 + h * S + 18} y2={y0 + h * S + 18} stroke="#64748b" />
+                    <text x={W2 / 2} y={y0 + h * S + 32} fontSize="12" textAnchor="middle" fill="#334155" fontWeight="600">b = {fmt(b, 0)} mm</text>
+                    <line x1={x0 + b * S + 18} x2={x0 + b * S + 18} y1={y0} y2={y0 + h * S} stroke="#64748b" />
+                    <text x={x0 + b * S + 26} y={y0 + (h * S) / 2} fontSize="12" fill="#334155" fontWeight="600" transform={`rotate(90 ${x0 + b * S + 26} ${y0 + (h * S) / 2})`} textAnchor="middle">h = {fmt(h, 0)} mm</text>
+                </svg>
+                <p className="mt-2 text-center text-[11px] text-slate-400">Barre d'angolo indicative; l'armatura verrà dal progetto.</p>
+            </Card>
+            <div className="lg:col-span-2">
+                <Card title="Progetto e verifica">
+                    <p className="text-sm text-slate-600">Il progetto e la verifica a pressoflessione del pilastro (con il dominio M-N per campi della Verifica sezione) e i carichi dalle reazioni delle travi del piano superiore sono il prossimo passo.</p>
+                </Card>
+            </div>
+        </div>
+    );
+}
+
+// ---------------------------------------------------------------------------
+// EDIFICIO A TRE COLONNE: piani | travi | pilastri
+// ---------------------------------------------------------------------------
+// search: casella di ricerca nell'intestazione, fra il titolo e il pulsante di aggiunta
+// (fuori dall'elenco che scorre, quindi sempre visibile)
+function Column({ title, sub: subtitle, action, search = null, children }) {
+    return (
+        <div className="flex min-h-[280px] flex-col rounded-xl border border-slate-200 bg-slate-50/50 lg:min-h-0">
+            <div className="flex items-center justify-between gap-2 border-b border-slate-200 px-3 py-2">
+                <div className={`min-w-0 ${search ? "shrink-0" : ""}`}>
+                    <p className="text-xs font-bold uppercase tracking-wide text-slate-600">{title}</p>
+                    {subtitle && <p className="truncate text-[11px] text-slate-400">{subtitle}</p>}
+                </div>
+                {search && <div className="min-w-0 flex-1">{search}</div>}
+                {action}
+            </div>
+            <div className="scroll-thin max-h-[420px] min-h-0 flex-1 space-y-1.5 py-2 pl-2 pr-1 lg:max-h-none">{children}</div>
+        </div>
+    );
+}
+function OpenBtn({ onClick, label }) {
+    return (
+        <button type="button" onClick={onClick} title={label} aria-label={label}
+            className="inline-flex shrink-0 items-center gap-0.5 rounded-lg border border-sky-200 bg-sky-50 px-2 py-0.5 text-[11px] font-semibold text-sky-700 transition hover:bg-sky-100">
+            Apri <ChevronRight size={12} />
+        </button>
+    );
+}
+function AddBtn({ onClick, label, disabled = false }) {
+    return (
+        <button type="button" onClick={onClick} disabled={disabled} title={disabled ? "Crea prima un piano" : undefined}
+            className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-sky-600 px-2 py-1 text-[11px] font-semibold text-white shadow-sm transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-sky-600">
+            <Plus size={12} /> {label}
+        </button>
+    );
+}
+const itemCls = (active) => `group flex w-full cursor-pointer items-start gap-2 rounded-lg border px-2.5 py-2 text-left transition ${active ? "border-sky-400 bg-white ring-1 ring-sky-200" : "border-transparent bg-white/70 hover:border-slate-200 hover:bg-white"}`;
+
+function FloorsColumn({ floors, value, onChange, onAdd, onRename, onDelete, counts }) {
+    const [editing, setEditing] = useState(null);       // { id, name } durante la rinomina
+    const commit = () => { if (editing) onRename(editing.id, editing.name); setEditing(null); };
+    const desc = (k) => `${k.b} ${k.b === 1 ? "trave" : "travi"} · ${k.c} ${k.c === 1 ? "pilastro" : "pilastri"}`;
+    return (
+        <Column title="Piani" sub={`${floors.length} ${floors.length === 1 ? "piano" : "piani"}`}
+            action={<AddBtn label="Piano" onClick={() => { const f = onAdd(); setEditing({ id: f.id, name: f.name }); }} />}>
+            {floors.map((f) => {
+                const k = counts[f.id] ?? { b: 0, c: 0 }, active = value === f.id;
+                const canDelete = !k.b && !k.c;
+                if (editing?.id === f.id) {
+                    return (
+                        <div key={f.id} className={itemCls(true)}>
+                            <Building size={14} className="mt-1 shrink-0 text-sky-600" />
+                            <input autoFocus value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+                                onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") setEditing(null); }} onBlur={commit}
+                                aria-label="Nuovo nome del piano" className="min-w-0 flex-1 rounded-md border border-sky-300 px-2 py-0.5 text-sm outline-none ring-2 ring-sky-100" />
+                            <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={commit} aria-label="Conferma il nome" className="rounded-md p-1 text-emerald-600 hover:bg-emerald-50"><Check size={14} /></button>
+                        </div>
+                    );
+                }
+                return (
+                    <div key={f.id} role="button" tabIndex={0} onClick={() => onChange(f.id)} onKeyDown={(e) => { if (e.key === "Enter") onChange(f.id); }}
+                        onDoubleClick={() => setEditing({ id: f.id, name: f.name })} className={itemCls(active)}>
+                        <Building size={14} className={`mt-0.5 shrink-0 ${active ? "text-sky-600" : "text-slate-400"}`} />
+                        <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-semibold text-slate-800">{f.name}</p>
+                            <p className="text-[11px] text-slate-500">{desc(k)}</p>
+                        </div>
+                        <div className="flex shrink-0 opacity-50 transition group-hover:opacity-100 group-focus-within:opacity-100">
+                            <MiniBtn title="Rinomina il piano" onClick={(e) => { e.stopPropagation(); setEditing({ id: f.id, name: f.name }); }}><Pencil size={12} /></MiniBtn>
+                            {(
+                                <button type="button" disabled={!canDelete} onClick={(e) => { e.stopPropagation(); onDelete(f.id); }}
+                                    title={canDelete ? "Elimina il piano" : "Si possono eliminare solo i piani senza travi né pilastri"} aria-label="Elimina il piano"
+                                    className="ml-1 rounded-md p-1 text-slate-500 transition hover:bg-slate-100 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-30"><Trash2 size={12} /></button>
+                            )}
+                        </div>
+                    </div>
+                );
+            })}
+            {floors.length === 0 && (
+                <p className="rounded-lg border border-dashed border-slate-200 px-2 py-4 text-center text-xs text-slate-500">
+                    Nessun piano. <button type="button" onClick={() => { const f = onAdd(); setEditing({ id: f.id, name: f.name }); }} className="font-semibold text-sky-700 hover:underline">Aggiungi il primo piano</button>
+                </p>
+            )}
+        </Column>
+    );
+}
+
+function SearchBox({ value, onChange, placeholder, label, onEnter }) {
+    return (
+        <label className="relative block">
+            <Search size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} aria-label={label}
+                onKeyDown={(e) => { if (e.key === "Enter") onEnter?.(); if (e.key === "Escape") onChange(""); }}
+                className="w-full rounded-lg border border-slate-200 bg-white py-1 pl-7 pr-7 text-xs outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100" />
+            {value && <button type="button" onClick={() => onChange("")} aria-label="Cancella la ricerca" className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-slate-400 hover:text-slate-700"><X size={12} /></button>}
+        </label>
+    );
+}
+
+function BeamsColumn({ beams, activeId, onSelect, onOpen, onAdd, onDup, onDel, noFloor, floorTitle }) {
+    const [query, setQuery] = useState("");
+    const q = query.trim().toLowerCase();
+    const shown = q ? beams.filter((b) => b.name.toLowerCase().includes(q)) : beams;
+    const listRef = useRef(null);
+    // la trave selezionata resta visibile nell'elenco
+    useEffect(() => { listRef.current?.querySelector(`[data-beam="${activeId}"]`)?.scrollIntoView({ block: "nearest" }); }, [activeId]);
+    return (
+        <Column title="Travi" sub={`${floorTitle} · ${q ? `${shown.length} di ${beams.length}` : beams.length}`} action={<AddBtn label="Trave" onClick={onAdd} disabled={noFloor} />}
+            search={<SearchBox value={query} onChange={setQuery} placeholder="Cerca una trave…" label="Cerca una trave per nome" onEnter={() => { if (shown.length) onOpen(shown[0].id); }} />}>
+            <div ref={listRef} className="space-y-1.5">
+                {shown.length === 0 && (
+                    <p className="rounded-lg border border-dashed border-slate-200 px-2 py-4 text-center text-xs text-slate-500">
+                        {noFloor ? <>Crea prima un piano nella colonna Piani.</> : q ? <>Nessuna trave trovata per «{query}».</> : <>Nessuna trave in questo piano. <button type="button" onClick={onAdd} className="font-semibold text-sky-700 hover:underline">Creane una</button></>}
+                    </p>
+                )}
+                {shown.map((b) => {
+                    const active = b.id === activeId;
+                    const L = b.spans.reduce((t, sp) => t + num(sp.L), 0);
+                    return (
+                        <div key={b.id} data-beam={b.id} role="button" tabIndex={0} onClick={() => onSelect(b.id)} onDoubleClick={() => onOpen(b.id)}
+                            onKeyDown={(e) => { if (e.key === "Enter") onOpen(b.id); }} title="Doppio clic per aprire la trave" className={`${itemCls(active)} flex-col`}>
+                            <div className="flex w-full items-start justify-between gap-2">
+                                <div className="min-w-0">
+                                    <p className="truncate text-sm font-semibold text-slate-800">{b.name}
+</p>
+                                    <p className="text-[11px] text-slate-500">{b.spans.length} {b.spans.length === 1 ? "campata" : "campate"} · L = {fmt(L, 2)} m · {b.section.b}×{b.section.h} · {b.sections.length} sez.</p>
+                                </div>
+                                <div className="flex shrink-0 opacity-50 transition group-hover:opacity-100 group-focus-within:opacity-100">
+                                    <MiniBtn title="Duplica" onClick={(e) => { e.stopPropagation(); onDup(b); }}><Copy size={12} /></MiniBtn>
+                                    {onDel && <MiniBtn title="Elimina" onClick={(e) => { e.stopPropagation(); onDel(b); }}><Trash2 size={12} /></MiniBtn>}
+                                </div>
+                                <OpenBtn onClick={(e) => { e.stopPropagation(); onOpen(b.id); }} label={`Apri la trave ${b.name}`} />
+                            </div>
+                            <div className="w-full"><SchemeSVG beam={b} mini /></div>
+                        </div>
+                    );
+                })}
+            </div>
+        </Column>
+    );
+}
+
+function PillarsColumn({ columns, activeId, onSelect, onOpen, onAdd, onDel, noFloor, floorTitle }) {
+    const [query, setQuery] = useState("");
+    const norm = (t) => String(t).toLowerCase().replace(/×/g, "x").replace(/\s+/g, "");
+    const q = norm(query.trim());
+    const shown = q ? columns.filter((c) => norm(c.name).includes(q) || norm(`${c.b}x${c.h}`).includes(q) || norm(`${c.b / 10}x${c.h / 10}`).includes(q)) : columns;
+    return (
+        <Column title="Pilastri" sub={`${floorTitle} · ${q ? `${shown.length} di ${columns.length}` : columns.length}`} action={<AddBtn label="Pilastro" onClick={onAdd} disabled={noFloor} />}
+            search={<SearchBox value={query} onChange={setQuery} placeholder="Cerca (nome o b×h)…" label="Cerca un pilastro per nome o sezione"
+                onEnter={() => { if (shown.length) onOpen(shown[0].id); }} />}>
+            {shown.length === 0 && (
+                <p className="rounded-lg border border-dashed border-slate-200 px-2 py-4 text-center text-xs text-slate-500">
+                    {noFloor ? <>Crea prima un piano nella colonna Piani.</> : q ? <>Nessun pilastro trovato per «{query}».</>
+                        : <>Nessun pilastro in questo piano. <button type="button" onClick={onAdd} className="font-semibold text-sky-700 hover:underline">Aggiungine uno</button></>}
+                </p>
+            )}
+            {shown.map((c) => {
+                const active = c.id === activeId;
+                const k = 18 / Math.max(c.b, c.h, 1);              // miniatura della sezione in scala
+                return (
+                    <div key={c.id} className={`${itemCls(active)} flex-col`} role="button" tabIndex={0} onClick={() => onSelect(c.id)} onDoubleClick={() => onOpen(c.id)}
+                        onKeyDown={(e) => { if (e.key === "Enter") onOpen(c.id); }} title="Doppio clic per aprire il pilastro">
+                        <div className="flex w-full items-center gap-2">
+                            <svg viewBox="0 0 22 22" width="22" height="22" className="shrink-0" aria-hidden="true">
+                                <rect x={11 - (c.b * k) / 2} y={11 - (c.h * k) / 2} width={c.b * k} height={c.h * k} fill="#e2e8f0" stroke="#334155" strokeWidth="1.2" />
+                            </svg>
+                            <div className="min-w-0 flex-1">
+                                <p className="truncate text-sm font-semibold text-slate-800">{c.name}
+</p>
+                                <p className="text-[11px] text-slate-500">{c.b}×{c.h} mm · H = {fmt(num(c.H), 2)} m</p>
+                            </div>
+                            <div className="flex shrink-0 opacity-50 transition group-hover:opacity-100 group-focus-within:opacity-100">
+                                <MiniBtn title="Elimina" onClick={(e) => { e.stopPropagation(); onDel(c); }}><Trash2 size={12} /></MiniBtn>
+                            </div>
+                            <OpenBtn onClick={(e) => { e.stopPropagation(); onOpen(c.id); }} label={`Apri il pilastro ${c.name}`} />
+                        </div>
+                    </div>
+                );
+            })}
+        </Column>
+    );
+}
+
+// ---------------------------------------------------------------------------
+// EDITOR DELLA TRAVE
+// ---------------------------------------------------------------------------
+function BeamEditor({ beam, an, upd, addSection, addCharacteristic, openSection, floors, floorId, onMoveFloor }) {
+    const setSec = (k, v) => upd((b) => ({ ...b, section: { ...b.section, [k]: v } }));
+    const setSpan = (j, k, v) => upd((b) => ({ ...b, spans: b.spans.map((s, i) => (i === j ? { ...s, [k]: v, items: s.items ? { ...s.items, [k]: undefined } : s.items } : s)) }));
+    const setNode = (i, k, v) => upd((b) => ({ ...b, nodes: b.nodes.map((n, q) => (q === i ? { ...n, [k]: v } : n)) }));
+    const addSpan = () => upd((b) => {
+        const last = b.spans[b.spans.length - 1];
+        return { ...b, spans: [...b.spans, { ...last }], nodes: [...b.nodes.slice(0, -1), { ...b.nodes[b.nodes.length - 1], type: b.nodes[b.nodes.length - 1].type === "free" ? "pin" : b.nodes[b.nodes.length - 1].type, continuous: true }, { type: "pin", continuous: true }] };
+    });
+    const removeSpan = (j) => upd((b) => {
+        if (b.spans.length < 2) return b;
+        const spans = b.spans.filter((_, i) => i !== j);
+        const nodes = b.nodes.filter((_, i) => i !== (j === b.spans.length - 1 ? j : j + 1)); // l'ultima campata conserva il vincolo di estremità
+        const L = spans.reduce((t, s) => t + num(s.L), 0);
+        return { ...b, spans, nodes, sections: b.sections.filter((s) => s.x <= L + 1e-9) };
+    });
+    const [show, setShow] = useState({ T: true, SLE: false });
+    const [editOpen, setEditOpen] = useState(false);
+    const [showReac, setShowReac] = useState(true);
+    const editBtn = (
+        <button type="button" onClick={() => setEditOpen(true)} className="inline-flex items-center gap-1.5 rounded-full bg-sky-600 px-3 py-1 text-xs font-semibold text-white shadow-sm transition hover:bg-sky-700">
+            <Pencil size={13} /> Modifica trave
+        </button>
+    );
+
+    return (
+        <div className="space-y-4">
+            {/* -------- DATI: pannello laterale, i disegni restano a tutta larghezza -------- */}
+            {editOpen && <EditDrawer title={`Trave ${beam.name}`} onClose={() => setEditOpen(false)}>
+                <Card title="Trave">
+                    <div className="grid grid-cols-2 gap-3">
+                        <TextField label="Nome" value={beam.name} onChange={(v) => upd((b) => ({ ...b, name: v }))} />
+                        <SelField label="Piano" value={floorId} onChange={onMoveFloor} options={floors.map((f) => ({ value: f.id, label: f.name }))} />
+                        <NumField label="Base b" unit="mm" value={beam.section.b} onChange={(v) => setSec("b", v)} />
+                        <NumField label="Altezza h" unit="mm" value={beam.section.h} onChange={(v) => setSec("h", v)} />
+                        <NumField label="Copriferro (asse barre)" unit="mm" value={beam.section.c} onChange={(v) => setSec("c", v)} />
+                        <div />
+                        <SelField label="Calcestruzzo" value={beam.section.fck} onChange={(v) => setSec("fck", num(v))} options={CONCRETE_CLASSES.map((c) => ({ value: c.fck, label: c.id }))} />
+                        <SelField label="Acciaio" value={beam.section.fyk} onChange={(v) => setSec("fyk", num(v))} options={STEEL_GRADES.filter((s, i, a) => a.findIndex((t) => t.fyk === s.fyk) === i).map((s) => ({ value: s.fyk, label: s.id }))} />
+                    </div>
+                    <label className="mt-3 flex cursor-pointer items-center gap-2 text-xs font-semibold text-slate-600">
+                        <input type="checkbox" checked={beam.selfWeight} onChange={(e) => upd((b) => ({ ...b, selfWeight: e.target.checked }))} className="h-4 w-4 accent-sky-600" />
+                        Peso proprio in g₁ (25 kN/m³ · b · h = {fmt((25 * beam.section.b * beam.section.h) / 1e6, 2)} kN/m)
+                    </label>
+                </Card>
+
+                <Card title="Schema statico e carichi">
+                    <p className="mb-2 text-[11px] leading-4 text-slate-500">Vincoli ai nodi e, sugli appoggi interni, continuità della trave (continua) o cerniera (sconnessa). Carichi distribuiti per campata, verso il basso.</p>
+                    <div className="space-y-2">
+                        {beam.nodes.map((nd, i) => {
+                            const internal = i > 0 && i < beam.nodes.length - 1;
+                            return (
+                                <div key={i}>
+                                    <div className="flex flex-wrap items-center gap-2 rounded-xl bg-slate-50 px-3 py-2">
+                                        <span className="w-14 text-xs font-bold text-slate-600">Nodo {i + 1}</span>
+                                        <select value={nd.type} onChange={(e) => setNode(i, "type", e.target.value)} className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs">
+                                            {SUPPORT_TYPES.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+                                        </select>
+                                        {internal && (
+                                            <div className="inline-flex rounded-lg bg-white p-0.5 ring-1 ring-slate-200">
+                                                {[{ v: true, l: "Continua" }, { v: false, l: "Sconnessa" }].map((o) => (
+                                                    <button key={o.l} type="button" onClick={() => setNode(i, "continuous", o.v)}
+                                                        className={`rounded-md px-2 py-0.5 text-[11px] font-semibold ${nd.continuous !== false === o.v ? "bg-sky-600 text-white" : "text-slate-500 hover:text-slate-700"}`}>{o.l}</button>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                    {i < beam.spans.length && (
+                                        <div className="ml-4 mt-2 border-l-2 border-sky-100 pl-3">
+                                            <div className="mb-1 flex items-center justify-between">
+                                                <span className="text-xs font-semibold text-sky-700">Campata {i + 1}</span>
+                                                {beam.spans.length > 1 && <MiniBtn title="Rimuovi campata" onClick={() => removeSpan(i)}><Trash2 size={12} /></MiniBtn>}
+                                            </div>
+                                            <div className="grid grid-cols-4 gap-2">
+                                                <NumField small label="L" unit="m" value={beam.spans[i].L} onChange={(v) => setSpan(i, "L", v)} />
+                                                <NumField small label="g₁" unit="kN/m" value={beam.spans[i].g1} onChange={(v) => setSpan(i, "g1", v)} />
+                                                <NumField small label="g₂" unit="kN/m" value={beam.spans[i].g2} onChange={(v) => setSpan(i, "g2", v)} />
+                                                <NumField small label="q" unit="kN/m" value={beam.spans[i].q} onChange={(v) => setSpan(i, "q", v)} />
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })}
+                    </div>
+                    <button type="button" onClick={addSpan} className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-sky-300 px-3 py-1.5 text-xs font-semibold text-sky-700 transition hover:bg-sky-50">
+                        <Plus size={13} /> Aggiungi campata
+                    </button>
+                </Card>
+
+                <Card title="Carico variabile">
+                    <SelField label="Categoria d'uso (ψ per le combinazioni SLE)" value={beam.category} onChange={(v) => upd((b) => ({ ...b, category: v }))}
+                        options={USE_CATEGORIES.map((c) => ({ value: c.id, label: `${c.label} (ψ₁ ${c.psi1}, ψ₂ ${c.psi2})` }))} />
+                </Card>
+
+                <Card title="Traslazione del momento">
+                    <div className="grid grid-cols-2 gap-2">
+                        <NumField small label="cot θ (bielle)" value={beam.cotTheta} onChange={(v) => upd((b) => ({ ...b, cotTheta: Math.min(2.5, Math.max(1, v)) }))} />
+                        <NumField small label="α staffe" unit="°" value={beam.alphaDeg} onChange={(v) => upd((b) => ({ ...b, alphaDeg: Math.min(90, Math.max(45, v)) }))} />
+                    </div>
+                    <p className="mt-2 text-xs text-slate-600">{sub("a_l = 0,9·d·(cot θ − cot α)/2")} = <b>{an.ok ? fmt(an.aL * 100, 1) : "–"} cm</b> (d = {an.ok ? fmt(an.d * 1000, 0) : "–"} mm)</p>
+                    <label className="mt-2 flex cursor-pointer items-center gap-2 text-xs font-semibold text-slate-600">
+                        <input type="checkbox" checked={beam.useTranslated !== false} onChange={(e) => upd((b) => ({ ...b, useTranslated: e.target.checked }))} className="h-4 w-4 accent-sky-600" />
+                        Usa il diagramma traslato per il progetto delle sezioni
+                    </label>
+                </Card>
+            </EditDrawer>}
+
+            {/* -------- SCHEMA, DIAGRAMMI, SEZIONI -------- */}
+            <div className="space-y-4">
+                <CombinationCard beam={beam} upd={upd} />
+                {!an.ok ? (
+                    <Card right={editBtn}><div className="flex items-start gap-2 text-sm text-red-600"><AlertTriangle size={18} className="mt-0.5 shrink-0" /><ul>{an.errors.map((e) => <li key={e}>{e}</li>)}</ul></div></Card>
+                ) : (
+                    <>
+                        <Card title={`Schema statico — ${beam.name}`} right={
+                            <div className="flex flex-wrap items-center gap-2">
+                                <label className="flex cursor-pointer items-center gap-1.5 text-xs font-semibold text-slate-600">
+                                    <input type="checkbox" checked={showReac} onChange={(e) => setShowReac(e.target.checked)} className="accent-amber-600" /> Reazioni
+                                </label>
+                                <button type="button" onClick={addCharacteristic} className="inline-flex items-center gap-1.5 rounded-full border border-slate-300 bg-white px-3 py-1 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50">
+                                    <Wand2 size={13} /> Sezioni caratteristiche
+                                </button>
+                                {editBtn}
+                            </div>}>
+                            <p className="mb-1 text-[11px] text-slate-500">Clicca sullo schema o sui diagrammi per aggiungere una sezione; clicca un marcatore per aprirla.</p>
+                            <SchemeSVG beam={beam} onPick={addSection} onOpen={openSection} reac={showReac ? an.reac : null} an={an} />
+                            {showReac && (
+                                <p className="mt-1 text-[11px] leading-4 text-slate-500">
+                                    {sub("Reazioni allo SLU con tutte le campate caricate: q = q_d = γ_G1·g_1 + γ_G2·g_2 + γ_Q·q")}
+                                    {" "}({an.qd.map((q, k) => `${an.qd.length > 1 ? `campata ${k + 1}: ` : ""}${fmt(q, 2)} kN/m`).join(", ")}).
+                                    {" "}Se l'alternanza dei variabili dà una reazione maggiore, sotto la freccia compare anche il massimo dell'inviluppo.
+                                </p>
+                            )}
+                        </Card>
+                        <Card title="Momento flettente M [kNm]" right={
+                            <div className="flex flex-wrap gap-3 text-[11px] font-semibold text-slate-600">
+                                <label className="flex cursor-pointer items-center gap-1"><input type="checkbox" checked={show.T} onChange={(e) => setShow((s) => ({ ...s, T: e.target.checked }))} className="accent-violet-600" />traslato</label>
+                                <label className="flex cursor-pointer items-center gap-1"><input type="checkbox" checked={show.SLE} onChange={(e) => setShow((s) => ({ ...s, SLE: e.target.checked }))} className="accent-green-600" />SLE</label>
+                            </div>}>
+                            <DiagramSVG beam={beam} an={an} kind="M" show={show} onPick={addSection} onOpen={openSection} />
+                            <Legend items={[[C_POS, "inviluppo SLU M_max"], [C_NEG, "inviluppo SLU M_min"], ...(show.T ? [[C_TRASL, `traslato (a_l = ${fmt(an.aL * 100, 1)} cm)`, true]] : []), ...(show.SLE ? [[C_SLE, "SLE rara", true]] : [])]} />
+                        </Card>
+                        <Card title="Taglio V [kN]">
+                            <DiagramSVG beam={beam} an={an} kind="V" show={show} onPick={addSection} onOpen={openSection} />
+                            <Legend items={[[C_V, "inviluppo SLU V_max / V_min"]]} />
+                        </Card>
+                        <CrackCard beam={beam} an={an} onPick={addSection} onOpen={openSection} />
+                        <SectionsTable beam={beam} an={an} upd={upd} openSection={openSection} />
+                    </>
+                )}
+            </div>
+        </div>
+    );
+}
+
+// ---------------------------------------------------------------------------
+// COMBINAZIONE DI CARICO (NTC 2018 §2.5.3): carichi caratteristici per campata,
+// coefficienti γ e ψ, carichi di combinazione SLU e SLE
+// ---------------------------------------------------------------------------
+function CombinationCard({ beam, upd }) {
+    const g = beam.gamma;
+    const pp = beam.selfWeight ? (25 * beam.section.b * beam.section.h) / 1e6 : 0;
+    const setG = (k) => (v) => upd((b) => ({ ...b, gamma: { ...b.gamma, [k]: v } }));
+    const [edit, setEdit] = useState(null);         // { j, k } carico in composizione
+    const [info, setInfo] = useState(false);        // modal con le formule delle combinazioni
+    // conferma della composizione: totale nel carico della campata (o di tutte) e voci salvate
+    const saveItems = (j, k, items, all) => upd((b) => ({
+        ...b,
+        spans: b.spans.map((sp, i) => (all || i === j
+            ? { ...sp, [k]: Math.round(items.reduce((t, it) => t + itemValue(it), 0) * 1e4) / 1e4, items: { ...(sp.items ?? {}), [k]: items.map((it) => ({ ...it })) } }
+            : sp)),
+    }));
+    const rows = beam.spans.map((sp) => {
+        const g1 = num(sp.g1) + pp, g2 = num(sp.g2), v = spanVariable(sp, beam);
+        return { g1, g2, v, slu: g.g1 * g1 + g.g2 * g2 + g.q * v.u, rara: g1 + g2 + v.u, freq: g1 + g2 + v.f, qp: g1 + g2 + v.qp };
+    });
+    const cell = "px-2 py-1.5 text-right tabular-nums";
+    const unit = <span className="font-normal text-slate-400">[kN/m]</span>;   // unità nelle intestazioni
+    const loadBtn = (sp, j, k) => {
+        const n = sp.items?.[k]?.length ?? 0;
+        const multi = k === "q" && spanVariable(sp, beam).multi;
+        return (
+            <button type="button" onClick={() => setEdit({ j, k })} title="Componi il carico con più voci"
+                className="inline-flex min-w-[72px] items-center justify-end gap-1 rounded-md border border-slate-200 bg-white px-1.5 py-0.5 text-xs tabular-nums text-slate-800 transition hover:border-sky-400 hover:bg-sky-50">
+                {multi ? <span className="rounded bg-amber-50 px-1 text-[10px] font-semibold text-amber-700" title="Categorie diverse: combinate con un'azione principale">più categorie</span>
+                    : n > 1 && <span className="rounded bg-slate-100 px-1 text-[10px] font-semibold text-slate-500">{n} voci</span>}
+                {fmt(num(sp[k]), 2)}
+            </button>
+        );
+    };
+    return (
+        <Card title={
+            <span className="inline-flex items-center gap-1.5">
+                Combinazioni di carico
+                <button type="button" onClick={() => setInfo(true)} title="Formule delle combinazioni" aria-label="Formule delle combinazioni di carico"
+                    className="rounded-full p-0.5 text-slate-400 transition hover:bg-sky-50 hover:text-sky-600"><Info size={15} /></button>
+            </span>} subtitle={sub("Carichi distribuiti in kN/m: g_1 strutturali (più il peso proprio, se attivo), g_2 permanenti non strutturali, q_k variabile.")} right={
+            <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold text-slate-500">
+                {/* coefficienti parziali compatti nell'intestazione */}
+                {[["g1", "γ_G1"], ["g2", "γ_G2"], ["q", "γ_Q"]].map(([k, l]) => (
+                    <label key={k} className="inline-flex items-center gap-1">
+                        {sub(l)}
+                        <input type="number" step="0.05" value={g[k]} onChange={(e) => setG(k)(num(e.target.value))} aria-label={l}
+                            className="w-14 rounded-md border border-slate-200 px-1.5 py-0.5 text-right text-xs tabular-nums text-slate-700 outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100" />
+                    </label>
+                ))}
+            </div>}>
+            <div>
+                {/* carichi per campata */}
+                <div className="scroll-thin-x pb-1">
+                    <table className="w-full min-w-[640px] text-xs">
+                        <thead>
+                            <tr className="border-b border-slate-200 text-[11px] text-slate-500">
+                                <th className="px-2 py-1.5 text-left font-semibold">Campata</th>
+                                <th className={cell}>{sub("g_1")} {unit}</th>
+                                <th className={cell}>{sub("g_2")} {unit}</th>
+                                <th className={cell}>{sub("q_k")} {unit}</th>
+                                <th className={`${cell} bg-sky-50 text-sky-800`}>{sub("SLU q_d")} {unit}</th>
+                                <th className={cell}>SLE rara {unit}</th>
+                                <th className={cell}>SLE frequente {unit}</th>
+                                <th className={cell}>SLE quasi perm. {unit}</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {beam.spans.map((sp, j) => (
+                                <tr key={j} className="border-b border-slate-100">
+                                    <td className="px-2 py-1.5 font-semibold text-slate-700">{j + 1} <span className="font-normal text-slate-400">· {fmt(num(sp.L), 2)} m</span></td>
+                                    <td className={cell}>{loadBtn(sp, j, "g1")}</td>
+                                    <td className={cell}>{loadBtn(sp, j, "g2")}</td>
+                                    <td className={cell}>{loadBtn(sp, j, "q")}</td>
+                                    <td className={`${cell} bg-sky-50 font-bold text-sky-800`}>{fmt(rows[j].slu, 2)}</td>
+                                    <td className={cell}>{fmt(rows[j].rara, 2)}</td>
+                                    <td className={cell}>{fmt(rows[j].freq, 2)}</td>
+                                    <td className={cell}>{fmt(rows[j].qp, 2)}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            {info && <CombinationInfoModal beam={beam} onClose={() => setInfo(false)} />}
+            {edit && <LoadModal beam={beam} j={edit.j} k={edit.k} onClose={() => setEdit(null)} onSave={(items, all) => { saveItems(edit.j, edit.k, items, all); setEdit(null); }} />}
+        </Card>
+    );
+}
+
+// ---------------------------------------------------------------------------
+// FORMULE DELLE COMBINAZIONI (NTC 2018 §2.5.3) con i coefficienti della trave
+// ---------------------------------------------------------------------------
+const tx = (v, d = 2) => fmt(v, d).replace(/\./g, "").replace(",", "{,}");
+function CombinationInfoModal({ beam, onClose }) {
+    const g = beam.gamma;
+    const cat = USE_CATEGORIES.find((c) => c.id === beam.category) ?? USE_CATEGORIES[0];
+    const pp = beam.selfWeight ? (25 * beam.section.b * beam.section.h) / 1e6 : 0;
+    useEffect(() => {
+        const onKey = (e) => { if (e.key === "Escape") onClose(); };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [onClose]);
+    const block = (title, general, numeric, note) => (
+        <div className="rounded-xl border border-slate-200 bg-slate-50/50 px-4 py-3">
+            <p className="text-xs font-bold text-slate-700">{title}</p>
+            <div className="tex-left mt-1 space-y-0.5 text-sm">
+                <Tex display>{general}</Tex>
+                {numeric.map((t, i) => <Tex key={i} display>{t}</Tex>)}
+            </div>
+            {note && <p className="mt-1 text-[11px] leading-4 text-slate-500">{sub(note)}</p>}
+        </div>
+    );
+    // sostituzione numerica per ogni campata
+    const rows = beam.spans.map((sp, j) => { const v = spanVariable(sp, beam); return { j, g1: num(sp.g1) + pp, g2: num(sp.g2), q: v.u, f: v.f, qp: v.qp, multi: v.multi }; });
+    const lab = (j) => (beam.spans.length > 1 ? `,${j + 1}` : "");   // q_{d,1}, q_{rara,2}…
+    return (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/30 p-4" role="dialog" aria-modal="true" aria-label="Formule delle combinazioni di carico"
+            onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+            <div className="flex h-[min(40rem,calc(100vh-2rem))] w-full max-w-3xl flex-col rounded-2xl bg-white shadow-2xl">
+                <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-3">
+                    <div>
+                        <p className="text-sm font-bold text-slate-800">Combinazioni di carico</p>
+                        <p className="text-[11px] text-slate-500">NTC 2018 §2.5.3 · con i coefficienti e i carichi della trave {beam.name} (kN/m)</p>
+                    </div>
+                    <button type="button" onClick={onClose} aria-label="Chiudi" className="rounded-full p-1.5 text-slate-500 hover:bg-slate-100"><X size={16} /></button>
+                </div>
+                <div className="scroll-thin min-h-0 flex-1 space-y-3 py-4 pl-5 pr-4">
+                    <p className="text-xs leading-5 text-slate-600">
+                        {sub(`Coefficienti parziali: γ_G1 = ${fmt(g.g1, 2)}, γ_G2 = ${fmt(g.g2, 2)}, γ_Q = ${fmt(g.q, 2)} (NTC Tab. 2.6.I: sfavorevoli 1,3 / 1,5 / 1,5; favorevoli 1,0 / 0,8 / 0). Categoria ${cat.label}: ψ_0 = ${fmt(cat.psi0, 1)}, ψ_1 = ${fmt(cat.psi1, 1)}, ψ_2 = ${fmt(cat.psi2, 1)} (Tab. 2.5.I).${pp ? ` In g_1 è compreso il peso proprio della trave, ${fmt(pp, 2)} kN/m.` : ""}`)}
+                    </p>
+                    {block("SLU – combinazione fondamentale",
+                        String.raw`q_d=\gamma_{G1}\,g_1+\gamma_{G2}\,g_2+\gamma_{Q}\,q_k`,
+                        rows.map((r) => String.raw`q_{d${lab(r.j)}}=${tx(g.g1)}\cdot ${tx(r.g1)}+${tx(g.g2)}\cdot ${tx(r.g2)}+${tx(g.q)}\cdot ${tx(r.q)}=${tx(g.g1 * r.g1 + g.g2 * r.g2 + g.q * r.q)}`),
+                        "Per l'inviluppo delle sollecitazioni i permanenti sono su tutte le campate e il variabile q_k è applicato campata per campata solo dove sfavorevole (alternanza dei carichi).")}
+                    {block("SLE – combinazione caratteristica (rara)",
+                        String.raw`q_{rara}=g_1+g_2+q_k`,
+                        rows.map((r) => String.raw`q_{rara${lab(r.j)}}=${tx(r.g1)}+${tx(r.g2)}+${tx(r.q)}=${tx(r.g1 + r.g2 + r.q)}`),
+                        "Verifiche delle tensioni in esercizio (limitazione delle tensioni).")}
+                    {block("SLE – combinazione frequente",
+                        String.raw`q_{freq}=g_1+g_2+\psi_{1}\,q_k`,
+                        rows.map((r) => (r.multi
+                            ? String.raw`q_{freq${lab(r.j)}}=${tx(r.g1)}+${tx(r.g2)}+${tx(r.f)}=${tx(r.g1 + r.g2 + r.f)}`
+                            : String.raw`q_{freq${lab(r.j)}}=${tx(r.g1)}+${tx(r.g2)}+${tx(cat.psi1, 1)}\cdot ${tx(r.q)}=${tx(r.g1 + r.g2 + r.f)}`)),
+                        "Fessurazione negli ambienti aggressivi e deformazioni.")}
+                    {block("SLE – combinazione quasi permanente",
+                        String.raw`q_{qp}=g_1+g_2+\psi_{2}\,q_k`,
+                        rows.map((r) => (r.multi
+                            ? String.raw`q_{qp${lab(r.j)}}=${tx(r.g1)}+${tx(r.g2)}+${tx(r.qp)}=${tx(r.g1 + r.g2 + r.qp)}`
+                            : String.raw`q_{qp${lab(r.j)}}=${tx(r.g1)}+${tx(r.g2)}+${tx(cat.psi2, 1)}\cdot ${tx(r.q)}=${tx(r.g1 + r.g2 + r.qp)}`)),
+                        "Fessurazione negli ambienti ordinari, effetti a lungo termine (viscosità).")}
+                    <p className="text-[11px] leading-4 text-slate-500">{sub("Con voci di q_k di categorie diverse (più azioni variabili) si prende ogni categoria come azione principale e si tiene la più gravosa: SLU e rara Q_k1 + Σ ψ_0i·Q_ki, frequente ψ_11·Q_k1 + Σ ψ_2i·Q_ki, quasi permanente Σ ψ_2i·Q_ki. Nelle righe di queste campate compare direttamente il valore combinato del variabile.")}</p>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// ---------------------------------------------------------------------------
+// COMPOSIZIONE DI UN CARICO (g1, g2 o qk di una campata): più voci sommate.
+// Ogni voce è un carico per unità di superficie per la larghezza d'influenza
+// [kN/m² × m] oppure direttamente un carico lineare [kN/m].
+// ---------------------------------------------------------------------------
+const LOAD_NAMES = { g1: ["g_1", "permanenti strutturali"], g2: ["g_2", "permanenti non strutturali"], q: ["q_k", "variabile"] };
+function LoadModal({ beam, j, k, onClose, onSave }) {
+    const sp = beam.spans[j];
+    const [items, setItems] = useState(() => (sp.items?.[k]?.length
+        ? sp.items[k].map((it) => ({ ...it }))
+        : [{ id: newId("v"), label: "", mode: "line", value: num(sp[k]), width: 1, ...(k === "q" ? { cat: beam.category } : {}) }]));
+    const [all, setAll] = useState(false);
+    const set = (id, patch) => setItems((xs) => xs.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+    const total = items.reduce((t, it) => t + itemValue(it), 0);
+    const [sym, desc] = LOAD_NAMES[k];
+    useEffect(() => {
+        const onKey = (e) => { if (e.key === "Escape") onClose(); };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [onClose]);
+    const field = "rounded-md border border-slate-200 px-2 py-1 text-xs outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100";
+    return (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/30 p-4" role="dialog" aria-modal="true" aria-label={`Carico ${sym} campata ${j + 1}`}
+            onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+            {/* dimensioni fisse: aggiungendo voci il modal non cresce, scorre l'elenco */}
+            <div className={`flex h-[min(32rem,calc(100vh-2rem))] w-full flex-col rounded-2xl bg-white shadow-2xl ${k === "q" ? "max-w-4xl" : "max-w-3xl"}`}>
+                <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-3">
+                    <div>
+                        <p className="text-sm font-bold text-slate-800">{sub(sym)} – {desc} · campata {j + 1} ({fmt(num(sp.L), 2)} m)</p>
+                        <p className="text-[11px] text-slate-500">Voci sommate in un unico carico distribuito sulla trave{k === "g1" && beam.selfWeight ? " (il peso proprio della trave si aggiunge a parte)" : ""}.</p>
+                    </div>
+                    <button type="button" onClick={onClose} aria-label="Chiudi" className="rounded-full p-1.5 text-slate-500 hover:bg-slate-100"><X size={16} /></button>
+                </div>
+                <div className="scroll-thin min-h-0 flex-1 space-y-2 py-4 pl-5 pr-4">
+                    {items.map((it, i) => (
+                        <div key={it.id} className={`grid items-center gap-2 ${k === "q" ? "grid-cols-[1.5rem_minmax(0,1fr)_9.5rem_8rem_15rem_6rem_auto]" : "grid-cols-[1.5rem_minmax(0,1fr)_8rem_17rem_6.5rem_auto]"}`}>
+                            {/* numero progressivo del carico */}
+                            <span className="flex h-6 w-6 items-center justify-center rounded-full bg-slate-100 text-[11px] font-bold text-slate-600">{i + 1}</span>
+                            <input value={it.label} onChange={(e) => set(it.id, { label: e.target.value })} placeholder={`Voce ${i + 1} (es. ${k === "q" ? "uso residenziale" : k === "g1" ? "solaio" : "massetto + pavimento"})`}
+                                aria-label={`Descrizione voce ${i + 1}`} className={`${field} min-w-0`} />
+                            {k === "q" && (
+                                <select value={it.cat ?? beam.category} onChange={(e) => set(it.id, { cat: e.target.value })} aria-label={`Categoria voce ${i + 1}`}
+                                    title={(() => { const c = USE_CATEGORIES.find((u) => u.id === (it.cat ?? beam.category)); return c ? `ψ0 = ${c.psi0}, ψ1 = ${c.psi1}, ψ2 = ${c.psi2}` : undefined; })()}
+                                    className={`${field} w-full cursor-pointer bg-white`}>
+                                    {USE_CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+                                </select>
+                            )}
+                            <select value={it.mode} onChange={(e) => set(it.id, { mode: e.target.value })} aria-label={`Tipo voce ${i + 1}`} className={`${field} w-full cursor-pointer bg-white`}>
+                                <option value="line">kN/m</option>
+                                <option value="area">kN/m² × b</option>
+                                <option value="volume">kN/m³ × b × h</option>
+                            </select>
+                            {/* valori con le unità: gli input si dividono sempre tutta la larghezza della colonna */}
+                            <div className="flex items-center gap-1">
+                                {[
+                                    { key: "value", unit: it.mode === "area" ? "kN/m²" : it.mode === "volume" ? "kN/m³" : "kN/m", label: "Valore", title: it.mode === "volume" ? "Peso dell'unità di volume γ" : undefined },
+                                    ...(it.mode !== "line" ? [{ key: "width", unit: "m", label: "Larghezza", title: it.mode === "area" ? "Larghezza d'influenza b" : "Larghezza b" }] : []),
+                                    ...(it.mode === "volume" ? [{ key: "height", unit: "m", label: "Altezza", title: "Altezza (spessore) h" }] : []),
+                                ].map((c, n) => (
+                                    <div key={c.key} className="flex min-w-0 flex-1 items-center gap-1">
+                                        {n > 0 && <span className="text-xs text-slate-400">×</span>}
+                                        <input type="number" step="any" value={it[c.key] ?? 1} onChange={(e) => set(it.id, { [c.key]: e.target.value })} title={c.title}
+                                            aria-label={`${c.label} voce ${i + 1}`} className={`${field} w-full min-w-0 text-right tabular-nums`} />
+                                        <span className="shrink-0 text-[11px] text-slate-400">{c.unit}</span>
+                                    </div>
+                                ))}
+                            </div>
+                            <span className="text-right text-xs font-semibold tabular-nums text-slate-700">= {fmt(itemValue(it), 2)} kN/m</span>
+                            <button type="button" onClick={() => setItems((xs) => xs.filter((x) => x.id !== it.id))} disabled={items.length < 2} aria-label={`Elimina voce ${i + 1}`}
+                                className="rounded-md p-1 text-slate-400 transition hover:bg-slate-100 hover:text-red-600 disabled:opacity-30"><Trash2 size={13} /></button>
+                        </div>
+                    ))}
+                    <button type="button" onClick={() => setItems((xs) => [...xs, { id: newId("v"), label: "", mode: "area", value: 0, width: xs.find((x) => x.mode === "area")?.width ?? 1, ...(k === "q" ? { cat: xs[xs.length - 1]?.cat ?? beam.category } : {}) }])}
+                        className="inline-flex items-center gap-1 rounded-lg border border-dashed border-sky-300 px-2.5 py-1 text-xs font-semibold text-sky-700 hover:bg-sky-50"><Plus size={13} /> Aggiungi voce</button>
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-5 py-3">
+                    <div>
+                        <p className="text-sm font-bold text-slate-800">{sub(sym)} = {fmt(total, 2)} kN/m</p>
+                        {k === "q" && (() => {
+                            const v = spanVariable({ ...sp, items: { ...(sp.items ?? {}), q: items } }, beam);
+                            return v.multi && (
+                                <p className="mt-0.5 text-[11px] text-amber-700">
+                                    {sub(`Categorie diverse, combinate con un'azione principale: SLU/rara ${fmt(v.u, 2)} · frequente ${fmt(v.f, 2)} · quasi perm. ${fmt(v.qp, 2)} kN/m`)}
+                                </p>
+                            );
+                        })()}
+                        {beam.spans.length > 1 && (
+                            <label className="mt-1 flex cursor-pointer items-center gap-1.5 text-xs text-slate-600">
+                                <input type="checkbox" checked={all} onChange={(e) => setAll(e.target.checked)} className="accent-sky-600" /> Applica a tutte le campate
+                            </label>
+                        )}
+                    </div>
+                    <div className="flex gap-2">
+                        <button type="button" onClick={onClose} className="rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50">Annulla</button>
+                        <button type="button" onClick={() => onSave(items, all)} className="rounded-xl bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-sky-700">Conferma</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// ---------------------------------------------------------------------------
+// SCHEMA STATICO (anche in miniatura) E DIAGRAMMI
+// ---------------------------------------------------------------------------
+const W = 1100, ML = 56, MR = 40;
+const useX = (L) => (x) => ML + (x / (L || 1)) * (W - ML - MR);
+// ascissa del puntatore → x [m]
+function pickX(e, svg, L) {
+    const pt = svg.createSVGPoint(); pt.x = e.clientX; pt.y = e.clientY;
+    const loc = pt.matrixTransform(svg.getScreenCTM().inverse());
+    return { x: ((loc.x - ML) / (W - ML - MR)) * L, sx: loc.x, sy: loc.y };
+}
+
+function SchemeSVG({ beam, mini = false, onPick = null, onOpen = null, reac = null, an = null }) {
+    const L = beam.spans.reduce((t, s) => t + num(s.L), 0);
+    const X = useX(L);
+    const ref = useRef(null);
+    // miniatura: stesse proporzioni a larghezza ridotta; con le reazioni serve spazio sotto i vincoli
+    const H = mini ? 94 : reac ? 250 : 190, yB = mini ? 48 : 112;
+    const nodesX = []; let acc = 0;
+    nodesX.push(0); beam.spans.forEach((s) => { acc += num(s.L); nodesX.push(acc); });
+    const gS = beam.selfWeight ? (25 * beam.section.b * beam.section.h) / 1e6 : 0;
+    const maxLoad = Math.max(1, ...beam.spans.map((s) => num(s.g1) + num(s.g2) + gS + num(s.q)));
+    const lk = (mini ? 0 : 46) / maxLoad;
+    const support = (nd, i) => {
+        const x = X(nodesX[i]), s = mini ? 0.95 : 1;
+        if (nd.type === "pin") return <g key={i}><path d={`M${x},${yB + 2} l${-9 * s},${15 * s} h${18 * s} z`} fill="#fff" stroke="#334155" strokeWidth="1.4" /><line x1={x - 13 * s} x2={x + 13 * s} y1={yB + 2 + 18 * s} y2={yB + 2 + 18 * s} stroke="#334155" strokeWidth="1.2" /></g>;
+        if (nd.type === "fixed") {
+            const dir = i === 0 ? -1 : i === beam.nodes.length - 1 ? 1 : 0;
+            if (dir === 0) return <rect key={i} x={x - 8 * s} y={yB - 8 * s} width={16 * s} height={22 * s} fill="#e2e8f0" stroke="#334155" strokeWidth="1.3" />;
+            const xw = x + dir * 3;
+            return <g key={i}><line x1={xw} x2={xw} y1={yB - 18 * s} y2={yB + 18 * s} stroke="#334155" strokeWidth="2" />{Array.from({ length: 6 }, (_, k) => <line key={k} x1={xw} x2={xw + dir * 7 * s} y1={yB - 16 * s + k * 6.5 * s} y2={yB - 10 * s + k * 6.5 * s} stroke="#64748b" strokeWidth="1" />)}</g>;
+        }
+        return null;
+    };
+    const click = (e) => { if (!onPick || !ref.current) return; const p = pickX(e, ref.current, L); if (p.x >= -0.05 && p.x <= L + 0.05) onPick(p.x); };
+    return (
+        <svg ref={ref} viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label={`Schema statico ${beam.name}`} onClick={click} style={onPick ? { cursor: "crosshair" } : undefined}>
+            {/* carichi: permanenti (grigio) e variabile (azzurro tratteggiato) */}
+            {!mini && beam.spans.map((s, j) => {
+                const x0 = X(nodesX[j]), x1 = X(nodesX[j + 1]), g = num(s.g1) + num(s.g2) + gS, q = num(s.q);
+                const hg = g * lk, hq = q * lk;
+                return (
+                    <g key={j}>
+                        <rect x={x0} y={yB - 6 - hg} width={x1 - x0} height={hg} fill="#94a3b8" fillOpacity="0.25" stroke="#94a3b8" strokeWidth="0.8" />
+                        {q > 0 && <rect x={x0} y={yB - 6 - hg - hq} width={x1 - x0} height={hq} fill={C_POS} fillOpacity="0.12" stroke={C_POS} strokeWidth="0.8" strokeDasharray="3 2" />}
+                        <text x={(x0 + x1) / 2} y={yB - 10 - hg / 2 + 3} fontSize="10" textAnchor="middle" fill="#475569">g = {fmt(g, 1)}</text>
+                        {q > 0 && <text x={(x0 + x1) / 2} y={yB - 10 - hg - hq / 2 + 3} fontSize="10" textAnchor="middle" fill={C_POS}>q = {fmt(q, 1)}</text>}
+                        {/* quota della campata */}
+                        <line x1={x0} x2={x1} y1={H - 18} y2={H - 18} stroke="#94a3b8" strokeWidth="0.8" />
+                        <line x1={x0} x2={x0} y1={H - 23} y2={H - 13} stroke="#94a3b8" strokeWidth="0.8" />
+                        <line x1={x1} x2={x1} y1={H - 23} y2={H - 13} stroke="#94a3b8" strokeWidth="0.8" />
+                        <text x={(x0 + x1) / 2} y={H - 22} fontSize="10.5" textAnchor="middle" fill="#334155" fontWeight="600">L = {fmt(num(s.L), 2)} m</text>
+                    </g>
+                );
+            })}
+            <line x1={X(0)} x2={X(L)} y1={yB} y2={yB} stroke="#0f172a" strokeWidth={mini ? 2.5 : 3.5} strokeLinecap="round" />
+            {beam.nodes.map(support)}
+            {/* cerniere interne (trave sconnessa) */}
+            {beam.nodes.map((nd, i) => (i > 0 && i < beam.nodes.length - 1 && nd.continuous === false
+                ? <circle key={`h${i}`} cx={X(nodesX[i])} cy={yB} r={mini ? 3.5 : 5} fill="#fff" stroke="#0f172a" strokeWidth="1.6" />
+                : null))}
+            {/* reazioni vincolari (SLU, inviluppo): freccia verso l'alto sotto il vincolo, momento all'incastro */}
+            {reac && reac.map((r) => {
+                if (r.type === "free") return null;
+                const x = X(nodesX[r.node]), y1 = yB + 70, y2 = yB + 30, up = r.Rfull >= 0;
+                const envMax = Math.abs(r.Rmax - r.Rfull) > 0.005 * Math.max(1, Math.abs(r.Rfull));
+                const lab = String.fromCharCode(65 + r.node);
+                const right = r.node < beam.nodes.length - 1;           // etichetta verso l'interno della trave
+                return (
+                    <g key={`r${r.node}`} pointerEvents="none">
+                        <defs><marker id={`rx${r.node}`} markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L7,4 L0,8 Z" fill="#b45309" /></marker></defs>
+                        <line x1={x} x2={x} y1={up ? y1 : y2} y2={up ? y2 : y1} stroke="#b45309" strokeWidth="2" markerEnd={`url(#rx${r.node})`} />
+                        {/* formuletta accanto alla freccia: R_A = 3/8·qL = 78,4 kN */}
+                        <text x={x + (right ? 7 : -7)} y={y1 - 18} fontSize="11" fontWeight="bold" textAnchor={right ? "start" : "end"} fill="#b45309">
+                            R<SubT>{lab}</SubT> = {an ? formulaNodes(r.cR, beam, an, 1) : null}
+                        </text>
+                        <text x={x + (right ? 7 : -7)} y={y1 - 4} fontSize="10.5" textAnchor={right ? "start" : "end"} fill="#b45309">= {fmt(r.Rfull, 1)} kN</text>
+                        {envMax && <text x={x + (right ? 7 : -7)} y={y1 + 9} fontSize="9" textAnchor={right ? "start" : "end"} fill="#92400e">max inviluppo {fmt(r.Rmax, 1)} kN</text>}
+                        {r.Rmin < -1e-6 && <text x={x + (right ? 7 : -7)} y={y1 + (envMax ? 21 : 9)} fontSize="9" textAnchor={right ? "start" : "end"} fill="#dc2626">min {fmt(r.Rmin, 1)} kN (sollevamento)</text>}
+                        {r.type === "fixed" && (() => {
+                            const M = r.Mfull, ccw = M >= 0, rr = 16, cx = x + (right ? -22 : 22);
+                            const d = ccw ? `M${cx + rr},${yB} A${rr},${rr} 0 1 1 ${cx},${yB + rr}` : `M${cx - rr},${yB} A${rr},${rr} 0 1 0 ${cx},${yB + rr}`;
+                            return (
+                                <g>
+                                    <path d={d} fill="none" stroke="#b45309" strokeWidth="1.6" markerEnd={`url(#rx${r.node})`} />
+                                    <text x={right ? cx - rr - 4 : cx + rr + 4} y={yB - rr - 6} fontSize="10" fontWeight="bold" textAnchor={right ? "start" : "end"} fill="#b45309">M<SubT>{lab}</SubT> = {an ? formulaNodes(r.cM.map((c) => c * (M < 0 ? -1 : 1)), beam, an, 2) : null} = {fmt(Math.abs(M), 1)} kNm</text>
+                                </g>
+                            );
+                        })()}
+                    </g>
+                );
+            })}
+            {/* sezioni */}
+            {beam.sections.map((s) => (
+                <g key={s.id} onClick={(e) => { e.stopPropagation(); onOpen?.(s.id); }} style={onOpen ? { cursor: "pointer" } : undefined}>
+                    <line x1={X(s.x)} x2={X(s.x)} y1={yB - (mini ? 10 : 18)} y2={yB + (mini ? 10 : 18)} stroke={C_SEC} strokeWidth="1.4" strokeDasharray="3 2" />
+                    {!mini && <>
+                        <rect x={X(s.x) - 14} y={yB + 22} width="28" height="15" rx="7" fill={C_SEC} />
+                        <text x={X(s.x)} y={yB + 33} fontSize="9.5" textAnchor="middle" fill="#fff" fontWeight="bold">{s.label.length > 4 ? s.label.slice(0, 4) : s.label}</text>
+                        <title>{`${s.label} — x = ${fmt(s.x, 2)} m (apri)`}</title>
+                    </>}
+                </g>
+            ))}
+        </svg>
+    );
+}
+
+// ---------------------------------------------------------------------------
+// FESSURAZIONE: momento SLE lungo la trave, momento di prima fessurazione,
+// zone fessurate e w_k nelle sezioni già progettate
+// ---------------------------------------------------------------------------
+const CRACK_COMBOS = [
+    { id: "Q", label: "Quasi permanente", long: true },
+    { id: "F", label: "Frequente", long: false },
+    { id: "R", label: "Rara", long: false },
+];
+const C_CR = "#64748b", C_CRZONE = "#f97316";
+
+function CrackCard({ beam, an, onPick, onOpen }) {
+    const [combo, setCombo] = useState("Q");
+    const [wLim, setWLim] = useState(0.3);
+    const { b, h, c, fck } = beam.section;
+    const fctm = 0.3 * fck ** (2 / 3);                         // fck ≤ 50
+    const Mcr = ((fctm / 1.2) * b * h * h) / 6 / 1e6;          // σ_t = f_ctm/1,2 sulla sezione interamente reagente [kNm]
+    const cb = CRACK_COMBOS.find((q) => q.id === combo);
+    // w_k nelle sezioni con armatura adottata (dalla cascata)
+    const marks = beam.sections.map((sec) => {
+        const v = valuesAt(an, sec.x);
+        if (!v) return null;
+        const mx = v[`Mmax${combo}`], mn = v[`Mmin${combo}`];
+        const M = Math.abs(mn) > Math.abs(mx) ? mn : mx;
+        if (Math.abs(M) <= Mcr) return { sec, M, state: "uncracked" };
+        const ad = sec.adopted?.[M >= 0 ? "pos" : "neg"] ?? sec.adopted?.pos ?? sec.adopted?.neg;
+        if (!ad) return { sec, M, state: "todo" };
+        const bot = ad.tensionTop ? ad.AC : ad.AT, top = ad.tensionTop ? ad.AT : ad.AC;
+        const r = crackCheck({ b, h: ad.h ?? h, c, cPrime: c, As: M >= 0 ? bot : top, AsPrime: M >= 0 ? top : bot, phi: ad.phiT, MSer: Math.abs(M), fck, longTerm: cb.long, wLim });
+        return r.ok ? { sec, M, state: r.verified ? "ok" : "ko", wk: r.wk } : { sec, M, state: "todo" };
+    }).filter(Boolean);
+    return (
+        <Card title="Fessurazione (SLE) – momento e zone fessurate [kNm]" right={
+            <div className="flex flex-wrap items-center gap-2">
+                <div className="inline-flex rounded-lg bg-slate-100 p-0.5">
+                    {CRACK_COMBOS.map((q) => (
+                        <button key={q.id} type="button" onClick={() => setCombo(q.id)}
+                            className={`rounded-md px-2 py-1 text-[11px] font-semibold ${combo === q.id ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>{q.label}</button>
+                    ))}
+                </div>
+                <select value={wLim} onChange={(e) => setWLim(num(e.target.value))} aria-label="Ampiezza limite delle fessure"
+                    className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-600">
+                    {[0.2, 0.3, 0.4].map((w) => <option key={w} value={w}>w_lim = {fmt(w, 1)} mm</option>)}
+                </select>
+            </div>}>
+            <CrackSVG an={an} combo={combo} Mcr={Mcr} marks={marks} onPick={onPick} onOpen={onOpen} />
+            <Legend items={[[C_SLE, `M ${cb.label.toLowerCase()} (max / min)`], [C_CR, `±M_cr = ${fmt(Mcr, 1)} kNm (f_ctm/1,2 su b·h²/6)`, true], [C_CRZONE, "zona fessurata (|M| > M_cr)"]]} />
+            <p className="mt-2 text-[11px] leading-4 text-slate-500">
+                {sub("Nelle sezioni progettate (cascata) w_k è calcolato con l'armatura adottata e la combinazione scelta (quasi permanente: carichi di lunga durata, k_t = 0,4); nelle sezioni non ancora progettate e fessurate compare «da progettare».")}
+            </p>
+        </Card>
+    );
+}
+
+function CrackSVG({ an, combo, Mcr, marks, onPick, onOpen }) {
+    const ref = useRef(null);
+    const [hov, setHov] = useState(null);
+    const L = an.Ltot, X = useX(L), H = 230, top = 22, bot = H - 30;
+    const kMax = `Mmax${combo}`, kMin = `Mmin${combo}`;
+    const all = an.pts.flatMap((p) => [p[kMax], p[kMin]]);
+    const hi = Math.max(Mcr * 1.15, ...all), lo = Math.min(-Mcr * 1.15, ...all);
+    const k = (bot - top) / (hi - lo || 1);
+    const Y = (v) => top + (v - lo) * k;                       // M positivo verso il basso
+    const y0 = Y(0);
+    const path = (key) => an.pts.map((p, i) => `${i ? "L" : "M"}${X(p.x).toFixed(1)},${Y(p[key]).toFixed(1)}`).join(" ");
+    // zone fessurate: tratti dove la curva supera ±M_cr, riempiti fino alla retta di M_cr
+    const zones = [];
+    const collect = (key, sgn) => {
+        let run = [];
+        const flush = () => { if (run.length > 1) zones.push({ run, sgn }); run = []; };
+        an.pts.forEach((p, i) => {
+            const m = p[key];
+            if (sgn * m > Mcr) run.push(p);
+            else flush();
+            if (i < an.pts.length - 1 && an.pts[i + 1].span !== p.span) flush();
+        });
+        flush();
+    };
+    collect(kMax, 1); collect(kMin, -1);
+    const key = (sgn) => (sgn > 0 ? kMax : kMin);
+    const move = (e) => { const p = pickX(e, ref.current, L); if (p.x < 0 || p.x > L) { setHov(null); return; } setHov({ x: p.x, v: valuesAt(an, p.x) }); };
+    const click = (e) => { const p = pickX(e, ref.current, L); if (p.x >= -0.02 && p.x <= L + 0.02) onPick(p.x); };
+    return (
+        <svg ref={ref} viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="Diagramma per la fessurazione"
+            onMouseMove={move} onMouseLeave={() => setHov(null)} onClick={click} style={{ cursor: "crosshair" }}>
+            {[0, ...an.xs0.slice(1), L].map((x, i) => <line key={i} x1={X(x)} x2={X(x)} y1={top - 8} y2={bot + 8} stroke="#e2e8f0" />)}
+            {/* zone fessurate */}
+            {zones.map((z, i) => {
+                const yc = Y(z.sgn * Mcr), kk = key(z.sgn);
+                const d = `M${X(z.run[0].x)},${yc} ${z.run.map((p) => `L${X(p.x).toFixed(1)},${Y(p[kk]).toFixed(1)}`).join(" ")} L${X(z.run[z.run.length - 1].x)},${yc} Z`;
+                return <path key={i} d={d} fill={C_CRZONE} fillOpacity="0.22" />;
+            })}
+            {zones.map((z, i) => <line key={`b${i}`} x1={X(z.run[0].x)} x2={X(z.run[z.run.length - 1].x)} y1={z.sgn > 0 ? bot + 6 : top - 6} y2={z.sgn > 0 ? bot + 6 : top - 6} stroke={C_CRZONE} strokeWidth="3" strokeLinecap="round" />)}
+            <line x1={X(0)} x2={X(L)} y1={y0} y2={y0} stroke="#334155" strokeWidth="1.2" />
+            {[Mcr, -Mcr].map((m) => <line key={m} x1={X(0)} x2={X(L)} y1={Y(m)} y2={Y(m)} stroke={C_CR} strokeWidth="1" strokeDasharray="6 4" />)}
+            <text x={X(0) - 4} y={Y(Mcr) + 3} fontSize="9.5" textAnchor="end" fill={C_CR}>{"+M"}<tspan baselineShift="-0.12em" fontSize="70%">cr</tspan></text>
+            <text x={X(0) - 4} y={Y(-Mcr) + 3} fontSize="9.5" textAnchor="end" fill={C_CR}>{"−M"}<tspan baselineShift="-0.12em" fontSize="70%">cr</tspan></text>
+            <path d={path(kMax)} fill="none" stroke={C_SLE} strokeWidth="1.8" />
+            <path d={path(kMin)} fill="none" stroke={C_SLE} strokeWidth="1.8" strokeDasharray="5 3" />
+            {/* sezioni con w_k */}
+            {marks.map(({ sec, M, state, wk }) => {
+                const xs = X(sec.x), col = state === "ok" ? "#059669" : state === "ko" ? "#dc2626" : "#94a3b8";
+                const txt = state === "uncracked" ? "non fessurata" : state === "todo" ? "da progettare"
+                    : <>w<tspan baselineShift="-0.12em" fontSize="70%">k</tspan> = {fmt(wk, 3)} mm</>;
+                const below = M < 0;                            // etichetta verso l'asse, lontana dalle barre delle zone
+                return (
+                    <g key={sec.id} onClick={(e) => { e.stopPropagation(); onOpen(sec.id); }} style={{ cursor: "pointer" }}>
+                        <line x1={xs} x2={xs} y1={top - 10} y2={bot + 10} stroke={C_SEC} strokeWidth="1.1" strokeDasharray="3 2" />
+                        <circle cx={xs} cy={Y(M)} r="4" fill={col} stroke="#fff" strokeWidth="1.5" />
+                        <text x={xs} y={top - 12} fontSize="9" textAnchor="middle" fill={C_SEC} fontWeight="bold">{sec.label.length > 6 ? sec.label.slice(0, 6) : sec.label}</text>
+                        <text x={xs + 6} y={below ? Y(M) + 14 : Y(M) - 8} fontSize="9.5" fill={col} fontWeight="bold" stroke="#fff" strokeWidth="3" paintOrder="stroke">{txt}</text>
+                        <rect x={xs - 6} y={top - 12} width="12" height={bot - top + 24} fill="transparent" />
+                    </g>
+                );
+            })}
+            {hov && hov.v && (() => {
+                const xs = X(hov.x), right = xs > W - 190, bx = right ? xs - 150 : xs + 10;
+                const rows = [["x", `${fmt(hov.x, 2)} m`, "#334155"], ["M max", fmt(hov.v[kMax], 1), C_SLE], ["M min", fmt(hov.v[kMin], 1), C_SLE]];
+                return (
+                    <g pointerEvents="none">
+                        <line x1={xs} x2={xs} y1={top - 6} y2={bot + 6} stroke="#64748b" strokeWidth="0.8" />
+                        <rect x={bx} y={top} width="140" height={rows.length * 14 + 8} rx="6" fill="#fff" fillOpacity="0.95" stroke="#cbd5e1" />
+                        {rows.map(([a, b2, c2], i) => <g key={a}><text x={bx + 8} y={top + 15 + i * 14} fontSize="10" fill="#64748b">{a}</text><text x={bx + 132} y={top + 15 + i * 14} fontSize="10" textAnchor="end" fill={c2} fontWeight="600">{b2}</text></g>)}
+                    </g>
+                );
+            })()}
+        </svg>
+    );
+}
+
+// ---------------------------------------------------------------------------
+// FORMULETTE DELLE REAZIONI: R = c·q·L (es. qL/2, 3/8 qL, 5/4 qL), M = m·q·L²
+// ---------------------------------------------------------------------------
+const gcd = (a, b) => (b ? gcd(b, a % b) : a);
+function asFraction(c) {
+    const a = Math.abs(c);
+    for (let den = 1; den <= 64; den++) {
+        const n = Math.round(a * den);
+        if (n > 0 && Math.abs(a * den - n) < 1e-6 * Math.max(1, a * den)) { const g = gcd(n, den); return { n: n / g, d: den / g }; }
+    }
+    return null;
+}
+const SubT = ({ children }) => <tspan baselineShift="-0.12em" fontSize="70%">{children}</tspan>;
+const SupT = ({ children }) => <tspan baselineShift="super" fontSize="70%">{children}</tspan>;
+// termini della formula: [{c, k}] → nodi SVG (q e L con l'indice di campata se diversi fra le campate)
+function formulaNodes(coefs, beam, an, pow) {
+    const sameQ = an.qd.every((q) => Math.abs(q - an.qd[0]) < 1e-9);
+    const sameL = beam.spans.every((s) => Math.abs(s.L - beam.spans[0].L) < 1e-9);
+    let terms = coefs.map((c, k) => ({ c, k })).filter((t) => Math.abs(t.c) > 1e-9);
+    if (sameQ && sameL && terms.length) terms = [{ c: terms.reduce((t, x) => t + x.c, 0), k: 0 }];
+    terms = terms.filter((t) => Math.abs(t.c) > 1e-9);
+    if (!terms.length) return ["0"];
+    const out = [];
+    terms.forEach((t, i) => {
+        const neg = t.c < 0, f = asFraction(t.c);
+        out.push(i === 0 ? (neg ? "−" : "") : neg ? " − " : " + ");
+        if (f) { if (!(f.n === 1 && f.d === 1)) out.push(f.d === 1 ? `${f.n}·` : `${f.n}/${f.d}·`); }
+        else out.push(`${fmt(Math.abs(t.c), 3)}·`);
+        // indice di campata solo dove serve: q₁ se i carichi differiscono, L₁ se le luci differiscono
+        out.push("q"); if (!sameQ) out.push(<SubT key={`q${i}`}>{t.k + 1}</SubT>);
+        out.push("L"); if (!sameL) out.push(<SubT key={`l${i}`}>{t.k + 1}</SubT>);
+        if (pow === 2) out.push(<SupT key={`p${i}`}>2</SupT>);
+    });
+    return out;
+}
+
+function DiagramSVG({ beam, an, kind, show, onPick, onOpen }) {
+    const ref = useRef(null);
+    const [hov, setHov] = useState(null);
+    const L = an.Ltot, X = useX(L), H = 230, top = 22, bot = H - 22;
+    const isM = kind === "M";
+    const series = isM
+        ? [["MmaxU", C_POS, false], ["MminU", C_NEG, false], ...(show.T ? [["MmaxT", C_TRASL, true], ["MminT", C_TRASL, true]] : []), ...(show.SLE ? [["MmaxR", C_SLE, true], ["MminR", C_SLE, true]] : [])]
+        : [["VmaxU", C_V, false], ["VminU", C_V, false]];
+    const all = an.pts.flatMap((p) => series.map(([k]) => p[k]));
+    const hi = Math.max(0, ...all), lo = Math.min(0, ...all);
+    // M positivo verso il basso (lato delle fibre tese); V positivo verso l'alto
+    const span = hi - lo || 1, k = (bot - top) / span;
+    const Y = isM ? (v) => top + (v - lo) * k : (v) => top + (hi - v) * k;
+    const y0 = Y(0);
+    const path = (key) => an.pts.map((p, i) => `${i ? "L" : "M"}${X(p.x).toFixed(1)},${Y(p[key]).toFixed(1)}`).join(" ");
+    const area = (key) => `M${X(0)},${y0} ${an.pts.map((p) => `L${X(p.x).toFixed(1)},${Y(p[key]).toFixed(1)}`).join(" ")} L${X(L)},${y0} Z`;
+    // etichette dei valori estremi: massimo di campata e minimo agli appoggi (M), estremi di campata (V)
+    const labels = [];
+    beam.spans.forEach((_, j) => {
+        const sp = an.pts.filter((p) => p.span === j);
+        if (isM) {
+            const mx = sp.reduce((m, p) => (p.MmaxU > m.MmaxU ? p : m), sp[0]);
+            if (mx.MmaxU > 0.05 * span) labels.push({ x: mx.x, v: mx.MmaxU, col: C_POS, below: true });
+        } else {
+            const a = sp[0], b = sp[sp.length - 1];
+            if (Math.abs(a.VmaxU) > 0.05 * span) labels.push({ x: a.x, v: a.VmaxU, col: C_V, below: false, anchor: "start" });
+            if (Math.abs(b.VminU) > 0.05 * span) labels.push({ x: b.x, v: b.VminU, col: C_V, below: true, anchor: "end" });
+        }
+    });
+    if (isM) {
+        const nodesX = [0, ...an.xs0.slice(1), L];
+        nodesX.forEach((x) => {
+            const v = valuesAt(an, x);
+            if (v && v.MminU < -0.05 * span) labels.push({ x, v: v.MminU, col: C_NEG, below: false });
+        });
+    }
+    const move = (e) => { const p = pickX(e, ref.current, L); if (p.x < 0 || p.x > L) { setHov(null); return; } setHov({ x: p.x, v: valuesAt(an, p.x) }); };
+    const click = (e) => { const p = pickX(e, ref.current, L); if (p.x >= -0.02 && p.x <= L + 0.02) onPick(p.x); };
+    return (
+        <svg ref={ref} viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label={isM ? "Diagramma del momento" : "Diagramma del taglio"}
+            onMouseMove={move} onMouseLeave={() => setHov(null)} onClick={click} style={{ cursor: "crosshair" }}>
+            {/* appoggi (richiami verticali) */}
+            {[0, ...an.xs0.slice(1), L].map((x, i) => <line key={i} x1={X(x)} x2={X(x)} y1={top - 8} y2={bot + 8} stroke="#e2e8f0" />)}
+            <line x1={X(0)} x2={X(L)} y1={y0} y2={y0} stroke="#334155" strokeWidth="1.2" />
+            {series.filter(([, , dash]) => !dash).map(([key, col]) => <path key={`a${key}`} d={area(key)} fill={col} fillOpacity="0.1" />)}
+            {series.map(([key, col, dash]) => <path key={key} d={path(key)} fill="none" stroke={col} strokeWidth={dash ? 1.3 : 1.8} strokeDasharray={dash ? "5 3" : undefined} />)}
+            {labels.map((l, i) => (
+                <text key={i} x={X(l.x)} y={l.below ? Y(l.v) + 13 : Y(l.v) - 5} fontSize="10" textAnchor={l.anchor ?? "middle"} fill={l.col} fontWeight="bold" stroke="#fff" strokeWidth="3" paintOrder="stroke">{fmt(l.v, 1)}</text>
+            ))}
+            {/* sezioni */}
+            {beam.sections.map((s) => (
+                <g key={s.id} onClick={(e) => { e.stopPropagation(); onOpen(s.id); }} style={{ cursor: "pointer" }}>
+                    <line x1={X(s.x)} x2={X(s.x)} y1={top - 10} y2={bot + 10} stroke={C_SEC} strokeWidth="1.2" strokeDasharray="3 2" />
+                    <rect x={X(s.x) - 6} y={top - 12} width="12" height={bot - top + 24} fill="transparent" />
+                    <text x={X(s.x)} y={top - 12} fontSize="9" textAnchor="middle" fill={C_SEC} fontWeight="bold">{s.label.length > 6 ? s.label.slice(0, 6) : s.label}</text>
+                </g>
+            ))}
+            {/* puntatore con i valori */}
+            {hov && hov.v && (() => {
+                const xs = X(hov.x), right = xs > W - 190;
+                const rows = isM
+                    ? [["x", `${fmt(hov.x, 2)} m`, "#334155"], ["M max", fmt(hov.v.MmaxU, 1), C_POS], ["M min", fmt(hov.v.MminU, 1), C_NEG], ...(show.T ? [["trasl.", `${fmt(hov.v.MmaxT, 1)} / ${fmt(hov.v.MminT, 1)}`, C_TRASL]] : [])]
+                    : [["x", `${fmt(hov.x, 2)} m`, "#334155"], ["V max", fmt(hov.v.VmaxU, 1), C_V], ["V min", fmt(hov.v.VminU, 1), C_V]];
+                const bx = right ? xs - 150 : xs + 10;
+                return (
+                    <g pointerEvents="none">
+                        <line x1={xs} x2={xs} y1={top - 6} y2={bot + 6} stroke="#64748b" strokeWidth="0.8" />
+                        <rect x={bx} y={top} width="140" height={rows.length * 14 + 8} rx="6" fill="#fff" fillOpacity="0.95" stroke="#cbd5e1" />
+                        {rows.map(([a, b, c], i) => <g key={a}><text x={bx + 8} y={top + 15 + i * 14} fontSize="10" fill="#64748b">{a}</text><text x={bx + 132} y={top + 15 + i * 14} fontSize="10" textAnchor="end" fill={c} fontWeight="600">{b}</text></g>)}
+                        <text x={xs} y={bot + 18} fontSize="9" textAnchor="middle" fill="#94a3b8">clic: aggiungi sezione</text>
+                    </g>
+                );
+            })()}
+        </svg>
+    );
+}
+
+// ---------------------------------------------------------------------------
+// TABELLA DELLE SEZIONI (valori automatici, sovrascrivibili)
+// ---------------------------------------------------------------------------
+function SectionsTable({ beam, an, upd, openSection }) {
+    const setS = (id, fn) => upd((b) => ({ ...b, sections: b.sections.map((s) => (s.id === id ? fn(s) : s)) }));
+    const del = (id) => upd((b) => ({ ...b, sections: b.sections.filter((s) => s.id !== id) }));
+    const cols = [["Mpos", <>M<sup>+</sup><sub>Ed</sub></>, "kNm"], ["Mneg", <>M<sup>−</sup><sub>Ed</sub></>, "kNm"], ["V", <>V<sub>Ed</sub></>, "kN"], ["Mrara", "M rara", "kNm"], ["Mqp", "M q.p.", "kNm"]];
+    return (
+        <Card title="Sezioni di calcolo">
+            {beam.sections.length === 0 ? (
+                <p className="text-sm text-slate-500">Nessuna sezione: clicca sullo schema o sui diagrammi, oppure usa «Sezioni caratteristiche».</p>
+            ) : (
+                <div className="scroll-thin-x pb-1">
+                    <table className="w-full min-w-[720px] text-xs">
+                        <thead>
+                            <tr className="border-b border-slate-200 text-left text-[11px] text-slate-500">
+                                <th className="py-1.5 pr-2 font-semibold">Sezione</th>
+                                <th className="py-1.5 pr-2 font-semibold">x [m]</th>
+                                {cols.map(([k, l, u]) => <th key={k} className="py-1.5 pr-2 font-semibold">{typeof l === "string" ? sub(l) : l} <span className="font-normal text-slate-400">[{u}]</span></th>)}
+                                <th className="py-1.5 font-semibold">Stato</th>
+                                <th />
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {beam.sections.map((s) => {
+                                const v = sectionValues(beam, an, s);
+                                const st = s.check;
+                                return (
+                                    <tr key={s.id} className="border-b border-slate-100 align-middle">
+                                        <td className="py-1.5 pr-2"><input value={s.label} onChange={(e) => setS(s.id, (x) => ({ ...x, label: e.target.value }))} className="w-24 rounded-md border border-slate-200 px-1.5 py-1 text-xs" /></td>
+                                        <td className="py-1.5 pr-2"><input type="number" step="0.05" value={s.x} onChange={(e) => setS(s.id, (x) => ({ ...x, x: Math.min(an.Ltot, Math.max(0, num(e.target.value))) }))} className="w-16 rounded-md border border-slate-200 px-1.5 py-1 text-xs" /></td>
+                                        {cols.map(([k]) => {
+                                            const manual = s.over?.[k] !== undefined && s.over?.[k] !== null && s.over?.[k] !== "";
+                                            return (
+                                                <td key={k} className="py-1.5 pr-2">
+                                                    <input type="number" value={manual ? s.over[k] : ""} placeholder={fmt(v[k], 1)}
+                                                        onChange={(e) => setS(s.id, (x) => ({ ...x, over: { ...x.over, [k]: e.target.value === "" ? null : e.target.value } }))}
+                                                        title={manual ? "Valore inserito a mano (svuota per tornare al calcolo)" : "Valore calcolato: scrivi per sovrascriverlo"}
+                                                        className={`w-20 rounded-md border px-1.5 py-1 text-xs tabular-nums ${manual ? "border-amber-300 bg-amber-50 font-semibold text-amber-800" : "border-slate-200 placeholder:text-slate-700"}`} />
+                                                </td>
+                                            );
+                                        })}
+                                        <td className="py-1.5 pr-2">{st ? <Status ok={st.ok} text={st.text} /> : <span className="text-slate-400">da fare</span>}</td>
+                                        <td className="py-1.5 text-right whitespace-nowrap">
+                                            <button type="button" onClick={() => openSection(s.id)} className="inline-flex items-center gap-1 rounded-lg bg-sky-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-sky-700">Apri <ChevronRight size={12} /></button>
+                                            <MiniBtn title="Elimina sezione" onClick={() => del(s.id)}><Trash2 size={12} /></MiniBtn>
+                                        </td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                    <p className="mt-2 text-[11px] text-slate-400">Le celle vuote mostrano i valori calcolati (inviluppo{beam.useTranslated !== false ? " traslato" : ""} per M⁺/M⁻); scrivendo un valore lo si sovrascrive (in ambra).</p>
+                </div>
+            )}
+        </Card>
+    );
+}
+
+// ---------------------------------------------------------------------------
+// CASCATA DI UNA SEZIONE: progetto → verifica a flessione → taglio → fessurazione
+// ---------------------------------------------------------------------------
+const STEPS = [
+    { id: "design", label: "1. Progetto" },
+    { id: "bending", label: "2. Verifica a flessione" },
+    { id: "shear", label: "3. Verifica a taglio" },
+    { id: "crack", label: "4. Fessurazione (SLE)" },
+];
+
+function SectionWorkspace({ beam, an, section, onBack, updateBeam }) {
+    const v = sectionValues(beam, an, section);
+    const { b, h, c, fck, fyk } = beam.section;
+    // momento di progetto: il più gravoso fra M⁺ e M⁻ (selezionabile)
+    const signs = [v.Mpos > 1e-6 ? 1 : null, v.Mneg < -1e-6 ? -1 : null].filter(Boolean);
+    const [sign, setSign] = useState(() => (Math.abs(v.Mneg) > Math.abs(v.Mpos) ? -1 : 1));
+    const [step, setStep] = useState("design");
+    const MEd = sign > 0 ? v.Mpos : v.Mneg;
+    const adopted = section.adopted?.[sign > 0 ? "pos" : "neg"] ?? null;
+
+    const onAdopted = useCallback((a) => {
+        updateBeam((bm) => ({ ...bm, sections: bm.sections.map((s) => (s.id === section.id ? { ...s, adopted: { ...(s.adopted ?? {}), [sign > 0 ? "pos" : "neg"]: a } } : s)) }));
+    }, [updateBeam, section.id, sign]);
+
+    // armature inferiore/superiore della sezione adottata
+    const r1 = (x) => Math.round(x * 10) / 10;      // aree arrotondate a 0,1 mm²
+    const bars = adopted ? (adopted.tensionTop ? { top: r1(adopted.AT), bot: r1(adopted.AC), phiT: adopted.phiT } : { bot: r1(adopted.AT), top: r1(adopted.AC), phiT: adopted.phiT }) : null;
+    const hA = adopted?.h ?? h;
+    // verifica a flessione per M⁺ e M⁻ con la stessa armatura (riepilogo)
+    const checks = bars ? [v.Mpos, v.Mneg].filter((m) => Math.abs(m) > 1e-6).map((m) => {
+        const r = verifySection({ b, h: hA, c, cPrime: c, As: bars.bot, AsPrime: bars.top, fck, fyk, alphaCc: 0.85, gammaC: 1.5, gammaS: 1.15, NEd: 0, MEd: m, concreteModel: "rectangular", steelModel: "ep", ks: 1.15 });
+        return { m, ok: r.ok && r.verified, util: r.ok ? r.utilization : Infinity, MRd: r.ok ? r.MRdAtN : null };
+    }) : [];
+
+    // stato riassuntivo salvato nella sezione (per la tabella)
+    const summary = checks.length ? { ok: checks.every((q) => q.ok), text: checks.map((q) => `${q.m > 0 ? "M⁺" : "M⁻"} ${fmt(q.util * 100, 0)}%`).join(" · ") } : null;
+    const summaryKey = JSON.stringify(summary);
+    useEffect(() => {
+        updateBeam((bm) => ({ ...bm, sections: bm.sections.map((s) => (s.id === section.id && JSON.stringify(s.check ?? null) !== summaryKey ? { ...s, check: summary } : s)) }));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [summaryKey]);
+
+    const designInput = { mode: "fixBH", B: b, h, MEd, NEd: 0, dInf: c, dSup: c, fck, fyk, beta: 0, steelGrade: STEEL_GRADES.find((g) => g.fyk === fyk)?.id ?? "B450C" };
+    const tensionA = bars ? (MEd >= 0 ? bars.bot : bars.top) : 0;
+    const verifyInput = bars ? { b, h: hA, c, cPrime: c, As: bars.bot, AsPrime: bars.top, MEd, NEd: 0, fck, fyk } : null;
+    const shearInput = bars ? { bw: b, h: hA, c, VEd: v.V, NEd: 0, Asl: tensionA, fck, fyk, cotgTheta: beam.cotTheta, alpha: beam.alphaDeg, phiSw: adopted.phiStirrup ?? 8 } : null;
+    const Mser = v.Mqp;                               // fessurazione: combinazione quasi permanente
+    const crackInput = bars ? { b, h: hA, c, cPrime: c, As: Mser >= 0 ? bars.bot : bars.top, AsPrime: Mser >= 0 ? bars.top : bars.bot, phi: bars.phiT, MSer: Math.abs(Mser), fck, longTerm: true } : null;
+    const key = (o) => JSON.stringify(o);
+
+    return (
+        <div className="space-y-4">
+            <Card>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                        <button type="button" onClick={onBack} className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50"><ArrowLeft size={14} /> {beam.name}</button>
+                        <div>
+                            <p className="text-sm font-bold text-slate-800">{beam.name} › {section.label}</p>
+                            <p className="text-xs text-slate-500">x = {fmt(section.x, 2)} m · sezione {b}×{h} mm · copriferro {c} mm</p>
+                        </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2 text-xs">
+                        <Chip col={C_POS} label={<>M<sup>+</sup><sub>Ed</sub></>} val={`${fmt(v.Mpos, 1)} kNm`} />
+                        <Chip col={C_NEG} label={<>M<sup>−</sup><sub>Ed</sub></>} val={`${fmt(v.Mneg, 1)} kNm`} />
+                        <Chip col={C_V} label={<>V<sub>Ed</sub></>} val={`${fmt(v.V, 1)} kN`} />
+                        <Chip col={C_SLE} label="M q.p." val={`${fmt(v.Mqp, 1)} kNm`} />
+                    </div>
+                </div>
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-3">
+                    <div className="flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1">
+                        {STEPS.map((s) => (
+                            <button key={s.id} type="button" onClick={() => setStep(s.id)} disabled={s.id !== "design" && !bars}
+                                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${step === s.id ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>{s.label}</button>
+                        ))}
+                    </div>
+                    {signs.length > 1 && (
+                        <div className="flex items-center gap-2 text-xs text-slate-600">
+                            Momento di progetto:
+                            <div className="inline-flex rounded-lg bg-slate-100 p-0.5">
+                                {signs.map((sg) => (
+                                    <button key={sg} type="button" onClick={() => setSign(sg)} className={`rounded-md px-2 py-1 font-semibold ${sign === sg ? "bg-white shadow-sm" : "text-slate-500"}`} style={{ color: sign === sg ? (sg > 0 ? C_POS : C_NEG) : undefined }}>
+                                        {sg > 0 ? `M⁺ = ${fmt(v.Mpos, 1)}` : `M⁻ = ${fmt(v.Mneg, 1)}`}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+                </div>
+                {checks.length > 0 && (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                        {checks.map((q) => <Status key={q.m} ok={q.ok} text={`Flessione ${q.m > 0 ? "M⁺" : "M⁻"} = ${fmt(q.m, 1)} kNm: M_Rd = ${fmt(q.MRd, 1)} kNm (${fmt(q.util * 100, 0)}%)`} />)}
+                        <span className="text-[11px] text-slate-400">con l'armatura adottata: inferiore {fmt(bars.bot, 0)} mm², superiore {fmt(bars.top, 0)} mm²</span>
+                    </div>
+                )}
+                {!bars && <p className="mt-2 text-[11px] text-slate-500">Completa il progetto: l'armatura adottata passa automaticamente alle verifiche.</p>}
+            </Card>
+
+            {step === "design" && <SectionDesignTool key={`d${sign}${key(designInput)}`} initialInput={designInput} onAdopted={onAdopted} />}
+            {step === "bending" && verifyInput && <VerifySectionTool key={`v${key(verifyInput)}`} initialInput={verifyInput} />}
+            {step === "shear" && shearInput && <VerifyShearTool key={`s${key(shearInput)}`} initialInput={shearInput} />}
+            {step === "crack" && crackInput && (
+                <>
+                    <p className="text-xs text-slate-500">{sub(`Fessurazione con la combinazione quasi permanente: M_qp = ${fmt(Mser, 1)} kNm (rara: ${fmt(v.Mrara, 1)} kNm). Armatura tesa dal lato ${Mser >= 0 ? "inferiore" : "superiore"}.`)}</p>
+                    <VerifyCrackTool key={`c${key(crackInput)}`} initialInput={crackInput} />
+                </>
+            )}
+        </div>
+    );
+}
+
+// ---------------------------------------------------------------------------
+// PANNELLO LATERALE dei dati della trave: le modifiche si vedono subito nei disegni
+// ---------------------------------------------------------------------------
+function EditDrawer({ title, onClose, children }) {
+    useEffect(() => {
+        const onKey = (e) => { if (e.key === "Escape") onClose(); };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [onClose]);
+    return (
+        <div className="fixed inset-0 z-50" role="dialog" aria-modal="true" aria-label={title}>
+            {/* sfondo trasparente: i diagrammi restano visibili e cliccando fuori si chiude */}
+            <div className="absolute inset-0 bg-slate-900/10" onClick={onClose} />
+            <aside className="absolute inset-y-0 right-0 flex w-full max-w-md flex-col border-l border-slate-200 bg-slate-50 shadow-2xl">
+                <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-3">
+                    <div>
+                        <p className="text-sm font-bold text-slate-800">{title}</p>
+                        <p className="text-[11px] text-slate-500">Sezione, schema statico, carichi, combinazioni e traslazione: i disegni si aggiornano subito.</p>
+                    </div>
+                    <button type="button" onClick={onClose} aria-label="Chiudi" title="Chiudi (Esc)" className="rounded-full p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-800"><X size={18} /></button>
+                </div>
+                <div className="scroll-thin flex-1 space-y-4 py-4 pl-4 pr-3">{children}</div>
+            </aside>
+        </div>
+    );
+}
+
+// ---------------------------------------------------------------------------
+// PRIMITIVI UI
+// ---------------------------------------------------------------------------
+function Card({ title, subtitle = null, right, children }) {
+    return (
+        <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            {(title || right) && (
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                    {title && <div className="min-w-0"><h3 className="text-sm font-bold text-slate-800">{title}</h3>{subtitle && <p className="mt-0.5 text-[11px] text-slate-500">{subtitle}</p>}</div>}
+                    {right}
+                </div>
+            )}
+            {children}
+        </section>
+    );
+}
+function IconBtn({ children, onClick, title }) {
+    return <button type="button" onClick={onClick} title={title} className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50">{children}</button>;
+}
+function MiniBtn({ children, onClick, title }) {
+    return <button type="button" onClick={onClick} title={title} aria-label={title} className="ml-1 rounded-md p-1 text-slate-500 transition hover:bg-slate-100 hover:text-slate-800">{children}</button>;
+}
+function Chip({ col, label, val }) {
+    return <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1"><span className="h-2 w-2 rounded-full" style={{ background: col }} /><span className="text-slate-500">{typeof label === "string" ? sub(label) : label}</span><b className="text-slate-800">{val}</b></span>;
+}
+function Status({ ok, text }) {
+    return <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold ${ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>{ok ? <CheckCircle2 size={12} /> : <XCircle size={12} />}{sub(text)}</span>;
+}
+function Legend({ items }) {
+    return (
+        <div className="mt-1 flex flex-wrap justify-center gap-x-4 gap-y-1 text-[11px] text-slate-500">
+            {items.map(([c, l, dash]) => <span key={l} className="inline-flex items-center gap-1.5"><span className="inline-block w-5 border-t-2" style={{ borderColor: c, borderStyle: dash ? "dashed" : "solid" }} />{sub(l)}</span>)}
+        </div>
+    );
+}
+function NumField({ label, unit, value, onChange, small = false }) {
+    return (
+        <label className="block">
+            <span className={`mb-1 block font-semibold text-slate-500 ${small ? "text-[11px]" : "text-xs"}`}>{sub(label)}{unit && <span className="ml-1 font-normal text-slate-400">[{unit}]</span>}</span>
+            <input type="number" step="any" value={value} onChange={(e) => onChange(num(e.target.value))}
+                className={`w-full rounded-xl border border-slate-200 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100 ${small ? "px-2 py-1 text-xs" : "px-3 py-2 text-sm"}`} />
+        </label>
+    );
+}
+function TextField({ label, value, onChange }) {
+    return (
+        <label className="block">
+            <span className="mb-1 block text-xs font-semibold text-slate-500">{label}</span>
+            <input value={value} onChange={(e) => onChange(e.target.value)} className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100" />
+        </label>
+    );
+}
+function SelField({ label, value, onChange, options }) {
+    return (
+        <label className="block">
+            <span className="mb-1 block text-xs font-semibold text-slate-500">{label}</span>
+            <select value={value} onChange={(e) => onChange(e.target.value)} className="w-full cursor-pointer rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100">
+                {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+        </label>
+    );
+}
