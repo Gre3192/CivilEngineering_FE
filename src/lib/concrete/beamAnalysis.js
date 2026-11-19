@@ -500,18 +500,45 @@ export function valuesAt(an, x) {
     return out;
 }
 
-// sezioni caratteristiche: appoggi/incastri e massimo momento positivo di ogni campata
+// sezioni caratteristiche: appoggi/incastri e massimo momento positivo di ogni campata.
+// Nomi in progressione: vincoli A, B, C… (la stessa lettera delle reazioni R_A, R_B…
+// dello schema statico), campate Cmp1, Cmp2…
 export function characteristicSections(beam, an) {
     const out = [];
     beam.nodes.forEach((nd, i) => {
         if (nd.type === "free") return;
         const x = an.xs0[i] ?? an.Ltot;
-        out.push({ x, label: i === 0 ? "Appoggio sx" : i === beam.nodes.length - 1 ? "Appoggio dx" : `Appoggio ${i + 1}` });
+        out.push({ x, label: String.fromCharCode(65 + i), ref: { node: i } });
     });
     beam.spans.forEach((s, j) => {
         const sp = an.pts.filter((p) => p.span === j);
         const best = sp.reduce((m, p) => (p.MmaxU > m.MmaxU ? p : m), sp[0]);
-        if (best && best.MmaxU > 1e-6) out.push({ x: best.x, label: `Campata ${j + 1}` });
+        if (best && best.MmaxU > 1e-6) out.push({ x: best.x, label: `Cmp${j + 1}`, ref: { span: j } });
     });
     return out;
+}
+
+// riferimento di una sezione caratteristica: { node: i } (vincolo) o { span: j }
+// (massimo momento in campata). Le sezioni create prima del riferimento si
+// riconoscono dal nome (A, B, …; Cmp1, Cmp2, …). null = sezione libera.
+export function charRef(sec) {
+    if (sec.char) return sec.char;
+    if (sec.char === false) return null;
+    if (/^[A-Z]$/.test(sec.label ?? "")) return { node: sec.label.charCodeAt(0) - 65 };
+    const m = /^C(?:mp|pt)(\d+)$/.exec(sec.label ?? "");
+    return m ? { span: Number(m[1]) - 1 } : null;
+}
+
+// posizione attuale di una sezione caratteristica (null se il riferimento non esiste più)
+export function charPosition(beam, an, ref) {
+    if (!an?.ok || !ref) return null;
+    if (ref.node !== undefined) {
+        const nd = beam.nodes[ref.node];
+        if (!nd || nd.type === "free") return null;
+        return an.xs0[ref.node] ?? an.Ltot;
+    }
+    const sp = an.pts.filter((p) => p.span === ref.span);
+    if (!sp.length) return null;
+    const best = sp.reduce((m, p) => (p.MmaxU > m.MmaxU ? p : m), sp[0]);
+    return best.MmaxU > 1e-6 ? best.x : null;
 }

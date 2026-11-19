@@ -10,14 +10,14 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { createPortal } from "react-dom";
-import { ArrowLeft, Building, Check, Copy, Info, ListChecks, Pencil, Plus, Trash2, ChevronRight, Search, X, Wand2, CheckCircle2, XCircle, AlertTriangle, Download, Upload } from "lucide-react";
+import { ArrowLeft, Building, Check, Copy, Info, List, ListChecks, Lock, Pencil, Plus, Trash2, ChevronRight, Search, X, Wand2, CheckCircle2, XCircle, AlertTriangle, Download, Upload } from "lucide-react";
 import { sub } from "../Sym";
 import { drawerPanelCls, modalBackdropCls, modalPanelCls, useModalTransition } from "../../ui/useModalTransition";
 import Tex from "../Tex";
 import { CONCRETE_CLASSES, STEEL_GRADES } from "../../lib/concrete/sectionDesign";
 import { USE_CATEGORIES } from "../../lib/actions/loadData";
 import { DEFL_DEFAULT, beamDeflection } from "../../lib/concrete/deflection";
-import { COMBO_STATES, SUPPORT_TYPES, analyzeBeam, characteristicSections, diagramFor, influenceLine, influenceProcedure, influenceRange, itemValue, loadCombinations, newBeam, newId, spanVariable, valuesAt } from "../../lib/concrete/beamAnalysis";
+import { COMBO_STATES, SUPPORT_TYPES, analyzeBeam, charPosition, charRef, characteristicSections, diagramFor, influenceLine, influenceProcedure, influenceRange, itemValue, loadCombinations, newBeam, newId, spanVariable, valuesAt } from "../../lib/concrete/beamAnalysis";
 import { verifySection } from "../../lib/concrete/verifySection";
 import { crackCheck } from "../../lib/concrete/crackCheck";
 import SectionDesignTool from "./SectionDesignTool";
@@ -28,7 +28,7 @@ import VerifyCrackTool from "./VerifyCrackTool";
 const STORAGE_KEY = "ce-beams-v1";
 const FLOORS_KEY = "ce-floors-v1";
 const COLUMNS_KEY = "ce-columns-v1";
-const C_POS = "#0284c7", C_NEG = "#dc2626", C_TRASL = "#7c3aed", C_SLE = "#16a34a", C_V = "#ca8a04", C_SEC = "#0f172a";
+const C_POS = "#0284c7", C_NEG = "#dc2626", C_TRASL = "#7c3aed", C_SLE = "#16a34a", C_V = "#ca8a04", C_SEC = "#64748b";   // sezioni: grigio ardesia sobrio
 
 const fmt = (v, dec = 1) => (v === null || v === undefined || Number.isNaN(v) ? "–" : Number(v).toLocaleString("it-IT", { minimumFractionDigits: dec, maximumFractionDigits: dec }));
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
@@ -58,6 +58,21 @@ function loadColumns() {
 }
 
 // valori di calcolo di una sezione: inviluppo (traslato o no) con le eventuali sovrascritture
+// trave con le sezioni caratteristiche nella posizione data dall'analisi
+function withCharPositions(b, an) {
+    if (!b || !an?.ok) return b;
+    let changed = false;
+    const secs = b.sections.map((q) => {
+        const x = charPosition(b, an, charRef(q));
+        if (x === null) return q;
+        const xr = Math.round(x * 1000) / 1000;
+        if (Math.abs(xr - q.x) < 1e-9) return q;
+        changed = true;
+        return { ...q, x: xr };
+    });
+    return changed ? { ...b, sections: secs.sort((p, q) => p.x - q.x) } : b;
+}
+
 // chiave dei dati che entrano nell'analisi (senza sezioni, frecce e nome)
 const structKey = (b) => JSON.stringify({ ...b, sections: undefined, defl: undefined, name: undefined, floorId: undefined });
 
@@ -103,7 +118,7 @@ export default function BeamsTool() {
     const floorOf = (b) => (floors.some((f) => f.id === b.floorId) ? b.floorId : floors[0]?.id ?? null);
     const visible = floorSel ? beams.filter((b) => floorOf(b) === floorSel) : [];
     const selected = visible.find((b) => b.id === selId) ?? visible[0] ?? null;        // evidenziata nell'elenco
-    const beam = beamParam ? beams.find((b) => b.id === beamParam) ?? null : null;     // trave aperta
+    const beamData = beamParam ? beams.find((b) => b.id === beamParam) ?? null : null; // trave aperta (dati salvati)
     const openedCol = colParam ? columns.find((c) => c.id === colParam) ?? null : null;
     const goHome = () => setParams({});
     const openBeam = (id) => { setSelId(id); setParams({ trave: id }); };
@@ -137,9 +152,13 @@ export default function BeamsTool() {
         });
     };
     // l'analisi dipende solo dai dati strutturali: spostare o aggiungere sezioni non la ricalcola
-    const anKey = beam ? structKey(beam) : "";
+    const anKey = beamData ? structKey(beamData) : "";
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    const an = useMemo(() => (beam ? analyzeBeam(beam) : null), [anKey]);
+    const an = useMemo(() => (beamData ? analyzeBeam(beamData) : null), [anKey]);
+    // sezioni caratteristiche: la posizione si ricava sempre dalla trave (vincolo o
+    // massimo momento in campata), non da quella salvata; così non si spostano a mano
+    // e seguono luci, vincoli e carichi quando cambiano
+    const beam = withCharPositions(beamData, an);
     // aggiornamento di una trave: se fn restituisce la stessa trave lo stato non cambia
     // (niente nuovo render, quindi niente cicli con gli effetti che salvano dati)
     const updateBeam = useCallback((id, fn) => setBeams((bs) => {
@@ -246,7 +265,7 @@ export default function BeamsTool() {
     const addCharacteristic = () => {
         if (!an.ok) return;
         const cs = characteristicSections(beam, an).filter((c) => !beam.sections.some((s) => Math.abs(s.x - c.x) < 0.02));
-        upd((b) => ({ ...b, sections: [...b.sections, ...cs.map((c) => ({ id: newId("s"), x: Math.round(c.x * 1000) / 1000, label: c.label, over: {} }))].sort((p, q) => p.x - q.x) }));
+        upd((b) => ({ ...b, sections: [...b.sections, ...cs.map((c) => ({ id: newId("s"), x: Math.round(c.x * 1000) / 1000, label: c.label, char: c.ref, over: {} }))].sort((p, q) => p.x - q.x) }));
     };
 
     const section = secId && beam ? beam.sections.find((s) => s.id === secId) : null;
@@ -724,18 +743,21 @@ function BeamEditor({ beam, an, upd, addSection, addCharacteristic, openSection,
     const curX = curSec ? curSec.x : Math.min(Ltot, cur.x ?? Math.round((Ltot / 2) * 1000) / 1000);
     const clampX = (x) => Math.round(Math.min(Ltot, Math.max(0, x)) * 1000) / 1000;
     const moveTo = (x) => {
-        if (!Number.isFinite(x)) return;
+        if (!Number.isFinite(x) || (curSec && charRef(curSec))) return;   // caratteristiche: posizione fissa
         const xr = clampX(x);
         if (curSec) upd((b) => ({ ...b, sections: b.sections.map((q) => (q.id === curSec.id ? { ...q, x: xr } : q)).sort((p, q) => p.x - q.x) }));
         else setCur({ id: null, x: xr });
     };
+    // clic su una sezione: la seleziona (diventa quella del cursore); doppio clic: la apre
+    const selectSec = (sid) => setCur({ id: sid, x: null });
+    const [secTable, setSecTable] = useState(false);   // modal con la tabella delle sezioni
     // clic sui disegni: nuova sezione, che diventa quella attiva del cursore
     const pick = (x) => { const id = addSection(x); if (id) setCur({ id, x: null }); };
     const cursor = { x: curX, isNew: !curSec };
     // ogni box apre la sezione sulla propria verifica
     const openAt = (step) => (sid) => openSection(sid, step);
     const barFor = (step) => <SectionCursorBar beam={beam} L={Ltot} curSec={curSec} curX={curX} setCur={setCur} moveTo={moveTo}
-        onAdd={() => { const id = addSection(curX); if (id) setCur({ id, x: null }); }} onOpen={openAt(step)} />;
+        onAdd={() => { const id = addSection(curX); if (id) setCur({ id, x: null }); }} onOpen={openAt(step)} onTable={() => setSecTable(true)} />;
     const [editOpen, setEditOpen] = useState(false);
     const [showReac, setShowReac] = useState(true);
     const editBtn = (
@@ -827,6 +849,7 @@ function BeamEditor({ beam, an, upd, addSection, addCharacteristic, openSection,
                 </Card>
             </EditDrawer>}
 
+            {secTable && an.ok && <SectionsModal beam={beam} an={an} upd={upd} openSection={openSection} onClose={() => setSecTable(false)} />}
             {/* -------- SCHEMA, DIAGRAMMI, SEZIONI -------- */}
             <div className="space-y-4">
                 <CombinationCard beam={beam} upd={upd} an={an} />
@@ -834,7 +857,7 @@ function BeamEditor({ beam, an, upd, addSection, addCharacteristic, openSection,
                     <Card right={editBtn}><div className="flex items-start gap-2 text-sm text-red-600"><AlertTriangle size={18} className="mt-0.5 shrink-0" /><ul>{an.errors.map((e) => <li key={e}>{e}</li>)}</ul></div></Card>
                 ) : (
                     <>
-                        <Card title={`Schema statico — ${beam.name}`} right={
+                        <Card title="Schema statico" subtitle="Clicca sullo schema o sui diagrammi per aggiungere una sezione; clic su una sezione per selezionarla, doppio clic per aprirla." right={
                             <div className="flex flex-wrap items-center gap-2">
                                 <label className="flex cursor-pointer items-center gap-1.5 text-xs font-semibold text-slate-600">
                                     <input type="checkbox" checked={showReac} onChange={(e) => setShowReac(e.target.checked)} className="accent-amber-600" /> Reazioni
@@ -844,8 +867,7 @@ function BeamEditor({ beam, an, upd, addSection, addCharacteristic, openSection,
                                 </button>
                                 {editBtn}
                             </div>}>
-                            <p className="mb-1 text-[11px] text-slate-500">Clicca sullo schema o sui diagrammi per aggiungere una sezione; clicca un marcatore per aprirla.</p>
-                            <SchemeSVG beam={beam} onPick={pick} onOpen={openAt("design")} reac={showReac ? an.reac : null} an={an} cursor={cursor} />
+                            <SchemeSVG beam={beam} onPick={pick} onSelect={selectSec} onOpen={openAt("design")} reac={showReac ? an.reac : null} cursor={cursor} />
                             {barFor("design")}
                             {showReac && (
                                 <p className="mt-1 text-[11px] leading-4 text-slate-500">
@@ -860,19 +882,18 @@ function BeamEditor({ beam, an, upd, addSection, addCharacteristic, openSection,
                                 <label className="flex cursor-pointer items-center gap-1"><input type="checkbox" checked={show.T} onChange={(e) => setShow((s) => ({ ...s, T: e.target.checked }))} className="accent-violet-600" />traslato</label>
                                 <label className="flex cursor-pointer items-center gap-1"><input type="checkbox" checked={show.SLE} onChange={(e) => setShow((s) => ({ ...s, SLE: e.target.checked }))} className="accent-green-600" />SLE</label>
                             </div>}>
-                            <DiagramSVG beam={beam} an={an} kind="M" show={show} onPick={pick} onOpen={openAt("bending")} cursor={cursor} />
+                            <DiagramSVG beam={beam} an={an} kind="M" show={show} onPick={pick} onSelect={selectSec} onOpen={openAt("bending")} cursor={cursor} />
                             <Legend items={[[C_POS, "inviluppo SLU M_max"], [C_NEG, "inviluppo SLU M_min"], ...(show.T ? [[C_TRASL, `traslato (a_l = ${fmt(an.aL * 100, 1)} cm)`, true]] : []), ...(show.SLE ? [[C_SLE, "SLE rara", true]] : [])]} />
                             {barFor("bending")}
                         </Card>
                         <Card title="Taglio V [kN]">
-                            <DiagramSVG beam={beam} an={an} kind="V" show={show} onPick={pick} onOpen={openAt("shear")} cursor={cursor} />
+                            <DiagramSVG beam={beam} an={an} kind="V" show={show} onPick={pick} onSelect={selectSec} onOpen={openAt("shear")} cursor={cursor} />
                             <Legend items={[[C_V, "inviluppo SLU V_max / V_min"]]} />
                             {barFor("shear")}
                         </Card>
                         <InfluenceCard beam={beam} an={an} />
-                        <CrackCard beam={beam} an={an} onPick={pick} onOpen={openAt("crack")} cursor={cursor} bar={barFor("crack")} />
-                        <DeflectionCard beam={beam} an={an} upd={upd} onPick={pick} onOpen={openAt("defl")} cursor={cursor} bar={barFor("defl")} />
-                        <SectionsTable beam={beam} an={an} upd={upd} openSection={openSection} />
+                        <CrackCard beam={beam} an={an} onPick={pick} onSelect={selectSec} onOpen={openAt("crack")} cursor={cursor} bar={barFor("crack")} />
+                        <DeflectionCard beam={beam} an={an} upd={upd} onPick={pick} onSelect={selectSec} onOpen={openAt("defl")} cursor={cursor} bar={barFor("defl")} />
                     </>
                 )}
             </div>
@@ -1303,7 +1324,7 @@ function pickX(e, svg, L) {
     return { x: ((loc.x - ML) / (W - ML - MR)) * L, sx: loc.x, sy: loc.y };
 }
 
-function SchemeSVG({ beam, mini = false, onPick = null, onOpen = null, reac = null, an = null, cursor = null }) {
+function SchemeSVG({ beam, mini = false, onPick = null, onSelect = null, onOpen = null, reac = null, cursor = null }) {
     const L = beam.spans.reduce((t, s) => t + num(s.L), 0);
     const X = useX(L);
     const ref = useRef(null);
@@ -1363,11 +1384,10 @@ function SchemeSVG({ beam, mini = false, onPick = null, onOpen = null, reac = nu
                     <g key={`r${r.node}`} pointerEvents="none">
                         <defs><marker id={`rx${r.node}`} markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L7,4 L0,8 Z" fill="#b45309" /></marker></defs>
                         <line x1={x} x2={x} y1={up ? y1 : y2} y2={up ? y2 : y1} stroke="#b45309" strokeWidth="2" markerEnd={`url(#rx${r.node})`} />
-                        {/* formuletta accanto alla freccia: R_A = 3/8·qL = 78,4 kN */}
-                        <text x={x + (right ? 7 : -7)} y={y1 - 18} fontSize="11" fontWeight="bold" textAnchor={right ? "start" : "end"} fill="#b45309">
-                            R<SubT>{lab}</SubT> = {an ? formulaNodes(r.cR, beam, an, 1) : null}
+                        {/* valore della reazione accanto alla freccia: R_A = 78,4 kN */}
+                        <text x={x + (right ? 7 : -7)} y={y1 - 6} fontSize="11" fontWeight="bold" textAnchor={right ? "start" : "end"} fill="#b45309">
+                            R<SubT>{lab}</SubT> = {fmt(r.Rfull, 1)} kN
                         </text>
-                        <text x={x + (right ? 7 : -7)} y={y1 - 4} fontSize="10.5" textAnchor={right ? "start" : "end"} fill="#b45309">= {fmt(r.Rfull, 1)} kN</text>
                         {envMax && <text x={x + (right ? 7 : -7)} y={y1 + 9} fontSize="9" textAnchor={right ? "start" : "end"} fill="#92400e">max inviluppo {fmt(r.Rmax, 1)} kN</text>}
                         {r.Rmin < -1e-6 && <text x={x + (right ? 7 : -7)} y={y1 + (envMax ? 21 : 9)} fontSize="9" textAnchor={right ? "start" : "end"} fill="#dc2626">min {fmt(r.Rmin, 1)} kN (sollevamento)</text>}
                         {r.type === "fixed" && (() => {
@@ -1376,25 +1396,25 @@ function SchemeSVG({ beam, mini = false, onPick = null, onOpen = null, reac = nu
                             return (
                                 <g>
                                     <path d={d} fill="none" stroke="#b45309" strokeWidth="1.6" markerEnd={`url(#rx${r.node})`} />
-                                    <text x={right ? cx - rr - 4 : cx + rr + 4} y={yB - rr - 6} fontSize="10" fontWeight="bold" textAnchor={right ? "start" : "end"} fill="#b45309">M<SubT>{lab}</SubT> = {an ? formulaNodes(r.cM.map((c) => c * (M < 0 ? -1 : 1)), beam, an, 2) : null} = {fmt(Math.abs(M), 1)} kNm</text>
+                                    <text x={right ? cx - rr - 4 : cx + rr + 4} y={yB - rr - 6} fontSize="10" fontWeight="bold" textAnchor={right ? "start" : "end"} fill="#b45309">M<SubT>{lab}</SubT> = {fmt(Math.abs(M), 1)} kNm</text>
                                 </g>
                             );
                         })()}
                     </g>
                 );
             })}
-            {/* sezioni */}
+            {/* sezioni: stesso stile degli altri disegni (tratteggio sottile e nome in alto) */}
             {beam.sections.map((s) => (
-                <g key={s.id} onClick={(e) => { e.stopPropagation(); onOpen?.(s.id); }} style={onOpen ? { cursor: "pointer" } : undefined}>
-                    <line x1={X(s.x)} x2={X(s.x)} y1={yB - (mini ? 10 : 18)} y2={yB + (mini ? 10 : 18)} stroke={C_SEC} strokeWidth="1.4" strokeDasharray="3 2" />
+                <g key={s.id} onClick={(e) => { e.stopPropagation(); onSelect?.(s.id); }} onDoubleClick={(e) => { e.stopPropagation(); onOpen?.(s.id); }} style={onOpen ? { cursor: "pointer" } : undefined}>
+                    <line x1={X(s.x)} x2={X(s.x)} y1={mini ? yB - 10 : 20} y2={yB + (mini ? 10 : 18)} stroke={C_SEC} strokeWidth="1.2" strokeDasharray="3 2" />
                     {!mini && <>
-                        <rect x={X(s.x) - 14} y={yB + 22} width="28" height="15" rx="7" fill={C_SEC} />
-                        <text x={X(s.x)} y={yB + 33} fontSize="9.5" textAnchor="middle" fill="#fff" fontWeight="bold">{s.label.length > 4 ? s.label.slice(0, 4) : s.label}</text>
-                        <title>{`${s.label} — x = ${fmt(s.x, 3)} m (apri)`}</title>
+                        <rect x={X(s.x) - 6} y={8} width="12" height={yB + 10} fill="transparent" />
+                        <text x={X(s.x)} y={17} fontSize="9" textAnchor="middle" fill={C_SEC} fontWeight="bold">{s.label.length > 6 ? s.label.slice(0, 6) : s.label}</text>
+                        <title>{`${s.label} — x = ${fmt(s.x, 3)} m (clic: seleziona · doppio clic: apri)`}</title>
                     </>}
                 </g>
             ))}
-            {cursor && !mini && <CursorMark X={X} {...cursor} y1={yB - 42} y2={yB + 40} />}
+            {cursor && !mini && <CursorMark X={X} {...cursor} y1={24} y2={yB + 18} />}
         </svg>
     );
 }
@@ -1410,7 +1430,7 @@ const CRACK_COMBOS = [
 ];
 const C_CR = "#64748b", C_CRZONE = "#f97316";
 
-function CrackCard({ beam, an, onPick, onOpen, cursor = null, bar = null }) {
+function CrackCard({ beam, an, onPick, onSelect = null, onOpen, cursor = null, bar = null }) {
     const [combo, setCombo] = useState("Q");
     const [wLim, setWLim] = useState(0.3);
     const { b, h, c, fck } = beam.section;
@@ -1444,7 +1464,7 @@ function CrackCard({ beam, an, onPick, onOpen, cursor = null, bar = null }) {
                     {[0.2, 0.3, 0.4].map((w) => <option key={w} value={w}>w_lim = {fmt(w, 1)} mm</option>)}
                 </select>
             </div>}>
-            <CrackSVG an={an} combo={combo} Mcr={Mcr} marks={marks} onPick={onPick} onOpen={onOpen} cursor={cursor} />
+            <CrackSVG an={an} combo={combo} Mcr={Mcr} marks={marks} onPick={onPick} onSelect={onSelect} onOpen={onOpen} cursor={cursor} />
             <Legend items={[[C_SLE, `M ${cb.label.toLowerCase()} (max / min)`], [C_CR, `±M_cr = ${fmt(Mcr, 1)} kNm (f_ctm/1,2 su b·h²/6)`, true], [C_CRZONE, "zona fessurata (|M| > M_cr)"]]} />
             {bar}
             <p className="mt-2 text-[11px] leading-4 text-slate-500">
@@ -1454,7 +1474,7 @@ function CrackCard({ beam, an, onPick, onOpen, cursor = null, bar = null }) {
     );
 }
 
-function CrackSVG({ an, combo, Mcr, marks, onPick, onOpen, cursor = null }) {
+function CrackSVG({ an, combo, Mcr, marks, onPick, onSelect = null, onOpen, cursor = null }) {
     const ref = useRef(null);
     const [hov, setHov] = useState(null);
     const [hovPt, setHovPt] = useState(null);           // estremo di zona fessurata sotto il mouse
@@ -1540,11 +1560,11 @@ function CrackSVG({ an, combo, Mcr, marks, onPick, onOpen, cursor = null }) {
             })}
             <line x1={X(0)} x2={X(L)} y1={y0} y2={y0} stroke="#334155" strokeWidth="1.2" />
             {[Mcr, -Mcr].map((m) => <line key={m} x1={X(0)} x2={X(L)} y1={Y(m)} y2={Y(m)} stroke={C_CR} strokeWidth="1" strokeDasharray="6 4" />)}
-            {/* ±M_cr a sinistra: simbolo e, sotto, il valore [kNm] */}
+            {/* ±M_cr: simbolo a sinistra, valore [kNm] a destra del grafico */}
             {[[Mcr, "+"], [-Mcr, "−"]].map(([m, sg]) => (
                 <g key={sg}>
-                    <text x={X(0) - 4} y={Y(m) - 1} fontSize="9.5" textAnchor="end" fill={C_CR}>{`${sg}M`}<tspan baselineShift="-0.12em" fontSize="70%">cr</tspan></text>
-                    <text x={X(0) - 4} y={Y(m) + 10} fontSize="9" textAnchor="end" fill={C_CR} fontWeight="bold">{sg}{fmt(Mcr, 1)}</text>
+                    <text x={X(0) - 4} y={Y(m) + 3} fontSize="9.5" textAnchor="end" fill={C_CR}>{`${sg}M`}<tspan baselineShift="-0.12em" fontSize="70%">cr</tspan></text>
+                    <text x={X(L) + 4} y={Y(m) + 3} fontSize="9.5" textAnchor="start" fill={C_CR} fontWeight="bold">{sg}{fmt(Mcr, 1)}</text>
                 </g>
             ))}
             <path d={path(kMax)} fill="none" stroke={C_SLE} strokeWidth="1.8" />
@@ -1556,7 +1576,7 @@ function CrackSVG({ an, combo, Mcr, marks, onPick, onOpen, cursor = null }) {
                     : <>w<tspan baselineShift="-0.12em" fontSize="70%">k</tspan> = {fmt(wk, 3)} mm</>;
                 const below = M < 0;                            // etichetta verso l'asse, lontana dalle barre delle zone
                 return (
-                    <g key={sec.id} onClick={(e) => { e.stopPropagation(); onOpen(sec.id); }} style={{ cursor: "pointer" }}>
+                    <g key={sec.id} onClick={(e) => { e.stopPropagation(); onSelect?.(sec.id); }} onDoubleClick={(e) => { e.stopPropagation(); onOpen(sec.id); }} style={{ cursor: "pointer" }}>
                         <line x1={xs} x2={xs} y1={top - 10} y2={bot + 10} stroke={C_SEC} strokeWidth="1.1" strokeDasharray="3 2" />
                         <circle cx={xs} cy={Y(M)} r="4" fill={col} stroke="#fff" strokeWidth="1.5" />
                         <text x={xs} y={top - 12} fontSize="9" textAnchor="middle" fill={C_SEC} fontWeight="bold">{sec.label.length > 6 ? sec.label.slice(0, 6) : sec.label}</text>
@@ -1929,7 +1949,7 @@ function useDeflection(beam, an) {
     return { opts, R, res };
 }
 
-function DeflectionCard({ beam, an, upd, focusX = null, onPick = null, onOpen = null, cursor = null, bar = null }) {
+function DeflectionCard({ beam, an, upd, focusX = null, onPick = null, onSelect = null, onOpen = null, cursor = null, bar = null }) {
     const { opts, R, res } = useDeflection(beam, an);
     // amplificazione della deformata disegnata (solo visualizzazione, non entra nei calcoli)
     const [amp, setAmp] = useState(60);
@@ -1975,7 +1995,7 @@ function DeflectionCard({ beam, an, upd, focusX = null, onPick = null, onOpen = 
                     <p className="text-[10px] text-slate-400">Solo per visualizzare la deformazione (f∞, combinazione quasi permanente): lo slider amplifica il disegno e non modifica i calcoli.</p>
                 </div>
             </div>
-            <DeflectionSVG beam={beam} an={an} res={res} focusX={focusX} onPick={onPick} onOpen={onOpen} cursor={cursor} />
+            <DeflectionSVG beam={beam} an={an} res={res} focusX={focusX} onPick={onPick} onSelect={onSelect} onOpen={onOpen} cursor={cursor} />
             <Legend items={[[C_DEF, "freccia a lungo termine f∞ (q.p.)"], ...(opts.partitions ? [[C_DINC, "incremento f∞ − f₀(G₁)", true]] : []), [C_DLIM, "limite L/250", true]]} />
             {bar}
             <div className="scroll-thin-x mt-3 pb-1">
@@ -2074,7 +2094,7 @@ function DeformedBeamSVG({ beam, an, res, amp }) {
     );
 }
 
-function DeflectionSVG({ beam, an, res, focusX, onPick = null, onOpen = null, cursor = null }) {
+function DeflectionSVG({ beam, an, res, focusX, onPick = null, onSelect = null, onOpen = null, cursor = null }) {
     const ref = useRef(null);
     const L = an.Ltot, X = useX(L), H = 210, top = 26, bot = H - 26;
     // freccia nel punto x (curva della campata che lo contiene)
@@ -2122,7 +2142,7 @@ function DeflectionSVG({ beam, an, res, focusX, onPick = null, onOpen = null, cu
             {focusX !== null && <line x1={X(focusX)} x2={X(focusX)} y1={top - 12} y2={bot + 8} stroke={C_SEC} strokeWidth="1.1" strokeDasharray="3 2" />}
             {/* sezioni (clic: apre la sezione sulla verifica di deformabilità) */}
             {onOpen && beam.sections.map((q) => (
-                <g key={q.id} onClick={(e) => { e.stopPropagation(); onOpen(q.id); }} style={{ cursor: "pointer" }}>
+                <g key={q.id} onClick={(e) => { e.stopPropagation(); onSelect?.(q.id); }} onDoubleClick={(e) => { e.stopPropagation(); onOpen(q.id); }} style={{ cursor: "pointer" }}>
                     <line x1={X(q.x)} x2={X(q.x)} y1={top - 10} y2={bot + 8} stroke={C_SEC} strokeWidth="1.1" strokeDasharray="3 2" />
                     <rect x={X(q.x) - 6} y={top - 12} width="12" height={bot - top + 22} fill="transparent" />
                     <text x={X(q.x)} y={top - 12} fontSize="9" textAnchor="middle" fill={C_SEC} fontWeight="bold">{q.label.length > 6 ? q.label.slice(0, 6) : q.label}</text>
@@ -2187,43 +2207,10 @@ function DeflectionStep({ beam, an, section, updateBeam }) {
     );
 }
 
-// ---------------------------------------------------------------------------
-// FORMULETTE DELLE REAZIONI: R = c·q·L (es. qL/2, 3/8 qL, 5/4 qL), M = m·q·L²
-// ---------------------------------------------------------------------------
-const gcd = (a, b) => (b ? gcd(b, a % b) : a);
-function asFraction(c) {
-    const a = Math.abs(c);
-    for (let den = 1; den <= 64; den++) {
-        const n = Math.round(a * den);
-        if (n > 0 && Math.abs(a * den - n) < 1e-6 * Math.max(1, a * den)) { const g = gcd(n, den); return { n: n / g, d: den / g }; }
-    }
-    return null;
-}
+// pedice nei testi SVG (R_A, M_A)
 const SubT = ({ children }) => <tspan baselineShift="-0.12em" fontSize="70%">{children}</tspan>;
-const SupT = ({ children }) => <tspan baselineShift="super" fontSize="70%">{children}</tspan>;
-// termini della formula: [{c, k}] → nodi SVG (q e L con l'indice di campata se diversi fra le campate)
-function formulaNodes(coefs, beam, an, pow) {
-    const sameQ = an.qd.every((q) => Math.abs(q - an.qd[0]) < 1e-9);
-    const sameL = beam.spans.every((s) => Math.abs(s.L - beam.spans[0].L) < 1e-9);
-    let terms = coefs.map((c, k) => ({ c, k })).filter((t) => Math.abs(t.c) > 1e-9);
-    if (sameQ && sameL && terms.length) terms = [{ c: terms.reduce((t, x) => t + x.c, 0), k: 0 }];
-    terms = terms.filter((t) => Math.abs(t.c) > 1e-9);
-    if (!terms.length) return ["0"];
-    const out = [];
-    terms.forEach((t, i) => {
-        const neg = t.c < 0, f = asFraction(t.c);
-        out.push(i === 0 ? (neg ? "−" : "") : neg ? " − " : " + ");
-        if (f) { if (!(f.n === 1 && f.d === 1)) out.push(f.d === 1 ? `${f.n}·` : `${f.n}/${f.d}·`); }
-        else out.push(`${fmt(Math.abs(t.c), 3)}·`);
-        // indice di campata solo dove serve: q₁ se i carichi differiscono, L₁ se le luci differiscono
-        out.push("q"); if (!sameQ) out.push(<SubT key={`q${i}`}>{t.k + 1}</SubT>);
-        out.push("L"); if (!sameL) out.push(<SubT key={`l${i}`}>{t.k + 1}</SubT>);
-        if (pow === 2) out.push(<SupT key={`p${i}`}>2</SupT>);
-    });
-    return out;
-}
 
-function DiagramSVG({ beam, an, kind, show, onPick, onOpen, cursor = null }) {
+function DiagramSVG({ beam, an, kind, show, onPick, onSelect = null, onOpen, cursor = null }) {
     const ref = useRef(null);
     const [hov, setHov] = useState(null);
     const L = an.Ltot, X = useX(L), H = 230, top = 22, bot = H - 22;
@@ -2274,7 +2261,7 @@ function DiagramSVG({ beam, an, kind, show, onPick, onOpen, cursor = null }) {
             ))}
             {/* sezioni */}
             {beam.sections.map((s) => (
-                <g key={s.id} onClick={(e) => { e.stopPropagation(); onOpen(s.id); }} style={{ cursor: "pointer" }}>
+                <g key={s.id} onClick={(e) => { e.stopPropagation(); onSelect?.(s.id); }} onDoubleClick={(e) => { e.stopPropagation(); onOpen(s.id); }} style={{ cursor: "pointer" }}>
                     <line x1={X(s.x)} x2={X(s.x)} y1={top - 10} y2={bot + 10} stroke={C_SEC} strokeWidth="1.2" strokeDasharray="3 2" />
                     <rect x={X(s.x) - 6} y={top - 12} width="12" height={bot - top + 24} fill="transparent" />
                     <text x={X(s.x)} y={top - 12} fontSize="9" textAnchor="middle" fill={C_SEC} fontWeight="bold">{s.label.length > 6 ? s.label.slice(0, 6) : s.label}</text>
@@ -2318,35 +2305,61 @@ function CursorMark({ X, x, isNew, y1, y2 }) {
         </g>
     );
 }
-function SectionCursorBar({ beam, L, curSec, curX, setCur, moveTo, onAdd, onOpen }) {
-    const field = "rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100";
+function SectionCursorBar({ beam, L, curSec, curX, setCur, moveTo, onAdd, onOpen, onTable = null }) {
+    const field = "rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400";
+    const locked = !!(curSec && charRef(curSec));          // sezione caratteristica: non si sposta
+    const lockTip = "Sezione caratteristica: la posizione è fissata dalla trave (vincolo o massimo momento in campata)";
     return (
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-600">
+            {/* tabella delle sezioni (modal): solo icona, a sinistra della select */}
+            {onTable && (
+                <button type="button" onClick={onTable} title={`Tabella delle sezioni di calcolo (${beam.sections.length})`} aria-label="Tabella delle sezioni di calcolo"
+                    className="inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-100 hover:text-slate-800">
+                    <List size={14} />
+                </button>
+            )}
             <select value={curSec?.id ?? ""} onChange={(e) => setCur(e.target.value ? { id: e.target.value, x: null } : { id: null, x: curX })} aria-label="Sezione da spostare" className={`${field} cursor-pointer font-semibold text-slate-700`}>
                 <option value="">Nuova sezione</option>
                 {beam.sections.map((q) => <option key={q.id} value={q.id}>{q.label} · {fmt(q.x, 3)} m</option>)}
             </select>
             <input type="range" min="0" max={L} step="0.001" value={curX} onChange={(e) => moveTo(Number(e.target.value))} aria-label="Posizione della sezione"
-                className="h-1.5 min-w-[160px] flex-1 cursor-pointer accent-sky-500" />
+                disabled={locked} title={locked ? lockTip : undefined}
+                className="h-1.5 min-w-[160px] flex-1 cursor-pointer accent-sky-500 disabled:cursor-not-allowed disabled:opacity-40" />
             <label className="inline-flex items-center gap-1">x
                 <input type="number" step="0.001" min="0" max={L} value={curX} onChange={(e) => { if (e.target.value !== "") moveTo(Number(e.target.value)); }} aria-label="Ascissa della sezione"
-                    className={`${field} w-20 text-right tabular-nums`} /> m
+                    disabled={locked} title={locked ? lockTip : undefined} className={`${field} w-20 text-right tabular-nums`} /> m
             </label>
+            {locked && <span className="inline-flex items-center gap-1 text-slate-400" title={lockTip}><Lock size={12} /> posizione fissa</span>}
             {curSec ? (
-                <button type="button" onClick={() => onOpen(curSec.id)} className="inline-flex items-center gap-1 rounded-lg bg-sky-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-sky-700" title={`Apri ${curSec.label}`}>Apri <ChevronRight size={12} /></button>
+                <button type="button" onClick={() => onOpen(curSec.id)} className="inline-flex shrink-0 items-center gap-0.5 rounded-lg border border-sky-200 bg-sky-50 px-2 py-1 text-[11px] font-semibold text-sky-700 transition hover:bg-sky-100" title={`Apri ${curSec.label}`}>Apri <ChevronRight size={12} /></button>
             ) : (
                 <button type="button" onClick={onAdd} className="inline-flex items-center gap-1 rounded-lg border border-sky-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-sky-700 hover:bg-sky-50"><Plus size={12} /> Aggiungi sezione qui</button>
             )}
+
         </div>
     );
 }
 
-function SectionsTable({ beam, an, upd, openSection }) {
+// tabella delle sezioni di calcolo in un modal (si apre dalla barra delle sezioni)
+function SectionsModal({ beam, an, upd, openSection, onClose }) {
+    const { isVisible, close, finishClose } = useModalTransition(onClose);
+    useEffect(() => {
+        const onKey = (e) => { if (e.key === "Escape") close(); };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [close]);
     const setS = (id, fn) => upd((b) => ({ ...b, sections: b.sections.map((s) => (s.id === id ? fn(s) : s)) }));
     const del = (id) => upd((b) => ({ ...b, sections: b.sections.filter((s) => s.id !== id) }));
     const cols = [["Mpos", <>M<sup>+</sup><sub>Ed</sub></>, "kNm"], ["Mneg", <>M<sup>−</sup><sub>Ed</sub></>, "kNm"], ["V", <>V<sub>Ed</sub></>, "kN"], ["Mrara", "M rara", "kNm"], ["Mqp", "M q.p.", "kNm"]];
-    return (
-        <Card title="Sezioni di calcolo">
+    return toModalRoot(
+        <div className={`fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/30 p-4 ${modalBackdropCls(isVisible)}`} onTransitionEnd={finishClose}
+            role="dialog" aria-modal="true" aria-label="Sezioni di calcolo" onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}>
+            <div className={`flex h-[min(36rem,calc(100vh-2rem))] w-full max-w-5xl flex-col rounded-2xl bg-white shadow-2xl ${modalPanelCls(isVisible)}`}>
+                <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-5 py-3">
+                    <p className="text-sm font-bold text-slate-800">Sezioni di calcolo — {beam.name} <span className="font-normal text-slate-400">· {beam.sections.length} {beam.sections.length === 1 ? "sezione" : "sezioni"}</span></p>
+                    <button type="button" onClick={close} aria-label="Chiudi" className="rounded-full p-1.5 text-slate-500 hover:bg-slate-100"><X size={16} /></button>
+                </div>
+                <div className="scroll-thin min-h-0 flex-1 py-4 pl-5 pr-4">
             {beam.sections.length === 0 ? (
                 <p className="text-sm text-slate-500">Nessuna sezione: clicca sullo schema o sui diagrammi, oppure usa «Sezioni caratteristiche».</p>
             ) : (
@@ -2368,7 +2381,9 @@ function SectionsTable({ beam, an, upd, openSection }) {
                                 return (
                                     <tr key={s.id} className="border-b border-slate-100 align-middle">
                                         <td className="py-1.5 pr-2"><input value={s.label} onChange={(e) => setS(s.id, (x) => ({ ...x, label: e.target.value }))} className="w-24 rounded-md border border-slate-200 px-1.5 py-1 text-xs" /></td>
-                                        <td className="py-1.5 pr-2"><input type="number" step="0.001" value={s.x} onChange={(e) => setS(s.id, (x) => ({ ...x, x: Math.min(an.Ltot, Math.max(0, num(e.target.value))) }))} className="w-20 rounded-md border border-slate-200 px-1.5 py-1 text-right text-xs tabular-nums" /></td>
+                                        <td className="py-1.5 pr-2"><input type="number" step="0.001" value={s.x} onChange={(e) => setS(s.id, (x) => ({ ...x, x: Math.min(an.Ltot, Math.max(0, num(e.target.value))) }))}
+                                            disabled={!!charRef(s)} title={charRef(s) ? "Sezione caratteristica: posizione fissata dalla trave" : undefined}
+                                            className="w-20 rounded-md border border-slate-200 px-1.5 py-1 text-right text-xs tabular-nums disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500" /></td>
                                         {cols.map(([k]) => {
                                             const manual = s.over?.[k] !== undefined && s.over?.[k] !== null && s.over?.[k] !== "";
                                             return (
@@ -2382,7 +2397,7 @@ function SectionsTable({ beam, an, upd, openSection }) {
                                         })}
                                         <td className="py-1.5 pr-2">{st ? <Status ok={st.ok} text={st.text} /> : <span className="text-slate-400">da fare</span>}</td>
                                         <td className="py-1.5 text-right whitespace-nowrap">
-                                            <button type="button" onClick={() => openSection(s.id)} className="inline-flex items-center gap-1 rounded-lg bg-sky-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-sky-700">Apri <ChevronRight size={12} /></button>
+                                            <button type="button" onClick={() => close(() => openSection(s.id))} className="inline-flex shrink-0 items-center gap-0.5 rounded-lg border border-sky-200 bg-sky-50 px-2 py-1 text-[11px] font-semibold text-sky-700 transition hover:bg-sky-100" title={`Apri ${s.label}`}>Apri <ChevronRight size={12} /></button>
                                             <MiniBtn title="Elimina sezione" onClick={() => del(s.id)}><Trash2 size={12} /></MiniBtn>
                                         </td>
                                     </tr>
@@ -2393,7 +2408,9 @@ function SectionsTable({ beam, an, upd, openSection }) {
                     <p className="mt-2 text-[11px] text-slate-400">Le celle vuote mostrano i valori calcolati (inviluppo{beam.useTranslated !== false ? " traslato" : ""} per M⁺/M⁻); scrivendo un valore lo si sovrascrive (in ambra).</p>
                 </div>
             )}
-        </Card>
+                </div>
+            </div>
+        </div>
     );
 }
 
