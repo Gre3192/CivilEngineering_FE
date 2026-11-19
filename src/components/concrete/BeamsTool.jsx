@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { createPortal } from "react-dom";
-import { ArrowLeft, Building, Check, Copy, Info, List, ListChecks, Lock, Pencil, Plus, Trash2, ChevronRight, Search, X, Wand2, CheckCircle2, XCircle, AlertTriangle, Download, Upload } from "lucide-react";
+import { ArrowLeft, Building, Check, Copy, Eye, EyeOff, Info, List, ListChecks, Lock, Pencil, Plus, Trash2, ChevronRight, Search, X, Wand2, CheckCircle2, XCircle, AlertTriangle, Download, Upload } from "lucide-react";
 import { sub } from "../Sym";
 import { drawerPanelCls, modalBackdropCls, modalPanelCls, useModalTransition } from "../../ui/useModalTransition";
 import Tex from "../Tex";
@@ -751,13 +751,15 @@ function BeamEditor({ beam, an, upd, addSection, addCharacteristic, openSection,
     // clic su una sezione: la seleziona (diventa quella del cursore); doppio clic: la apre
     const selectSec = (sid) => setCur({ id: sid, x: null });
     const [secTable, setSecTable] = useState(false);   // modal con la tabella delle sezioni
+    const [showSecs, setShowSecs] = useState(true);     // sezioni visibili nei disegni
     // clic sui disegni: nuova sezione, che diventa quella attiva del cursore
     const pick = (x) => { const id = addSection(x); if (id) setCur({ id, x: null }); };
     const cursor = { x: curX, isNew: !curSec };
     // ogni box apre la sezione sulla propria verifica
     const openAt = (step) => (sid) => openSection(sid, step);
     const barFor = (step) => <SectionCursorBar beam={beam} L={Ltot} curSec={curSec} curX={curX} setCur={setCur} moveTo={moveTo}
-        onAdd={() => { const id = addSection(curX); if (id) setCur({ id, x: null }); }} onOpen={openAt(step)} onTable={() => setSecTable(true)} />;
+        onAdd={() => { const id = addSection(curX); if (id) setCur({ id, x: null }); }} onOpen={openAt(step)} onTable={() => setSecTable(true)}
+        showSecs={showSecs} onToggleSecs={() => setShowSecs((v) => !v)} />;
     const [editOpen, setEditOpen] = useState(false);
     const [showReac, setShowReac] = useState(true);
     const editBtn = (
@@ -867,7 +869,7 @@ function BeamEditor({ beam, an, upd, addSection, addCharacteristic, openSection,
                                 </button>
                                 {editBtn}
                             </div>}>
-                            <SchemeSVG beam={beam} onPick={pick} onSelect={selectSec} onOpen={openAt("design")} reac={showReac ? an.reac : null} cursor={cursor} />
+                            <SchemeSVG beam={beam} onPick={pick} onSelect={selectSec} onOpen={openAt("design")} showSections={showSecs} reac={showReac ? an.reac : null} cursor={cursor} />
                             {barFor("design")}
                             {showReac && (
                                 <p className="mt-1 text-[11px] leading-4 text-slate-500">
@@ -882,18 +884,18 @@ function BeamEditor({ beam, an, upd, addSection, addCharacteristic, openSection,
                                 <label className="flex cursor-pointer items-center gap-1"><input type="checkbox" checked={show.T} onChange={(e) => setShow((s) => ({ ...s, T: e.target.checked }))} className="accent-violet-600" />traslato</label>
                                 <label className="flex cursor-pointer items-center gap-1"><input type="checkbox" checked={show.SLE} onChange={(e) => setShow((s) => ({ ...s, SLE: e.target.checked }))} className="accent-green-600" />SLE</label>
                             </div>}>
-                            <DiagramSVG beam={beam} an={an} kind="M" show={show} onPick={pick} onSelect={selectSec} onOpen={openAt("bending")} cursor={cursor} />
+                            <DiagramSVG beam={beam} an={an} kind="M" show={show} showSections={showSecs} onPick={pick} onSelect={selectSec} onOpen={openAt("bending")} cursor={cursor} />
                             <Legend items={[[C_POS, "inviluppo SLU M_max"], [C_NEG, "inviluppo SLU M_min"], ...(show.T ? [[C_TRASL, `traslato (a_l = ${fmt(an.aL * 100, 1)} cm)`, true]] : []), ...(show.SLE ? [[C_SLE, "SLE rara", true]] : [])]} />
                             {barFor("bending")}
                         </Card>
                         <Card title="Taglio V [kN]">
-                            <DiagramSVG beam={beam} an={an} kind="V" show={show} onPick={pick} onSelect={selectSec} onOpen={openAt("shear")} cursor={cursor} />
+                            <DiagramSVG beam={beam} an={an} kind="V" show={show} showSections={showSecs} onPick={pick} onSelect={selectSec} onOpen={openAt("shear")} cursor={cursor} />
                             <Legend items={[[C_V, "inviluppo SLU V_max / V_min"]]} />
                             {barFor("shear")}
                         </Card>
                         <InfluenceCard beam={beam} an={an} />
-                        <CrackCard beam={beam} an={an} onPick={pick} onSelect={selectSec} onOpen={openAt("crack")} cursor={cursor} bar={barFor("crack")} />
-                        <DeflectionCard beam={beam} an={an} upd={upd} onPick={pick} onSelect={selectSec} onOpen={openAt("defl")} cursor={cursor} bar={barFor("defl")} />
+                        <CrackCard beam={beam} an={an} showSections={showSecs} onPick={pick} onSelect={selectSec} onOpen={openAt("crack")} cursor={cursor} bar={barFor("crack")} />
+                        <DeflectionCard beam={beam} an={an} upd={upd} showSections={showSecs} onPick={pick} onSelect={selectSec} onOpen={openAt("defl")} cursor={cursor} bar={barFor("defl")} />
                     </>
                 )}
             </div>
@@ -1324,7 +1326,7 @@ function pickX(e, svg, L) {
     return { x: ((loc.x - ML) / (W - ML - MR)) * L, sx: loc.x, sy: loc.y };
 }
 
-function SchemeSVG({ beam, mini = false, onPick = null, onSelect = null, onOpen = null, reac = null, cursor = null }) {
+function SchemeSVG({ beam, mini = false, onPick = null, onSelect = null, onOpen = null, reac = null, cursor = null, showSections = true }) {
     const L = beam.spans.reduce((t, s) => t + num(s.L), 0);
     const X = useX(L);
     const ref = useRef(null);
@@ -1404,7 +1406,7 @@ function SchemeSVG({ beam, mini = false, onPick = null, onSelect = null, onOpen 
                 );
             })}
             {/* sezioni: stesso stile degli altri disegni (tratteggio sottile e nome in alto) */}
-            {beam.sections.map((s) => (
+            {showSections && beam.sections.map((s) => (
                 <g key={s.id} onClick={(e) => { e.stopPropagation(); onSelect?.(s.id); }} onDoubleClick={(e) => { e.stopPropagation(); onOpen?.(s.id); }} style={onOpen ? { cursor: "pointer" } : undefined}>
                     <line x1={X(s.x)} x2={X(s.x)} y1={mini ? yB - 10 : 20} y2={yB + (mini ? 10 : 18)} stroke={C_SEC} strokeWidth="1.2" strokeDasharray="3 2" />
                     {!mini && <>
@@ -1430,7 +1432,7 @@ const CRACK_COMBOS = [
 ];
 const C_CR = "#64748b", C_CRZONE = "#f97316";
 
-function CrackCard({ beam, an, onPick, onSelect = null, onOpen, cursor = null, bar = null }) {
+function CrackCard({ beam, an, onPick, onSelect = null, onOpen, cursor = null, bar = null, showSections = true }) {
     const [combo, setCombo] = useState("Q");
     const [wLim, setWLim] = useState(0.3);
     const { b, h, c, fck } = beam.section;
@@ -1464,7 +1466,7 @@ function CrackCard({ beam, an, onPick, onSelect = null, onOpen, cursor = null, b
                     {[0.2, 0.3, 0.4].map((w) => <option key={w} value={w}>w_lim = {fmt(w, 1)} mm</option>)}
                 </select>
             </div>}>
-            <CrackSVG an={an} combo={combo} Mcr={Mcr} marks={marks} onPick={onPick} onSelect={onSelect} onOpen={onOpen} cursor={cursor} />
+            <CrackSVG an={an} combo={combo} Mcr={Mcr} marks={showSections ? marks : []} onPick={onPick} onSelect={onSelect} onOpen={onOpen} cursor={cursor} />
             <Legend items={[[C_SLE, `M ${cb.label.toLowerCase()} (max / min)`], [C_CR, `±M_cr = ${fmt(Mcr, 1)} kNm (f_ctm/1,2 su b·h²/6)`, true], [C_CRZONE, "zona fessurata (|M| > M_cr)"]]} />
             {bar}
             <p className="mt-2 text-[11px] leading-4 text-slate-500">
@@ -1949,7 +1951,7 @@ function useDeflection(beam, an) {
     return { opts, R, res };
 }
 
-function DeflectionCard({ beam, an, upd, focusX = null, onPick = null, onSelect = null, onOpen = null, cursor = null, bar = null }) {
+function DeflectionCard({ beam, an, upd, focusX = null, onPick = null, onSelect = null, onOpen = null, cursor = null, bar = null, showSections = true }) {
     const { opts, R, res } = useDeflection(beam, an);
     // amplificazione della deformata disegnata (solo visualizzazione, non entra nei calcoli)
     const [amp, setAmp] = useState(60);
@@ -1995,7 +1997,7 @@ function DeflectionCard({ beam, an, upd, focusX = null, onPick = null, onSelect 
                     <p className="text-[10px] text-slate-400">Solo per visualizzare la deformazione (f∞, combinazione quasi permanente): lo slider amplifica il disegno e non modifica i calcoli.</p>
                 </div>
             </div>
-            <DeflectionSVG beam={beam} an={an} res={res} focusX={focusX} onPick={onPick} onSelect={onSelect} onOpen={onOpen} cursor={cursor} />
+            <DeflectionSVG beam={beam} an={an} res={res} focusX={focusX} onPick={onPick} onSelect={onSelect} onOpen={onOpen} cursor={cursor} showSections={showSections} />
             <Legend items={[[C_DEF, "freccia a lungo termine f∞ (q.p.)"], ...(opts.partitions ? [[C_DINC, "incremento f∞ − f₀(G₁)", true]] : []), [C_DLIM, "limite L/250", true]]} />
             {bar}
             <div className="scroll-thin-x mt-3 pb-1">
@@ -2094,7 +2096,7 @@ function DeformedBeamSVG({ beam, an, res, amp }) {
     );
 }
 
-function DeflectionSVG({ beam, an, res, focusX, onPick = null, onSelect = null, onOpen = null, cursor = null }) {
+function DeflectionSVG({ beam, an, res, focusX, onPick = null, onSelect = null, onOpen = null, cursor = null, showSections = true }) {
     const ref = useRef(null);
     const L = an.Ltot, X = useX(L), H = 210, top = 26, bot = H - 26;
     // freccia nel punto x (curva della campata che lo contiene)
@@ -2141,7 +2143,7 @@ function DeflectionSVG({ beam, an, res, focusX, onPick = null, onSelect = null, 
             })}
             {focusX !== null && <line x1={X(focusX)} x2={X(focusX)} y1={top - 12} y2={bot + 8} stroke={C_SEC} strokeWidth="1.1" strokeDasharray="3 2" />}
             {/* sezioni (clic: apre la sezione sulla verifica di deformabilità) */}
-            {onOpen && beam.sections.map((q) => (
+            {onOpen && showSections && beam.sections.map((q) => (
                 <g key={q.id} onClick={(e) => { e.stopPropagation(); onSelect?.(q.id); }} onDoubleClick={(e) => { e.stopPropagation(); onOpen(q.id); }} style={{ cursor: "pointer" }}>
                     <line x1={X(q.x)} x2={X(q.x)} y1={top - 10} y2={bot + 8} stroke={C_SEC} strokeWidth="1.1" strokeDasharray="3 2" />
                     <rect x={X(q.x) - 6} y={top - 12} width="12" height={bot - top + 22} fill="transparent" />
@@ -2210,7 +2212,7 @@ function DeflectionStep({ beam, an, section, updateBeam }) {
 // pedice nei testi SVG (R_A, M_A)
 const SubT = ({ children }) => <tspan baselineShift="-0.12em" fontSize="70%">{children}</tspan>;
 
-function DiagramSVG({ beam, an, kind, show, onPick, onSelect = null, onOpen, cursor = null }) {
+function DiagramSVG({ beam, an, kind, show, onPick, onSelect = null, onOpen, cursor = null, showSections = true }) {
     const ref = useRef(null);
     const [hov, setHov] = useState(null);
     const L = an.Ltot, X = useX(L), H = 230, top = 22, bot = H - 22;
@@ -2260,7 +2262,7 @@ function DiagramSVG({ beam, an, kind, show, onPick, onSelect = null, onOpen, cur
                 <text key={i} x={X(l.x)} y={l.below ? Y(l.v) + 13 : Y(l.v) - 5} fontSize="10" textAnchor={l.anchor ?? "middle"} fill={l.col} fontWeight="bold" stroke="#fff" strokeWidth="3" paintOrder="stroke">{fmt(l.v, 1)}</text>
             ))}
             {/* sezioni */}
-            {beam.sections.map((s) => (
+            {showSections && beam.sections.map((s) => (
                 <g key={s.id} onClick={(e) => { e.stopPropagation(); onSelect?.(s.id); }} onDoubleClick={(e) => { e.stopPropagation(); onOpen(s.id); }} style={{ cursor: "pointer" }}>
                     <line x1={X(s.x)} x2={X(s.x)} y1={top - 10} y2={bot + 10} stroke={C_SEC} strokeWidth="1.2" strokeDasharray="3 2" />
                     <rect x={X(s.x) - 6} y={top - 12} width="12" height={bot - top + 24} fill="transparent" />
@@ -2305,7 +2307,7 @@ function CursorMark({ X, x, isNew, y1, y2 }) {
         </g>
     );
 }
-function SectionCursorBar({ beam, L, curSec, curX, setCur, moveTo, onAdd, onOpen, onTable = null }) {
+function SectionCursorBar({ beam, L, curSec, curX, setCur, moveTo, onAdd, onOpen, onTable = null, showSecs = true, onToggleSecs = null }) {
     const field = "rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400";
     const locked = !!(curSec && charRef(curSec));          // sezione caratteristica: non si sposta
     const lockTip = "Sezione caratteristica: la posizione è fissata dalla trave (vincolo o massimo momento in campata)";
@@ -2316,6 +2318,13 @@ function SectionCursorBar({ beam, L, curSec, curX, setCur, moveTo, onAdd, onOpen
                 <button type="button" onClick={onTable} title={`Tabella delle sezioni di calcolo (${beam.sections.length})`} aria-label="Tabella delle sezioni di calcolo"
                     className="inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-100 hover:text-slate-800">
                     <List size={14} />
+                </button>
+            )}
+            {/* sezioni visibili o nascoste in tutti i disegni */}
+            {onToggleSecs && (
+                <button type="button" onClick={onToggleSecs} aria-pressed={!showSecs} title={showSecs ? "Nascondi le sezioni nei disegni" : "Mostra le sezioni nei disegni"} aria-label={showSecs ? "Nascondi le sezioni" : "Mostra le sezioni"}
+                    className={`inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-lg border transition ${showSecs ? "border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-800" : "border-slate-300 bg-slate-200 text-slate-500 hover:bg-slate-300"}`}>
+                    {showSecs ? <Eye size={14} /> : <EyeOff size={14} />}
                 </button>
             )}
             <select value={curSec?.id ?? ""} onChange={(e) => setCur(e.target.value ? { id: e.target.value, x: null } : { id: null, x: curX })} aria-label="Sezione da spostare" className={`${field} cursor-pointer font-semibold text-slate-700`}>
