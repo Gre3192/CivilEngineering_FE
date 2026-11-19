@@ -17,7 +17,7 @@ import Tex from "../Tex";
 import { CONCRETE_CLASSES, STEEL_GRADES } from "../../lib/concrete/sectionDesign";
 import { USE_CATEGORIES } from "../../lib/actions/loadData";
 import { DEFL_DEFAULT, beamDeflection } from "../../lib/concrete/deflection";
-import { COMBO_STATES, SUPPORT_TYPES, analyzeBeam, characteristicSections, diagramFor, influenceLine, influenceProcedure, itemValue, loadCombinations, newBeam, newId, spanVariable, valuesAt } from "../../lib/concrete/beamAnalysis";
+import { COMBO_STATES, SUPPORT_TYPES, analyzeBeam, characteristicSections, diagramFor, influenceLine, influenceProcedure, influenceRange, itemValue, loadCombinations, newBeam, newId, spanVariable, valuesAt } from "../../lib/concrete/beamAnalysis";
 import { verifySection } from "../../lib/concrete/verifySection";
 import { crackCheck } from "../../lib/concrete/crackCheck";
 import SectionDesignTool from "./SectionDesignTool";
@@ -1477,7 +1477,12 @@ function CrackSVG({ an, combo, Mcr, marks, onPick, onOpen, cursor = null }) {
     const collect = (key, sgn) => {
         let run = [], xa = null;
         const flush = (xb = null) => {
-            if (run.length > 1) zones.push({ run, sgn, xa: xa ?? run[0].x, xb: xb ?? run[run.length - 1].x });
+            // basta un solo punto oltre M_cr: gli estremi interpolati danno la larghezza reale
+            // (es. picco sull'appoggio che supera M_cr di poco: un punto per campata)
+            if (run.length) {
+                const za = xa ?? run[0].x, zb = xb ?? run[run.length - 1].x;
+                if (zb - za > 1e-9) zones.push({ run, sgn, xa: za, xb: zb });
+            }
             run = []; xa = null;
         };
         an.pts.forEach((p, i) => {
@@ -1535,8 +1540,13 @@ function CrackSVG({ an, combo, Mcr, marks, onPick, onOpen, cursor = null }) {
             })}
             <line x1={X(0)} x2={X(L)} y1={y0} y2={y0} stroke="#334155" strokeWidth="1.2" />
             {[Mcr, -Mcr].map((m) => <line key={m} x1={X(0)} x2={X(L)} y1={Y(m)} y2={Y(m)} stroke={C_CR} strokeWidth="1" strokeDasharray="6 4" />)}
-            <text x={X(0) - 4} y={Y(Mcr) + 3} fontSize="9.5" textAnchor="end" fill={C_CR}>{"+M"}<tspan baselineShift="-0.12em" fontSize="70%">cr</tspan></text>
-            <text x={X(0) - 4} y={Y(-Mcr) + 3} fontSize="9.5" textAnchor="end" fill={C_CR}>{"−M"}<tspan baselineShift="-0.12em" fontSize="70%">cr</tspan></text>
+            {/* ±M_cr a sinistra: simbolo e, sotto, il valore [kNm] */}
+            {[[Mcr, "+"], [-Mcr, "−"]].map(([m, sg]) => (
+                <g key={sg}>
+                    <text x={X(0) - 4} y={Y(m) - 1} fontSize="9.5" textAnchor="end" fill={C_CR}>{`${sg}M`}<tspan baselineShift="-0.12em" fontSize="70%">cr</tspan></text>
+                    <text x={X(0) - 4} y={Y(m) + 10} fontSize="9" textAnchor="end" fill={C_CR} fontWeight="bold">{sg}{fmt(Mcr, 1)}</text>
+                </g>
+            ))}
             <path d={path(kMax)} fill="none" stroke={C_SLE} strokeWidth="1.8" />
             <path d={path(kMin)} fill="none" stroke={C_SLE} strokeWidth="1.8" strokeDasharray="5 3" />
             {/* sezioni con w_k */}
@@ -1609,6 +1619,9 @@ function InfluenceCard({ beam, an }) {
     const sk = structKey(beam);
     // eslint-disable-next-line react-hooks/exhaustive-deps
     const il = useMemo(() => influenceLine(beam, xc, kind, sideEff), [sk, xc, kind, sideEff]);
+    // scala del disegno fissa per la trave (non dipende dalla sezione scelta)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const range = useMemo(() => influenceRange(beam, kind), [sk, kind]);
     if (!il.ok) return null;
     const isM = kind === "M";
     const list = an.combos.filter((c) => c.state === state);
@@ -1652,7 +1665,7 @@ function InfluenceCard({ beam, an }) {
                 {seg(COMBO_STATES.map((st) => [st.id, STATE_SHORT[st.id]]), state, setState)}
             </div>}>
             {stepT(1, <>Linea di influenza di {sub(`${S}`)} in x₀ = {fmt(xc, 2)} m{kind === "V" && onNode ? ` (${sideEff === "sx" ? "a sinistra" : "a destra"} dell'appoggio)` : ""} – forza unitaria viaggiante, η [{uEta}]</>)}
-            <InfluenceSVG beam={beam} an={an} il={il} isM={isM} uA={uA} onPick={(x) => setX0(Math.round(x * 1000) / 1000)} />
+            <InfluenceSVG beam={beam} an={an} il={il} range={range} isM={isM} uA={uA} onPick={(x) => setX0(Math.round(x * 1000) / 1000)} />
             {il.isNull && (
                 <p className="mt-1 rounded-lg bg-amber-50 px-2 py-1 text-[11px] leading-4 text-amber-800">
                     {sub(`In x₀ = ${fmt(xc, 3)} m ${S} è identicamente nullo${isM ? " (momento su un appoggio di estremità o all'estremo libero di una mensola)" : " (taglio all'estremo libero di una mensola o all'esterno dell'ultimo appoggio)"}: nessuna disposizione dei carichi lo fa variare, quindi massimo e minimo valgono zero.`)}
@@ -1752,15 +1765,23 @@ function MiniSupports({ beam, an, X, y }) {
     });
 }
 
-function InfluenceSVG({ beam, an, il, isM, uA, onPick }) {
+function InfluenceSVG({ beam, an, il, range, isM, uA, onPick }) {
     const ref = useRef(null);
-    const L = an.Ltot, X = useX(L), H = 220, top = 28, bot = H - 34;
+    const L = an.Ltot, X = useX(L), top = 30;
+    // scala fissa per la trave: ordinate massime possibili al variare della sezione
+    // (in più quelle correnti, per sicurezza); l'asse della trave resta fermo
     const etas = il.pts.map((p) => p.eta);
-    // linea nulla: scala fissa simmetrica (altrimenti si ingrandirebbero residui numerici)
-    const hi = il.isNull ? 1 : Math.max(0, ...etas), lo = il.isNull ? -1 : Math.min(0, ...etas);
-    const k = (bot - top) / (hi - lo || 1);
+    const pos = Math.max(range?.pos ?? 0, ...etas, 0), neg = Math.max(range?.neg ?? 0, ...etas.map((e) => -e), 0);
+    const span = pos + neg || 1;
+    // M: η in metri, stessa scala delle lunghezze se l'altezza resta leggibile;
+    // V: η adimensionale, altezza fissa
+    const pxPerM = (W - ML - MR) / (L || 1);
+    const iso = isM && span * pxPerM >= 90 && span * pxPerM <= 260;
+    const k = iso ? pxPerM : (isM ? Math.min(260, Math.max(90, span * pxPerM)) : 160) / span;
+    const plotH = span * k, bot = top + plotH, H = bot + 48;
     // stessa convenzione dei diagrammi: M positivo verso il basso, V positivo verso l'alto
-    const Y = isM ? (v) => top + (v - lo) * k : (v) => top + (hi - v) * k;
+    const lo = isM ? -neg : -pos;
+    const Y = isM ? (v) => top + (v - lo) * k : (v) => top + (pos - v) * k;
     const y0 = Y(0);
     const bySpan = beam.spans.map((_, j) => il.pts.filter((p) => p.span === j));
     const fillPath = (pts, sgn) => `M${X(pts[0].x)},${y0} ${pts.map((p) => `L${X(p.x).toFixed(1)},${Y(sgn > 0 ? Math.max(0, p.eta) : Math.min(0, p.eta)).toFixed(1)}`).join(" ")} L${X(pts[pts.length - 1].x)},${y0} Z`;
@@ -1794,6 +1815,9 @@ function InfluenceSVG({ beam, an, il, isM, uA, onPick }) {
                     </text>
                 );
             })}
+            <text x={W - MR} y={H - 6} fontSize="9" textAnchor="end" fill="#94a3b8">
+                {iso ? "scala verticale = scala delle lunghezze" : isM ? `scala verticale ×${fmt(k / pxPerM, 2)} rispetto alle lunghezze` : "scala verticale fissa per la trave"}
+            </text>
             {/* sezione x₀ e ordinata */}
             <line x1={X(il.x0)} x2={X(il.x0)} y1={top - 14} y2={bot + 10} stroke={C_SEC} strokeWidth="1.1" strokeDasharray="3 2" />
             <text x={X(il.x0)} y={top - 18} fontSize="10" textAnchor="middle" fill={C_SEC} fontWeight="bold">x₀</text>
@@ -2084,13 +2108,13 @@ function DeflectionSVG({ beam, an, res, focusX, onPick = null, onOpen = null, cu
                 return (
                     <g key={s.j}>
                         <line x1={x0} x2={x1} y1={Y(lim(s))} y2={Y(lim(s))} stroke={C_DLIM} strokeWidth="1" strokeDasharray="6 4" />
-                        <text x={x1 - 4} y={Y(lim(s)) + (s.f >= 0 ? -4 : 11)} fontSize="9" textAnchor="end" fill={C_DLIM}>{s.f >= 0 ? "" : "−"}{s.cant ? "2L" : "L"}/250 = {fmt(s.fLim, 1)}</text>
+                        <text x={x1 - 4} y={Y(lim(s)) + (s.f >= 0 ? -4 : 11)} fontSize="9" textAnchor="end" fill={C_DLIM}>{s.f >= 0 ? "" : "−"}{s.cant ? "2L" : "L"}/250 = {fmt(s.fLim, 1)} mm</text>
                         <path d={`${d} L${x1},${y0} L${x0},${y0} Z`} fill={C_DEF} fillOpacity="0.08" />
                         <path d={d} fill="none" stroke={C_DEF} strokeWidth="2" />
                         {dInc && <path d={dInc} fill="none" stroke={C_DINC} strokeWidth="1.4" strokeDasharray="5 3" />}
                         <circle cx={xm} cy={ym} r="4" fill={col} stroke="#fff" strokeWidth="1.5" />
                         <text x={xm > W - 170 ? xm - 6 : xm < 170 ? xm + 6 : xm} y={s.f >= 0 ? ym + 16 : ym - 8} fontSize="10" textAnchor={xm > W - 170 ? "end" : xm < 170 ? "start" : "middle"} fill={col} fontWeight="bold" stroke="#fff" strokeWidth="3" paintOrder="stroke">
-                            f∞ = {fmt(Math.abs(s.f), 2)} mm (L/{fmt((s.Leff * 1000) / Math.max(Math.abs(s.f), 1e-9), 0)})
+                            {fmt(Math.abs(s.f), 2)} mm
                         </text>
                     </g>
                 );

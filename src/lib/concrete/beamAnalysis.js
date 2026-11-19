@@ -284,6 +284,24 @@ export function influenceLine(beam, x0, kind = "M", side = "dx", nPer = 48) {
     return { ok: true, kind, x0, side, j0, xl0, pts, areas, isNull };
 }
 
+// campo delle ordinate della linea di influenza al variare della sezione lungo la
+// trave (13 posizioni per campata, entrambi i lati degli appoggi per V): serve a
+// fissare la scala del disegno, che così non cambia spostando la sezione
+export function influenceRange(beam, kind = "M") {
+    if (validateBeam(beam).length) return null;
+    let pos = 0, neg = 0, acc = 0;
+    const xs = [];
+    beam.spans.forEach((sp) => { for (let i = 0; i <= 12; i++) xs.push(acc + (sp.L * i) / 12); acc += sp.L; });
+    for (const x of xs) {
+        for (const side of kind === "V" ? ["sx", "dx"] : ["dx"]) {
+            const il = influenceLine(beam, x, kind, side, 24);
+            if (!il.ok) return null;
+            for (const q of il.pts) { if (q.eta > pos) pos = q.eta; if (-q.eta > neg) neg = -q.eta; }
+        }
+    }
+    return { pos, neg };
+}
+
 // procedimento per una combinazione: con le aree A_k della linea di influenza,
 //   S_max = Σ_k q_G,k·A_k + Σ_k max(0, q_Q,k·A_k)
 //   S_min = Σ_k q_G,k·A_k + Σ_k min(0, q_Q,k·A_k)
