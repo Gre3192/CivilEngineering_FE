@@ -271,8 +271,17 @@ export function influenceLine(beam, x0, kind = "M", side = "dx", nPer = 48) {
         acc += L;
     }
     // aree esatte: carico unitario distribuito sulla campata k
-    const areas = beam.spans.map((_, k) => at(solve(beam, beam.spans.map((__, j) => (j === k ? 1 : 0)))));
-    return { ok: true, kind, x0, side, j0, xl0, pts, areas };
+    let areas = beam.spans.map((_, k) => at(solve(beam, beam.spans.map((__, j) => (j === k ? 1 : 0)))));
+    // grandezza identicamente nulla in x0 (es. M su un appoggio di estremità o
+    // all'estremo libero di una mensola): restano solo residui numerici (~1e-16),
+    // che si azzerano; altrimenti si tolgono i residui sotto la tolleranza relativa
+    const Ltot = beam.spans.reduce((t, sp) => t + sp.L, 0);
+    const etaMax = Math.max(...pts.map((p) => Math.abs(p.eta)), ...areas.map(Math.abs));
+    const isNull = etaMax < 1e-9 * (kind === "M" ? Math.max(1, Ltot) : 1);
+    const tol = isNull ? Infinity : 1e-9 * etaMax;
+    pts.forEach((p) => { if (Math.abs(p.eta) < tol) p.eta = 0; });
+    areas = areas.map((A) => (Math.abs(A) < tol ? 0 : A));
+    return { ok: true, kind, x0, side, j0, xl0, pts, areas, isNull };
 }
 
 // procedimento per una combinazione: con le aree A_k della linea di influenza,

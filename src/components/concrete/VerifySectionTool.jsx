@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
+import { modalBackdropCls, modalPanelCls, useModalTransition } from "../../ui/useModalTransition";
 import { CheckCircle2, XCircle, Info, RotateCcw, Layers, X, Crosshair } from "lucide-react";
 import {
     verifySection,
@@ -244,23 +245,24 @@ export default function VerifySectionTool({ initialInput = null } = {}) {
 
 // -------- Modal con gli accordion dei campi della sezione corrente --------
 function FieldsModal({ result, onClose }) {
+    const { isVisible, close, finishClose } = useModalTransition(onClose);
     useEffect(() => {
-        const onKey = (e) => { if (e.key === "Escape") onClose(); };
+        const onKey = (e) => { if (e.key === "Escape") close(); };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [onClose]);
+    }, [close]);
     // su #modal-root (index.html), come gli altri modal dell'hub; il contenuto della
     // pagina scorre nell'area sotto la navbar, coperta dallo sfondo del modal
     return createPortal(
-        <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/40 p-3 backdrop-blur-[2px] sm:p-6"
-            role="dialog" aria-modal="true" aria-label="Campi di rottura" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-            <div className="flex max-h-full w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-slate-50 shadow-2xl">
+        <div className={`fixed inset-0 z-50 flex items-start justify-center bg-slate-900/40 p-3 backdrop-blur-[2px] sm:p-6 ${modalBackdropCls(isVisible)}`} onTransitionEnd={finishClose}
+            role="dialog" aria-modal="true" aria-label="Campi di rottura" onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}>
+            <div className={`flex max-h-full w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-slate-50 shadow-2xl ${modalPanelCls(isVisible)}`}>
                 <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-white px-5 py-3">
                     <div>
                         <p className="text-sm font-bold text-slate-800">Campi di rottura della sezione</p>
                         <p className="text-xs text-slate-500">Per ogni campo: stati deformativi, legami, congruenza e sottocampi, equazioni, stato corrente con il controllo numerico.</p>
                     </div>
-                    <button type="button" onClick={onClose} aria-label="Chiudi" title="Chiudi (Esc)" className="rounded-full p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-800">
+                    <button type="button" onClick={close} aria-label="Chiudi" title="Chiudi (Esc)" className="rounded-full p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-800">
                         <X size={18} />
                     </button>
                 </div>

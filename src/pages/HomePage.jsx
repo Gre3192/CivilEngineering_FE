@@ -17,7 +17,7 @@ export default function HomePage() {
 
     return (
         <div className="min-h-screen bg-slate-100">
-            <div className="mx-auto max-w-6xl px-6 py-14">
+            <div className="page-enter mx-auto max-w-6xl px-6 py-14">
                 <header className="mb-12 text-center">
                     <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-900 text-white shadow-lg">
                         <Hammer size={26} />

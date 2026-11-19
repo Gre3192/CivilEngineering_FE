@@ -80,8 +80,11 @@ export default function DisciplineLayout() {
                 `}
             >
                 <div className="p-4 sm:p-6">
-                    {/* Le pagine figlie ricevono materia via context dell'Outlet. */}
-                    <Outlet context={{ discipline }} />
+                    {/* Le pagine figlie ricevono materia via context dell'Outlet; la
+                        chiave sul percorso fa ripartire l'animazione a ogni cambio pagina */}
+                    <div key={pathname} className="page-enter">
+                        <Outlet context={{ discipline }} />
+                    </div>
                 </div>
             </main>
         </div>

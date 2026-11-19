@@ -22,6 +22,7 @@ import { concreteTable, STEEL_TABLE } from "../../lib/concrete/materialTables";
 import ConcreteDiagram from "./ConcreteDiagram";
 import SteelDiagram from "./SteelDiagram";
 import { buildSectionDxf, buildForcesDxf } from "../../lib/concrete/sectionDxf";
+import { useModalTransition } from "../../ui/useModalTransition";
 
 const BAR_DIAMETERS = [10, 12, 14, 16, 18, 20, 24, 26];
 const STIRRUP_DIAMETERS = [6, 8, 10, 12];
@@ -727,42 +728,6 @@ function InfoButton({ label, onClick }) {
             <Info size={14} />
         </button>
     );
-}
-
-function useModalTransition(onClose) {
-    const [isVisible, setIsVisible] = useState(false);
-    const closeTimeoutRef = useRef(null);
-    const onCloseRef = useRef(onClose);
-    const isClosingRef = useRef(false);
-
-    useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
-    useEffect(() => {
-        let secondFrame;
-        const firstFrame = requestAnimationFrame(() => {
-            secondFrame = requestAnimationFrame(() => setIsVisible(true));
-        });
-        return () => {
-            cancelAnimationFrame(firstFrame);
-            if (secondFrame !== undefined) cancelAnimationFrame(secondFrame);
-            if (closeTimeoutRef.current !== null) window.clearTimeout(closeTimeoutRef.current);
-        };
-    }, []);
-
-    const close = useCallback(() => {
-        if (isClosingRef.current) return;
-        isClosingRef.current = true;
-        setIsVisible(false);
-        const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-        closeTimeoutRef.current = window.setTimeout(() => onCloseRef.current(), reducedMotion ? 0 : 400);
-    }, []);
-
-    const finishClose = useCallback((event) => {
-        if (isVisible || !isClosingRef.current || (event && (event.target !== event.currentTarget || event.propertyName !== "opacity"))) return;
-        if (closeTimeoutRef.current !== null) window.clearTimeout(closeTimeoutRef.current);
-        onCloseRef.current();
-    }, [isVisible]);
-
-    return { isVisible, close, finishClose };
 }
 
 // Modal con la tabella delle classi di calcestruzzo o degli acciai (NTC 2018 /

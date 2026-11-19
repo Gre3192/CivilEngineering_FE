@@ -81,3 +81,44 @@ html::-webkit-scrollbar-thumb:hover { background: rgb(100 116 139 / 0.75); }
 @supports not selector(::-webkit-scrollbar) {
     .page-scroll { scrollbar-width: thin; scrollbar-color: rgb(148 163 184 / 0.5) transparent; }
 }
+
+/* ------------------------------------------------------------------------- */
+/* Cambio pagina: dissolvenza morbida con una leggera risalita. Riempimento   */
+/* «backwards»: finita l'animazione non resta alcuna trasformazione (gli      */
+/* elementi sticky e le misure delle pagine restano quelle normali).         */
+/* ------------------------------------------------------------------------- */
+@keyframes page-enter {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: none; }
+}
+.page-enter {
+    animation: page-enter 460ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+@media (prefers-reduced-motion: reduce) {
+    .page-enter { animation: none; }
+}
+
+/* ------------------------------------------------------------------------- */
+/* Disegni SVG: box che compare con un'animazione morbida e punti che si      */
+/* ingrandiscono in hover (transform-box: fill-box → origine sul loro centro) */
+/* ------------------------------------------------------------------------- */
+@keyframes svg-pop-in {
+    from { opacity: 0; transform: scale(0.85); }
+    to { opacity: 1; transform: scale(1); }
+}
+.svg-pop {
+    transform-box: fill-box;
+    animation: svg-pop-in 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.svg-dot {
+    transform-box: fill-box;
+    transform-origin: center;
+    transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1), fill 200ms ease;
+}
+.svg-dot.is-on {
+    transform: scale(1.6);
+}
+@media (prefers-reduced-motion: reduce) {
+    .svg-pop { animation: none; }
+    .svg-dot { transition: none; }
+}

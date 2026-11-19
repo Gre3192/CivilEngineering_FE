@@ -12,6 +12,7 @@ import { useSearchParams } from "react-router-dom";
 import { createPortal } from "react-dom";
 import { ArrowLeft, Building, Check, Copy, Info, ListChecks, Pencil, Plus, Trash2, ChevronRight, Search, X, Wand2, CheckCircle2, XCircle, AlertTriangle, Download, Upload } from "lucide-react";
 import { sub } from "../Sym";
+import { drawerPanelCls, modalBackdropCls, modalPanelCls, useModalTransition } from "../../ui/useModalTransition";
 import Tex from "../Tex";
 import { CONCRETE_CLASSES, STEEL_GRADES } from "../../lib/concrete/sectionDesign";
 import { USE_CATEGORIES } from "../../lib/actions/loadData";
@@ -283,10 +284,11 @@ export default function BeamsTool() {
 
     // pagina della trave: schema statico per primo, poi diagrammi, sezioni e cascata della sezione
     if (beam) {
+        // pagine interne (trave, sezione): stessa animazione del cambio pagina
         return <>{section
-            ? <SectionWorkspace key={section.id} beam={beam} an={an} section={section} initialStep={params.get("verifica")} onBack={() => setParams({ trave: beam.id })} updateBeam={upd} />
+            ? <div key={`s-${section.id}`} className="page-enter"><SectionWorkspace key={section.id} beam={beam} an={an} section={section} initialStep={params.get("verifica")} onBack={() => setParams({ trave: beam.id })} updateBeam={upd} /></div>
             : (
-                <div className="space-y-4">
+                <div key={`b-${beam.id}`} className="page-enter space-y-4">
                     <PageBar onBack={goHome} onDelete={() => delBeam(beam)} deleteLabel="Elimina trave" crumbs={[floorName(floorOf(beam)), beam.name]} sub={`Trave · ${beam.spans.length} ${beam.spans.length === 1 ? "campata" : "campate"} · sezione ${beam.section.b}×${beam.section.h} mm`} />
                     <BeamEditor beam={beam} an={an} upd={upd} addSection={addSection} addCharacteristic={addCharacteristic} openSection={openSection}
                         floors={floors} floorId={floorOf(beam)} onMoveFloor={(fid) => upd((b) => ({ ...b, floorId: fid }))} />
@@ -296,7 +298,7 @@ export default function BeamsTool() {
     // pagina del pilastro
     if (openedCol) {
         return (
-            <div className="space-y-4">
+            <div key={`c-${openedCol.id}`} className="page-enter space-y-4">
                 <PageBar onBack={goHome} onDelete={() => delColumn(openedCol)} deleteLabel="Elimina pilastro" crumbs={[floorName(floorOf(openedCol)), openedCol.name]} sub={`Pilastro · ${openedCol.b}×${openedCol.h} mm · H = ${fmt(num(openedCol.H), 2)} m`} />
                 <PillarPage col={openedCol} floors={floors} floorId={floorOf(openedCol)} onUpdate={(patch) => updColumn(openedCol.id, patch)} />
                 {dialog}
@@ -305,7 +307,7 @@ export default function BeamsTool() {
     }
     // elenco dell'edificio: il box occupa tutta la finestra, a scorrere sono solo gli elenchi
     return (
-        <section ref={fitRef} style={fitH ? { height: fitH } : undefined} className="flex flex-col rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <section ref={fitRef} style={fitH ? { height: fitH } : undefined} className="page-enter flex flex-col rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div>
                     <h3 className="text-sm font-bold text-slate-800">Piani, travi e pilastri</h3>
@@ -359,7 +361,9 @@ function useFitHeight(minH = 420) {
         };
         fit();
         window.addEventListener("resize", fit);
-        return () => window.removeEventListener("resize", fit);
+        // durante l'animazione di ingresso la pagina è traslata: si rimisura alla fine
+        document.addEventListener("animationend", fit);
+        return () => { window.removeEventListener("resize", fit); document.removeEventListener("animationend", fit); };
     }, [minH]);
     return [ref, h];
 }
@@ -370,24 +374,25 @@ const toModalRoot = (node) => createPortal(node, document.getElementById("modal-
 
 // modal con un modulo (nuovo piano, trave, pilastro): Invio crea, Esc o clic fuori annulla
 function FormModal({ title, fields, submit = "Crea", note = null, onSubmit, onClose }) {
+    const { isVisible, close, finishClose } = useModalTransition(onClose);
     const [vals, setVals] = useState(() => Object.fromEntries(fields.map((f) => [f.key, f.value ?? ""])));
     const firstRef = useRef(null);
     useEffect(() => {
         firstRef.current?.focus();
         firstRef.current?.select?.();
-        const onKey = (e) => { if (e.key === "Escape") onClose(); };
+        const onKey = (e) => { if (e.key === "Escape") close(); };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [onClose]);
+    }, [close]);
     const invalid = fields.some((f) => (f.required && !String(vals[f.key]).trim()) || (f.type === "number" && f.min !== undefined && !(num(vals[f.key]) >= f.min)));
     const field = "w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100";
     return toModalRoot(
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/30 p-4" role="dialog" aria-modal="true" aria-label={title}
-            onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-            <form className="w-full max-w-md rounded-2xl bg-white shadow-2xl" onSubmit={(e) => { e.preventDefault(); if (!invalid) onSubmit(vals); }}>
+        <div className={`fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/30 p-4 ${modalBackdropCls(isVisible)}`} onTransitionEnd={finishClose} role="dialog" aria-modal="true" aria-label={title}
+            onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}>
+            <form className={`w-full max-w-md rounded-2xl bg-white shadow-2xl ${modalPanelCls(isVisible)}`} onSubmit={(e) => { e.preventDefault(); if (!invalid) close(() => onSubmit(vals)); }}>
                 <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-5 py-3">
                     <p className="text-sm font-bold text-slate-800">{title}</p>
-                    <button type="button" onClick={onClose} aria-label="Chiudi" className="rounded-full p-1.5 text-slate-500 hover:bg-slate-100"><X size={16} /></button>
+                    <button type="button" onClick={close} aria-label="Chiudi" className="rounded-full p-1.5 text-slate-500 hover:bg-slate-100"><X size={16} /></button>
                 </div>
                 <div className="grid grid-cols-2 gap-3 px-5 py-4">
                     {fields.map((f, i) => (
@@ -406,7 +411,7 @@ function FormModal({ title, fields, submit = "Crea", note = null, onSubmit, onCl
                     {note && <p className="col-span-2 text-[11px] leading-4 text-slate-500">{note}</p>}
                 </div>
                 <div className="flex justify-end gap-2 border-t border-slate-200 px-5 py-3">
-                    <button type="button" onClick={onClose} className="rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50">Annulla</button>
+                    <button type="button" onClick={close} className="rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50">Annulla</button>
                     <button type="submit" disabled={invalid} className="rounded-xl bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-40">{submit}</button>
                 </div>
             </form>
@@ -416,17 +421,18 @@ function FormModal({ title, fields, submit = "Crea", note = null, onSubmit, onCl
 
 // finestra di conferma (eliminazioni): Invio conferma, Esc o clic fuori annulla
 function ConfirmModal({ title, text, yes = "Conferma", onYes, onClose }) {
+    const { isVisible, close, finishClose } = useModalTransition(onClose);
     const yesRef = useRef(null);
     useEffect(() => {
         yesRef.current?.focus();
-        const onKey = (e) => { if (e.key === "Escape") onClose(); };
+        const onKey = (e) => { if (e.key === "Escape") close(); };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [onClose]);
+    }, [close]);
     return toModalRoot(
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/30 p-4" role="alertdialog" aria-modal="true" aria-label={title}
-            onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-            <div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl">
+        <div className={`fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/30 p-4 ${modalBackdropCls(isVisible)}`} onTransitionEnd={finishClose} role="alertdialog" aria-modal="true" aria-label={title}
+            onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}>
+            <div className={`w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl ${modalPanelCls(isVisible)}`}>
                 <div className="flex items-start gap-3">
                     <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-red-50 text-red-600"><Trash2 size={17} /></span>
                     <div>
@@ -435,8 +441,8 @@ function ConfirmModal({ title, text, yes = "Conferma", onYes, onClose }) {
                     </div>
                 </div>
                 <div className="mt-5 flex justify-end gap-2">
-                    <button type="button" onClick={onClose} className="rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50">Annulla</button>
-                    <button ref={yesRef} type="button" onClick={() => { onYes(); onClose(); }} className="rounded-xl bg-red-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-red-700">{yes}</button>
+                    <button type="button" onClick={close} className="rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50">Annulla</button>
+                    <button ref={yesRef} type="button" onClick={() => close(() => { onYes(); onClose(); })} className="rounded-xl bg-red-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-red-700">{yes}</button>
                 </div>
             </div>
         </div>
@@ -950,7 +956,7 @@ function CombinationCard({ beam, upd, an }) {
                         <tbody>
                             {beam.spans.map((sp, j) => (
                                 <tr key={j} className="border-b border-slate-100">
-                                    <td className="px-2 py-1.5 font-semibold text-slate-700">{j + 1} <span className="font-normal text-slate-400">· {fmt(num(sp.L), 2)} m</span></td>
+                                    <td className="px-2 py-1.5 font-semibold text-slate-700">{j + 1} <span className="font-normal text-slate-400">· L = {fmt(num(sp.L), 2)} m</span></td>
                                     <td className={cell}>{loadBtn(sp, j, "g1")}</td>
                                     <td className={cell}>{loadBtn(sp, j, "g2")}</td>
                                     <td className={cell}>{loadBtn(sp, j, "q")}</td>
@@ -990,11 +996,12 @@ function CombinationCard({ beam, upd, an }) {
 // FORMULE DELLE COMBINAZIONI (NTC 2018 §2.5.3): solo la teoria della norma
 // ---------------------------------------------------------------------------
 function CombinationInfoModal({ onClose }) {
+    const { isVisible, close, finishClose } = useModalTransition(onClose);
     useEffect(() => {
-        const onKey = (e) => { if (e.key === "Escape") onClose(); };
+        const onKey = (e) => { if (e.key === "Escape") close(); };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [onClose]);
+    }, [close]);
     const item = (n, title, tex) => (
         <li className="space-y-1">
             <p className="text-sm font-semibold text-slate-700">{n}. {title}</p>
@@ -1002,12 +1009,12 @@ function CombinationInfoModal({ onClose }) {
         </li>
     );
     return toModalRoot(
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/30 p-4" role="dialog" aria-modal="true" aria-label="Combinazioni di carico"
-            onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-            <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col rounded-2xl bg-white shadow-2xl">
+        <div className={`fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/30 p-4 ${modalBackdropCls(isVisible)}`} onTransitionEnd={finishClose} role="dialog" aria-modal="true" aria-label="Combinazioni di carico"
+            onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}>
+            <div className={`flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col rounded-2xl bg-white shadow-2xl ${modalPanelCls(isVisible)}`}>
                 <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-5 py-3">
                     <p className="text-sm font-bold text-slate-800">Combinazioni di carico <span className="font-normal text-slate-400">· NTC 2018 §2.5.3</span></p>
-                    <button type="button" onClick={onClose} aria-label="Chiudi" className="rounded-full p-1.5 text-slate-500 hover:bg-slate-100"><X size={16} /></button>
+                    <button type="button" onClick={close} aria-label="Chiudi" className="rounded-full p-1.5 text-slate-500 hover:bg-slate-100"><X size={16} /></button>
                 </div>
                 <div className="scroll-thin min-h-0 flex-1 space-y-5 py-5 pl-6 pr-5">
                     <section>
@@ -1056,11 +1063,12 @@ function comboTex(c, acts, gm) {
     return [g, ...terms].join("+");
 }
 function AllCombinationsModal({ beam, an, lc, onClose }) {
+    const { isVisible, close, finishClose } = useModalTransition(onClose);
     useEffect(() => {
-        const onKey = (e) => { if (e.key === "Escape") onClose(); };
+        const onKey = (e) => { if (e.key === "Escape") close(); };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [onClose]);
+    }, [close]);
     const acts = lc.acts, nS = beam.spans.length;
     const combos = an.ok ? an.combos : lc.combos;
     const spansTxt = (sp) => (!sp?.length ? "variabili scaricati" : sp.length === nS && nS > 1 ? "Q su tutte le campate" : `Q su ${sp.length > 1 ? "campate" : "campata"} ${sp.map((k) => k + 1).join(", ")}`);
@@ -1077,15 +1085,15 @@ function AllCombinationsModal({ beam, an, lc, onClose }) {
         );
     };
     return toModalRoot(
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/30 p-4" role="dialog" aria-modal="true" aria-label="Combinazioni eseguite"
-            onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-            <div className="flex h-[min(44rem,calc(100vh-2rem))] w-full max-w-6xl flex-col rounded-2xl bg-white shadow-2xl">
+        <div className={`fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/30 p-4 ${modalBackdropCls(isVisible)}`} onTransitionEnd={finishClose} role="dialog" aria-modal="true" aria-label="Combinazioni eseguite"
+            onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}>
+            <div className={`flex h-[min(44rem,calc(100vh-2rem))] w-full max-w-6xl flex-col rounded-2xl bg-white shadow-2xl ${modalPanelCls(isVisible)}`}>
                 <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-3">
                     <div>
                         <p className="text-sm font-bold text-slate-800">Combinazioni eseguite — {beam.name} <span className="font-normal text-slate-400">· NTC 2018 §2.5.3</span></p>
                         <p className="text-[11px] text-slate-500">Per ogni combinazione i variabili si dispongono solo sulle campate dove aggravano l'effetto (alternanza dei carichi); evidenziata la più gravosa di ogni stato (massimo |M|) e, per colonna, il valore massimo.</p>
                     </div>
-                    <button type="button" onClick={onClose} aria-label="Chiudi" className="rounded-full p-1.5 text-slate-500 hover:bg-slate-100"><X size={16} /></button>
+                    <button type="button" onClick={close} aria-label="Chiudi" className="rounded-full p-1.5 text-slate-500 hover:bg-slate-100"><X size={16} /></button>
                 </div>
                 <div className="scroll-thin min-h-0 flex-1 space-y-5 py-4 pl-5 pr-4">
                     {/* azioni */}
@@ -1188,6 +1196,7 @@ function AllCombinationsModal({ beam, an, lc, onClose }) {
 const LOAD_NAMES = { g1: ["g_1", "permanenti strutturali"], g2: ["g_2", "permanenti non strutturali"], q: ["q_k", "variabile"] };
 function LoadModal({ beam, j, k, onClose, onSave }) {
     const sp = beam.spans[j];
+    const { isVisible, close, finishClose } = useModalTransition(onClose);
     const [items, setItems] = useState(() => (sp.items?.[k]?.length
         ? sp.items[k].map((it) => ({ ...it }))
         : [{ id: newId("v"), label: "", mode: "line", value: num(sp[k]), width: 1, ...(k === "q" ? { cat: beam.category } : {}) }]));
@@ -1196,22 +1205,22 @@ function LoadModal({ beam, j, k, onClose, onSave }) {
     const total = items.reduce((t, it) => t + itemValue(it), 0);
     const [sym, desc] = LOAD_NAMES[k];
     useEffect(() => {
-        const onKey = (e) => { if (e.key === "Escape") onClose(); };
+        const onKey = (e) => { if (e.key === "Escape") close(); };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [onClose]);
+    }, [close]);
     const field = "rounded-md border border-slate-200 px-2 py-1 text-xs outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100";
     return toModalRoot(
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/30 p-4" role="dialog" aria-modal="true" aria-label={`Carico ${sym} campata ${j + 1}`}
-            onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+        <div className={`fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/30 p-4 ${modalBackdropCls(isVisible)}`} onTransitionEnd={finishClose} role="dialog" aria-modal="true" aria-label={`Carico ${sym} campata ${j + 1}`}
+            onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}>
             {/* dimensioni fisse: aggiungendo voci il modal non cresce, scorre l'elenco */}
-            <div className={`flex h-[min(32rem,calc(100vh-2rem))] w-full flex-col rounded-2xl bg-white shadow-2xl ${k === "q" ? "max-w-4xl" : "max-w-3xl"}`}>
+            <div className={`flex h-[min(32rem,calc(100vh-2rem))] w-full flex-col rounded-2xl bg-white shadow-2xl ${k === "q" ? "max-w-4xl" : "max-w-3xl"} ${modalPanelCls(isVisible)}`}>
                 <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-3">
                     <div>
                         <p className="text-sm font-bold text-slate-800">{sub(sym)} – {desc} · campata {j + 1} ({fmt(num(sp.L), 2)} m)</p>
                         <p className="text-[11px] text-slate-500">Voci sommate in un unico carico distribuito sulla trave{k === "g1" && beam.selfWeight ? " (il peso proprio della trave si aggiunge a parte)" : ""}.</p>
                     </div>
-                    <button type="button" onClick={onClose} aria-label="Chiudi" className="rounded-full p-1.5 text-slate-500 hover:bg-slate-100"><X size={16} /></button>
+                    <button type="button" onClick={close} aria-label="Chiudi" className="rounded-full p-1.5 text-slate-500 hover:bg-slate-100"><X size={16} /></button>
                 </div>
                 <div className="scroll-thin min-h-0 flex-1 space-y-2 py-4 pl-5 pr-4">
                     {items.map((it, i) => (
@@ -1273,8 +1282,8 @@ function LoadModal({ beam, j, k, onClose, onSave }) {
                         )}
                     </div>
                     <div className="flex gap-2">
-                        <button type="button" onClick={onClose} className="rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50">Annulla</button>
-                        <button type="button" onClick={() => onSave(items, all)} className="rounded-xl bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-sky-700">Conferma</button>
+                        <button type="button" onClick={close} className="rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50">Annulla</button>
+                        <button type="button" onClick={() => close(() => onSave(items, all))} className="rounded-xl bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-sky-700">Conferma</button>
                     </div>
                 </div>
             </div>
@@ -1448,6 +1457,7 @@ function CrackCard({ beam, an, onPick, onOpen, cursor = null, bar = null }) {
 function CrackSVG({ an, combo, Mcr, marks, onPick, onOpen, cursor = null }) {
     const ref = useRef(null);
     const [hov, setHov] = useState(null);
+    const [hovPt, setHovPt] = useState(null);           // estremo di zona fessurata sotto il mouse
     const L = an.Ltot, X = useX(L), H = 230, top = 22, bot = H - 30;
     const kMax = `Mmax${combo}`, kMin = `Mmin${combo}`;
     const all = an.pts.flatMap((p) => [p[kMax], p[kMin]]);
@@ -1458,18 +1468,39 @@ function CrackSVG({ an, combo, Mcr, marks, onPick, onOpen, cursor = null }) {
     const path = (key) => an.pts.map((p, i) => `${i ? "L" : "M"}${X(p.x).toFixed(1)},${Y(p[key]).toFixed(1)}`).join(" ");
     // zone fessurate: tratti dove la curva supera ±M_cr, riempiti fino alla retta di M_cr
     const zones = [];
+    // estremi di ogni zona: dove |M| = M_cr, interpolando fra i due punti a cavallo
+    const cross = (a, b, key, sgn) => {
+        const va = sgn * a[key], vb = sgn * b[key];
+        const t = vb !== va ? (Mcr - va) / (vb - va) : 0;
+        return a.x + Math.min(1, Math.max(0, t)) * (b.x - a.x);
+    };
     const collect = (key, sgn) => {
-        let run = [];
-        const flush = () => { if (run.length > 1) zones.push({ run, sgn }); run = []; };
+        let run = [], xa = null;
+        const flush = (xb = null) => {
+            if (run.length > 1) zones.push({ run, sgn, xa: xa ?? run[0].x, xb: xb ?? run[run.length - 1].x });
+            run = []; xa = null;
+        };
         an.pts.forEach((p, i) => {
             const m = p[key];
-            if (sgn * m > Mcr) run.push(p);
-            else flush();
+            const prev = i > 0 && an.pts[i - 1].span === p.span ? an.pts[i - 1] : null;
+            if (sgn * m > Mcr) {
+                if (!run.length) xa = prev ? cross(prev, p, key, sgn) : p.x;
+                run.push(p);
+            } else if (run.length) flush(prev ? cross(prev, p, key, sgn) : null);
             if (i < an.pts.length - 1 && an.pts[i + 1].span !== p.span) flush();
         });
         flush();
     };
     collect(kMax, 1); collect(kMin, -1);
+    // barre arancioni: zone contigue (a cavallo di un appoggio) unite in una sola barra
+    const bars = [];
+    [1, -1].forEach((sgn) => {
+        zones.filter((z) => z.sgn === sgn).sort((a, b) => a.xa - b.xa).forEach((z) => {
+            const last = bars[bars.length - 1];
+            if (last && last.sgn === sgn && Math.abs(z.xa - last.xb) < 1e-6) last.xb = z.xb;
+            else bars.push({ sgn, xa: z.xa, xb: z.xb });
+        });
+    });
     const key = (sgn) => (sgn > 0 ? kMax : kMin);
     const move = (e) => { const p = pickX(e, ref.current, L); if (p.x < 0 || p.x > L) { setHov(null); return; } setHov({ x: p.x, v: valuesAt(an, p.x) }); };
     const click = (e) => { const p = pickX(e, ref.current, L); if (p.x >= -0.02 && p.x <= L + 0.02) onPick(p.x); };
@@ -1480,10 +1511,28 @@ function CrackSVG({ an, combo, Mcr, marks, onPick, onOpen, cursor = null }) {
             {/* zone fessurate */}
             {zones.map((z, i) => {
                 const yc = Y(z.sgn * Mcr), kk = key(z.sgn);
-                const d = `M${X(z.run[0].x)},${yc} ${z.run.map((p) => `L${X(p.x).toFixed(1)},${Y(p[kk]).toFixed(1)}`).join(" ")} L${X(z.run[z.run.length - 1].x)},${yc} Z`;
+                const d = `M${X(z.xa).toFixed(1)},${yc} ${z.run.map((p) => `L${X(p.x).toFixed(1)},${Y(p[kk]).toFixed(1)}`).join(" ")} L${X(z.xb).toFixed(1)},${yc} Z`;
                 return <path key={i} d={d} fill={C_CRZONE} fillOpacity="0.22" />;
             })}
-            {zones.map((z, i) => <line key={`b${i}`} x1={X(z.run[0].x)} x2={X(z.run[z.run.length - 1].x)} y1={z.sgn > 0 ? bot + 6 : top - 6} y2={z.sgn > 0 ? bot + 6 : top - 6} stroke={C_CRZONE} strokeWidth="3" strokeLinecap="round" />)}
+            {bars.map((z, i) => {
+                const y = z.sgn > 0 ? bot + 6 : top - 6, x1 = X(z.xa), x2 = X(z.xb);
+                // posizione degli estremi: punto sulla barra ed etichetta all'esterno (all'interno se vicina al bordo)
+                return (
+                    <g key={`b${i}`}>
+                        <line x1={x1} x2={x2} y1={y} y2={y} stroke={C_CRZONE} strokeWidth="3" strokeLinecap="round" />
+                        {[[x1, z.xa, true], [x2, z.xb, false]].map(([xp, xv, left]) => {
+                            const id = `${i}${left ? "a" : "b"}`, on = hovPt?.id === id;
+                            return (
+                                // la posizione compare in un box passando il mouse sul punto (il clic non aggiunge sezioni)
+                                <g key={id} style={{ cursor: "default" }} onMouseEnter={() => setHovPt({ id, xp, y, xv, sgn: z.sgn })} onMouseLeave={() => setHovPt(null)} onClick={(e) => e.stopPropagation()}>
+                                    <circle cx={xp} cy={y} r="10" fill="transparent" />
+                                    <circle className={`svg-dot ${on ? "is-on" : ""}`} cx={xp} cy={y} r="4" fill={on ? C_CRZONE : "#fff"} stroke={C_CRZONE} strokeWidth="2" />
+                                </g>
+                            );
+                        })}
+                    </g>
+                );
+            })}
             <line x1={X(0)} x2={X(L)} y1={y0} y2={y0} stroke="#334155" strokeWidth="1.2" />
             {[Mcr, -Mcr].map((m) => <line key={m} x1={X(0)} x2={X(L)} y1={Y(m)} y2={Y(m)} stroke={C_CR} strokeWidth="1" strokeDasharray="6 4" />)}
             <text x={X(0) - 4} y={Y(Mcr) + 3} fontSize="9.5" textAnchor="end" fill={C_CR}>{"+M"}<tspan baselineShift="-0.12em" fontSize="70%">cr</tspan></text>
@@ -1507,7 +1556,22 @@ function CrackSVG({ an, combo, Mcr, marks, onPick, onOpen, cursor = null }) {
                 );
             })}
             {cursor && <CursorMark X={X} {...cursor} y1={top - 6} y2={bot + 10} />}
-            {hov && hov.v && (() => {
+            {hovPt && (() => {
+                // box piccolo come quello della posizione nei diagrammi, verso l'interno del grafico
+                const val = `${fmt(hovPt.xv, 3)} m`, w = (val.length + 4) * 5.8 + 14, h = 19;
+                const bx = Math.min(W - MR - w, Math.max(ML, hovPt.xp - w / 2));
+                const below = hovPt.sgn < 0;                 // barra in alto: box sotto; barra in basso: box sopra
+                const by = below ? hovPt.y + 10 : hovPt.y - 10 - h;
+                return (
+                    <g key={hovPt.id} className="svg-pop" style={{ transformOrigin: below ? "center top" : "center bottom" }} pointerEvents="none">
+                        <rect x={bx} y={by} width={w} height={h} rx="6" fill="#fff" fillOpacity="0.97" stroke="#cbd5e1" />
+                        <text x={bx + w / 2} y={by + 13} fontSize="10" textAnchor="middle">
+                            <tspan fill="#64748b">x = </tspan><tspan fill="#c2410c" fontWeight="bold">{val}</tspan>
+                        </text>
+                    </g>
+                );
+            })()}
+            {hov && hov.v && !hovPt && (() => {
                 const xs = X(hov.x), right = xs > W - 190, bx = right ? xs - 150 : xs + 10;
                 const rows = [["x", `${fmt(hov.x, 2)} m`, "#334155"], ["M max", fmt(hov.v[kMax], 1), C_SLE], ["M min", fmt(hov.v[kMin], 1), C_SLE]];
                 return (
@@ -1589,6 +1653,11 @@ function InfluenceCard({ beam, an }) {
             </div>}>
             {stepT(1, <>Linea di influenza di {sub(`${S}`)} in x₀ = {fmt(xc, 2)} m{kind === "V" && onNode ? ` (${sideEff === "sx" ? "a sinistra" : "a destra"} dell'appoggio)` : ""} – forza unitaria viaggiante, η [{uEta}]</>)}
             <InfluenceSVG beam={beam} an={an} il={il} isM={isM} uA={uA} onPick={(x) => setX0(Math.round(x * 1000) / 1000)} />
+            {il.isNull && (
+                <p className="mt-1 rounded-lg bg-amber-50 px-2 py-1 text-[11px] leading-4 text-amber-800">
+                    {sub(`In x₀ = ${fmt(xc, 3)} m ${S} è identicamente nullo${isM ? " (momento su un appoggio di estremità o all'estremo libero di una mensola)" : " (taglio all'estremo libero di una mensola o all'esterno dell'ultimo appoggio)"}: nessuna disposizione dei carichi lo fa variare, quindi massimo e minimo valgono zero.`)}
+                </p>
+            )}
             <p className="mt-1 text-[11px] leading-4 text-slate-500">
                 {sub(`L'area A_k della linea sulla campata k è il valore di ${S} in x₀ per un carico unitario distribuito sulla sola campata k: un carico q_k su quella campata dà q_k·A_k. Per il massimo si caricano coi variabili le campate con area positiva, per il minimo quelle con area negativa; i permanenti stanno sempre ovunque.`)}
             </p>
@@ -1687,7 +1756,8 @@ function InfluenceSVG({ beam, an, il, isM, uA, onPick }) {
     const ref = useRef(null);
     const L = an.Ltot, X = useX(L), H = 220, top = 28, bot = H - 34;
     const etas = il.pts.map((p) => p.eta);
-    const hi = Math.max(0, ...etas), lo = Math.min(0, ...etas);
+    // linea nulla: scala fissa simmetrica (altrimenti si ingrandirebbero residui numerici)
+    const hi = il.isNull ? 1 : Math.max(0, ...etas), lo = il.isNull ? -1 : Math.min(0, ...etas);
     const k = (bot - top) / (hi - lo || 1);
     // stessa convenzione dei diagrammi: M positivo verso il basso, V positivo verso l'alto
     const Y = isM ? (v) => top + (v - lo) * k : (v) => top + (hi - v) * k;
@@ -1709,6 +1779,11 @@ function InfluenceSVG({ beam, an, il, isM, uA, onPick }) {
             <line x1={X(0)} x2={X(L)} y1={y0} y2={y0} stroke="#334155" strokeWidth="1.3" />
             <MiniSupports beam={beam} an={an} X={X} y={y0} />
             <path d={line} fill="none" stroke="#0f172a" strokeWidth="1.8" />
+            {il.isNull && (
+                <text x={W / 2} y={y0 - 16} fontSize="12" textAnchor="middle" fill="#64748b" stroke="#fff" strokeWidth="4" paintOrder="stroke">
+                    Linea di influenza nulla: in x₀ la grandezza vale zero per qualunque posizione del carico
+                </text>
+            )}
             {/* aree per campata */}
             {il.areas.map((A, j) => {
                 const xm = X(an.xs0[j] + beam.spans[j].L / 2);
@@ -1868,10 +1943,13 @@ function DeflectionCard({ beam, an, upd, focusX = null, onPick = null, onOpen = 
                     <span>Deformata della trave</span>
                     <input type="range" min="0" max="100" step="1" value={amp} onChange={(e) => setAmp(Number(e.target.value))} aria-label="Amplificazione della deformata"
                         className="h-1.5 min-w-[160px] flex-1 cursor-pointer accent-cyan-600" />
-                    <span className="w-28 text-right tabular-nums text-slate-500">{amp === 0 ? "indeformata" : `amplificazione ×${fmt(deformedFactor(an, res, amp), 0)}`}</span>
                 </div>
                 <DeformedBeamSVG beam={beam} an={an} res={res} amp={amp} />
-                <p className="pb-1 text-[10px] text-slate-400">Solo per visualizzare la deformazione (f∞, combinazione quasi permanente): lo slider amplifica il disegno e non modifica i calcoli.</p>
+                {/* amplificazione in basso a sinistra */}
+                <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 pb-1">
+                    <span className="text-[11px] font-semibold tabular-nums text-slate-600">{amp === 0 ? "Indeformata" : `Amplificazione ×${fmt(deformedFactor(an, res, amp), 0)}`}</span>
+                    <p className="text-[10px] text-slate-400">Solo per visualizzare la deformazione (f∞, combinazione quasi permanente): lo slider amplifica il disegno e non modifica i calcoli.</p>
+                </div>
             </div>
             <DeflectionSVG beam={beam} an={an} res={res} focusX={focusX} onPick={onPick} onOpen={onOpen} cursor={cursor} />
             <Legend items={[[C_DEF, "freccia a lungo termine f∞ (q.p.)"], ...(opts.partitions ? [[C_DINC, "incremento f∞ − f₀(G₁)", true]] : []), [C_DLIM, "limite L/250", true]]} />
@@ -1896,7 +1974,7 @@ function DeflectionCard({ beam, an, upd, focusX = null, onPick = null, onOpen = 
                     <tbody>
                         {res.spans.map((s) => (
                             <tr key={s.j} className="border-b border-slate-100">
-                                <td className="px-2 py-1.5 font-semibold text-slate-700">{s.j + 1} <span className="font-normal text-slate-400">· {fmt(s.L, 2)} m</span></td>
+                                <td className="px-2 py-1.5 font-semibold text-slate-700">{s.j + 1} <span className="font-normal text-slate-400">· L = {fmt(s.L, 2)} m</span></td>
                                 <td className="px-2 py-1.5 text-slate-600">{s.kind} <span className="text-slate-400">(K = {fmt(s.K, 1)})</span></td>
                                 <td className={cell}>{s.cant ? <span className="text-slate-400">–</span> : asInput("pos", s.j, R.pos[s.j])}</td>
                                 <td className={cell}>
@@ -2421,22 +2499,23 @@ function SectionWorkspace({ beam, an, section, initialStep = null, onBack, updat
 // PANNELLO LATERALE dei dati della trave: le modifiche si vedono subito nei disegni
 // ---------------------------------------------------------------------------
 function EditDrawer({ title, onClose, children }) {
+    const { isVisible, close, finishClose } = useModalTransition(onClose);
     useEffect(() => {
-        const onKey = (e) => { if (e.key === "Escape") onClose(); };
+        const onKey = (e) => { if (e.key === "Escape") close(); };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [onClose]);
+    }, [close]);
     return toModalRoot(
-        <div className="fixed inset-0 z-50" role="dialog" aria-modal="true" aria-label={title}>
+        <div className={`fixed inset-0 z-50 ${modalBackdropCls(isVisible)}`} onTransitionEnd={finishClose} role="dialog" aria-modal="true" aria-label={title}>
             {/* sfondo trasparente: i diagrammi restano visibili e cliccando fuori si chiude */}
-            <div className="absolute inset-0 bg-slate-900/10" onClick={onClose} />
-            <aside className="absolute inset-y-0 right-0 flex w-full max-w-md flex-col border-l border-slate-200 bg-slate-50 shadow-2xl">
+            <div className="absolute inset-0 bg-slate-900/10" onClick={close} />
+            <aside className={`absolute inset-y-0 right-0 flex w-full max-w-md flex-col border-l border-slate-200 bg-slate-50 shadow-2xl ${drawerPanelCls(isVisible)}`}>
                 <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-3">
                     <div>
                         <p className="text-sm font-bold text-slate-800">{title}</p>
                         <p className="text-[11px] text-slate-500">Sezione, schema statico, carichi, combinazioni e traslazione: i disegni si aggiornano subito.</p>
                     </div>
-                    <button type="button" onClick={onClose} aria-label="Chiudi" title="Chiudi (Esc)" className="rounded-full p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-800"><X size={18} /></button>
+                    <button type="button" onClick={close} aria-label="Chiudi" title="Chiudi (Esc)" className="rounded-full p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-800"><X size={18} /></button>
                 </div>
                 <div className="scroll-thin flex-1 space-y-4 py-4 pl-4 pr-3">{children}</div>
             </aside>
