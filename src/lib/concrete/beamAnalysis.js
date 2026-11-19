@@ -152,9 +152,11 @@ function dofMap(beam) {
     return { v, thL, thR, ndof: k };
 }
 
-// risolve per carichi distribuiti uniformi qs[j] (uno per campata) → reazioni
-// di estremità di ogni campata {V0, M0} (forza verso l'alto, momento antiorario)
-function solve(beam, qs) {
+// risolve per carichi distribuiti uniformi qs[j] (uno per campata) e un'eventuale
+// forza concentrata point = { j, a, P } (campata, ascissa dal nodo sinistro, verso
+// il basso) → forze di estremità di ogni campata {V0, M0} (forza verso l'alto,
+// momento antiorario)
+function solve(beam, qs, point = null) {
     const { v, thL, thR, ndof } = dofMap(beam);
     const K = Array.from({ length: ndof }, () => new Float64Array(ndof));
     const P = new Float64Array(ndof);
@@ -172,7 +174,8 @@ function solve(beam, qs) {
         for (let a = 0; a < 4; a++) for (let b = 0; b < 4; b++) K[d[a]][d[b]] += k[a][b];
         // forze nodali equivalenti (carico verso il basso)
         const fe = [-q * L / 2, -q * L * L / 12, -q * L / 2, q * L * L / 12];
-        for (let a = 0; a < 4; a++) P[d[a]] += fe[a];
+        const fp = pointFE(point, j, L);
+        for (let a = 0; a < 4; a++) P[d[a]] += fe[a] - fp[a];
     });
     // vincoli
     const fixedDof = new Set();
@@ -209,17 +212,98 @@ function solve(beam, qs) {
     // forze di estremità dell'elemento (sinistra): f = k·u − fe
     const ends = beam.spans.map((sp, j) => {
         const L = sp.L, q = qs[j], d = elDofs[j].map((i) => U[i]);
-        const V0 = (12 * d[0] + 6 * L * d[1] - 12 * d[2] + 6 * L * d[3]) / L ** 3 + q * L / 2;
-        const M0 = (6 * L * d[0] + 4 * L * L * d[1] - 6 * L * d[2] + 2 * L * L * d[3]) / L ** 3 + q * L * L / 12;
-        return { V0, M0, q };
+        const fp = pointFE(point, j, L);
+        const V0 = (12 * d[0] + 6 * L * d[1] - 12 * d[2] + 6 * L * d[3]) / L ** 3 + q * L / 2 + fp[0];
+        const M0 = (6 * L * d[0] + 4 * L * L * d[1] - 6 * L * d[2] + 2 * L * L * d[3]) / L ** 3 + q * L * L / 12 + fp[1];
+        return point && point.j === j ? { V0, M0, q, P: point.P, a: point.a } : { V0, M0, q };
     });
     return { ok: true, ends };
 }
 
+// reazioni di incastro perfetto (verso l'alto, antiorarie a sinistra) di una forza
+// concentrata P alla distanza a dal nodo sinistro: P·b²(3a+b)/L³, P·a·b²/L², …
+function pointFE(point, j, L) {
+    if (!point || point.j !== j) return [0, 0, 0, 0];
+    const a = point.a, b = L - a, P = point.P;
+    return [P * b * b * (3 * a + b) / L ** 3, P * a * b * b / L ** 2, P * a * a * (a + 3 * b) / L ** 3, -P * a * a * b / L ** 2];
+}
+
 // M(x), V(x) di una campata dalle forze di estremità
-// momento nella campata (estremità e carico dell'elemento), x dal nodo sinistro
-export const Mx = (e, x) => -e.M0 + e.V0 * x - (e.q * x * x) / 2;
-const Vx = (e, x) => e.V0 - e.q * x;
+// momento nella campata (estremità e carico dell'elemento), x dal nodo sinistro;
+// la forza concentrata conta per x > a (taglio subito a destra della forza)
+export const Mx = (e, x) => -e.M0 + e.V0 * x - (e.q * x * x) / 2 - (e.P && x > e.a ? e.P * (x - e.a) : 0);
+export const Vx = (e, x) => e.V0 - e.q * x - (e.P && x > e.a ? e.P : 0);
+
+// ---------------------------------------------------------------------------
+// LINEE DI INFLUENZA (forza unitaria viaggiante verso il basso) di M o V nella
+// sezione x0. Sugli appoggi interni il taglio è quello a destra (a sinistra
+// sull'ultimo nodo). L'area della linea sulla campata k è l'effetto in x0 di un
+// carico unitario distribuito sulla sola campata k.
+// ---------------------------------------------------------------------------
+export function locate(beam, x0, side = "dx") {
+    let acc = 0;
+    for (let j = 0; j < beam.spans.length; j++) {
+        const L = beam.spans[j].L;
+        // su un nodo interno, «sx» = estremità destra della campata a sinistra
+        if (side === "sx" && j > 0 && Math.abs(x0 - acc) < 1e-9) return { j: j - 1, xl: beam.spans[j - 1].L, x0: acc - beam.spans[j - 1].L };
+        if (x0 < acc + L - 1e-9 || j === beam.spans.length - 1) return { j, xl: Math.min(L, Math.max(0, x0 - acc)), x0: acc };
+        acc += L;
+    }
+    return { j: 0, xl: 0, x0: 0 };
+}
+export function influenceLine(beam, x0, kind = "M", side = "dx", nPer = 48) {
+    if (validateBeam(beam).length) return { ok: false };
+    const { j: j0, xl: xl0 } = locate(beam, x0, side);
+    const at = (r) => (kind === "M" ? Mx(r.ends[j0], xl0) : Vx(r.ends[j0], xl0));
+    const zero = beam.spans.map(() => 0);
+    const pts = [];
+    let acc = 0;
+    for (let k = 0; k < beam.spans.length; k++) {
+        const L = beam.spans[k].L;
+        const as = Array.from({ length: nPer + 1 }, (_, i) => (L * i) / nPer);
+        if (k === j0) as.push(...(kind === "M" ? [xl0] : [Math.max(0, xl0 - 1e-7 * L), Math.min(L, xl0 + 1e-7 * L)]));
+        const sorted = [...new Set(as)].sort((p, q) => p - q);
+        for (const a of sorted) {
+            const r = solve(beam, zero, { j: k, a, P: 1 });
+            if (!r.ok) return { ok: false };
+            pts.push({ span: k, a, x: acc + a, eta: at(r) });
+        }
+        acc += L;
+    }
+    // aree esatte: carico unitario distribuito sulla campata k
+    const areas = beam.spans.map((_, k) => at(solve(beam, beam.spans.map((__, j) => (j === k ? 1 : 0)))));
+    return { ok: true, kind, x0, side, j0, xl0, pts, areas };
+}
+
+// procedimento per una combinazione: con le aree A_k della linea di influenza,
+//   S_max = Σ_k q_G,k·A_k + Σ_k max(0, q_Q,k·A_k)
+//   S_min = Σ_k q_G,k·A_k + Σ_k min(0, q_Q,k·A_k)
+export function influenceProcedure(il, combo) {
+    const rows = il.areas.map((A, k) => {
+        const g = combo.qG[k] * A, qv = combo.qQ[k] * A;
+        return { k, A, qG: combo.qG[k], qQ: combo.qQ[k], g, qv, max: qv > 1e-12, min: qv < -1e-12 };
+    });
+    const G = rows.reduce((t, r) => t + r.g, 0);
+    const Smax = G + rows.reduce((t, r) => t + Math.max(0, r.qv), 0);
+    const Smin = G + rows.reduce((t, r) => t + Math.min(0, r.qv), 0);
+    return { rows, G, Smax, Smin };
+}
+
+// diagramma di M o V lungo la trave per una disposizione di carico q[k] (kN/m)
+export function diagramFor(beam, qs, kind = "M", nPer = 80) {
+    const r = solve(beam, qs);
+    if (!r.ok) return [];
+    const out = [];
+    let acc = 0;
+    beam.spans.forEach((sp, j) => {
+        for (let i = 0; i <= nPer; i++) {
+            const xl = (sp.L * i) / nPer;
+            out.push({ span: j, x: acc + xl, v: kind === "M" ? Mx(r.ends[j], xl) : Vx(r.ends[j], xl) });
+        }
+        acc += sp.L;
+    });
+    return out;
+}
 
 // ---------------------------------------------------------------------------
 // ANALISI: risposte elementari, inviluppi, combinazioni

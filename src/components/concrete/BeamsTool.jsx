@@ -16,7 +16,7 @@ import Tex from "../Tex";
 import { CONCRETE_CLASSES, STEEL_GRADES } from "../../lib/concrete/sectionDesign";
 import { USE_CATEGORIES } from "../../lib/actions/loadData";
 import { DEFL_DEFAULT, beamDeflection } from "../../lib/concrete/deflection";
-import { COMBO_STATES, SUPPORT_TYPES, analyzeBeam, characteristicSections, itemValue, loadCombinations, newBeam, newId, spanVariable, valuesAt } from "../../lib/concrete/beamAnalysis";
+import { COMBO_STATES, SUPPORT_TYPES, analyzeBeam, characteristicSections, diagramFor, influenceLine, influenceProcedure, itemValue, loadCombinations, newBeam, newId, spanVariable, valuesAt } from "../../lib/concrete/beamAnalysis";
 import { verifySection } from "../../lib/concrete/verifySection";
 import { crackCheck } from "../../lib/concrete/crackCheck";
 import SectionDesignTool from "./SectionDesignTool";
@@ -57,6 +57,9 @@ function loadColumns() {
 }
 
 // valori di calcolo di una sezione: inviluppo (traslato o no) con le eventuali sovrascritture
+// chiave dei dati che entrano nell'analisi (senza sezioni, frecce e nome)
+const structKey = (b) => JSON.stringify({ ...b, sections: undefined, defl: undefined, name: undefined, floorId: undefined });
+
 function sectionValues(beam, an, sec) {
     const v = an?.ok ? valuesAt(an, sec.x) : null;
     const useT = beam.useTranslated !== false;
@@ -104,7 +107,8 @@ export default function BeamsTool() {
     const goHome = () => setParams({});
     const openBeam = (id) => { setSelId(id); setParams({ trave: id }); };
     const openCol = (id) => { setColSel(id); setParams({ pilastro: id }); };
-    const openSection = (sid) => { if (beam) setParams({ trave: beam.id, sezione: sid }); };
+    // step: verifica da mostrare all'apertura (design | bending | shear | crack | defl)
+    const openSection = (sid, step = null) => { if (beam) setParams({ trave: beam.id, sezione: sid, ...(step ? { verifica: step } : {}) }); };
     const floorName = (id) => floors.find((f) => f.id === id)?.name ?? "—";
     const changeFloor = (id) => {
         setFloorSel(id);
@@ -131,9 +135,25 @@ export default function BeamsTool() {
             },
         });
     };
-    const an = useMemo(() => (beam ? analyzeBeam(beam) : null), [beam]);
-    const updateBeam = useCallback((id, fn) => setBeams((bs) => bs.map((b) => (b.id === id ? fn(b) : b))), []);
-    const upd = (fn) => { if (beam) updateBeam(beam.id, fn); };
+    // l'analisi dipende solo dai dati strutturali: spostare o aggiungere sezioni non la ricalcola
+    const anKey = beam ? structKey(beam) : "";
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const an = useMemo(() => (beam ? analyzeBeam(beam) : null), [anKey]);
+    // aggiornamento di una trave: se fn restituisce la stessa trave lo stato non cambia
+    // (niente nuovo render, quindi niente cicli con gli effetti che salvano dati)
+    const updateBeam = useCallback((id, fn) => setBeams((bs) => {
+        let changed = false;
+        const next = bs.map((b) => {
+            if (b.id !== id) return b;
+            const nb = fn(b);
+            if (nb !== b) changed = true;
+            return nb;
+        });
+        return changed ? next : bs;
+    }), []);
+    // stabile finché resta aperta la stessa trave (le callback della cascata ne dipendono)
+    // (id dall'URL: se non corrisponde a nessuna trave l'aggiornamento non cambia nulla)
+    const upd = useCallback((fn) => { if (beamParam) updateBeam(beamParam, fn); }, [beamParam, updateBeam]);
 
     const addBeam = () => { if (floorSel) setForm("beam"); };
     // trave dal modal: campate uguali e schema di partenza (poi si modifica liberamente)
@@ -217,7 +237,7 @@ export default function BeamsTool() {
 
     const addSection = (x, label) => {
         if (!an.ok) return null;
-        const xr = Math.round(Math.min(an.Ltot, Math.max(0, x)) * 100) / 100;
+        const xr = Math.round(Math.min(an.Ltot, Math.max(0, x)) * 1000) / 1000;
         const id = newId("s");
         upd((b) => ({ ...b, sections: [...b.sections, { id, x: xr, label: label ?? `S${b.sections.length + 1}`, over: {} }].sort((p, q) => p.x - q.x) }));
         return id;
@@ -225,7 +245,7 @@ export default function BeamsTool() {
     const addCharacteristic = () => {
         if (!an.ok) return;
         const cs = characteristicSections(beam, an).filter((c) => !beam.sections.some((s) => Math.abs(s.x - c.x) < 0.02));
-        upd((b) => ({ ...b, sections: [...b.sections, ...cs.map((c) => ({ id: newId("s"), x: Math.round(c.x * 100) / 100, label: c.label, over: {} }))].sort((p, q) => p.x - q.x) }));
+        upd((b) => ({ ...b, sections: [...b.sections, ...cs.map((c) => ({ id: newId("s"), x: Math.round(c.x * 1000) / 1000, label: c.label, over: {} }))].sort((p, q) => p.x - q.x) }));
     };
 
     const section = secId && beam ? beam.sections.find((s) => s.id === secId) : null;
@@ -264,7 +284,7 @@ export default function BeamsTool() {
     // pagina della trave: schema statico per primo, poi diagrammi, sezioni e cascata della sezione
     if (beam) {
         return <>{section
-            ? <SectionWorkspace key={section.id} beam={beam} an={an} section={section} onBack={() => setParams({ trave: beam.id })} updateBeam={upd} />
+            ? <SectionWorkspace key={section.id} beam={beam} an={an} section={section} initialStep={params.get("verifica")} onBack={() => setParams({ trave: beam.id })} updateBeam={upd} />
             : (
                 <div className="space-y-4">
                     <PageBar onBack={goHome} onDelete={() => delBeam(beam)} deleteLabel="Elimina trave" crumbs={[floorName(floorOf(beam)), beam.name]} sub={`Trave · ${beam.spans.length} ${beam.spans.length === 1 ? "campata" : "campate"} · sezione ${beam.section.b}×${beam.section.h} mm`} />
@@ -690,6 +710,26 @@ function BeamEditor({ beam, an, upd, addSection, addCharacteristic, openSection,
         return { ...b, spans, nodes, sections: b.sections.filter((s) => s.x <= L + 1e-9) };
     });
     const [show, setShow] = useState({ T: true, SLE: false });
+    // cursore di sezione condiviso dai disegni: sezione esistente da spostare (id)
+    // oppure posizione di una nuova sezione (x)
+    const Ltot = beam.spans.reduce((t, sp) => t + num(sp.L), 0);
+    const [cur, setCur] = useState({ id: null, x: null });
+    const curSec = cur.id ? beam.sections.find((q) => q.id === cur.id) ?? null : null;
+    const curX = curSec ? curSec.x : Math.min(Ltot, cur.x ?? Math.round((Ltot / 2) * 1000) / 1000);
+    const clampX = (x) => Math.round(Math.min(Ltot, Math.max(0, x)) * 1000) / 1000;
+    const moveTo = (x) => {
+        if (!Number.isFinite(x)) return;
+        const xr = clampX(x);
+        if (curSec) upd((b) => ({ ...b, sections: b.sections.map((q) => (q.id === curSec.id ? { ...q, x: xr } : q)).sort((p, q) => p.x - q.x) }));
+        else setCur({ id: null, x: xr });
+    };
+    // clic sui disegni: nuova sezione, che diventa quella attiva del cursore
+    const pick = (x) => { const id = addSection(x); if (id) setCur({ id, x: null }); };
+    const cursor = { x: curX, isNew: !curSec };
+    // ogni box apre la sezione sulla propria verifica
+    const openAt = (step) => (sid) => openSection(sid, step);
+    const barFor = (step) => <SectionCursorBar beam={beam} L={Ltot} curSec={curSec} curX={curX} setCur={setCur} moveTo={moveTo}
+        onAdd={() => { const id = addSection(curX); if (id) setCur({ id, x: null }); }} onOpen={openAt(step)} />;
     const [editOpen, setEditOpen] = useState(false);
     const [showReac, setShowReac] = useState(true);
     const editBtn = (
@@ -799,7 +839,8 @@ function BeamEditor({ beam, an, upd, addSection, addCharacteristic, openSection,
                                 {editBtn}
                             </div>}>
                             <p className="mb-1 text-[11px] text-slate-500">Clicca sullo schema o sui diagrammi per aggiungere una sezione; clicca un marcatore per aprirla.</p>
-                            <SchemeSVG beam={beam} onPick={addSection} onOpen={openSection} reac={showReac ? an.reac : null} an={an} />
+                            <SchemeSVG beam={beam} onPick={pick} onOpen={openAt("design")} reac={showReac ? an.reac : null} an={an} cursor={cursor} />
+                            {barFor("design")}
                             {showReac && (
                                 <p className="mt-1 text-[11px] leading-4 text-slate-500">
                                     {sub("Reazioni allo SLU con tutte le campate caricate: q = q_d = γ_G1·g_1 + γ_G2·g_2 + γ_Q·q")}
@@ -813,15 +854,18 @@ function BeamEditor({ beam, an, upd, addSection, addCharacteristic, openSection,
                                 <label className="flex cursor-pointer items-center gap-1"><input type="checkbox" checked={show.T} onChange={(e) => setShow((s) => ({ ...s, T: e.target.checked }))} className="accent-violet-600" />traslato</label>
                                 <label className="flex cursor-pointer items-center gap-1"><input type="checkbox" checked={show.SLE} onChange={(e) => setShow((s) => ({ ...s, SLE: e.target.checked }))} className="accent-green-600" />SLE</label>
                             </div>}>
-                            <DiagramSVG beam={beam} an={an} kind="M" show={show} onPick={addSection} onOpen={openSection} />
+                            <DiagramSVG beam={beam} an={an} kind="M" show={show} onPick={pick} onOpen={openAt("bending")} cursor={cursor} />
                             <Legend items={[[C_POS, "inviluppo SLU M_max"], [C_NEG, "inviluppo SLU M_min"], ...(show.T ? [[C_TRASL, `traslato (a_l = ${fmt(an.aL * 100, 1)} cm)`, true]] : []), ...(show.SLE ? [[C_SLE, "SLE rara", true]] : [])]} />
+                            {barFor("bending")}
                         </Card>
                         <Card title="Taglio V [kN]">
-                            <DiagramSVG beam={beam} an={an} kind="V" show={show} onPick={addSection} onOpen={openSection} />
+                            <DiagramSVG beam={beam} an={an} kind="V" show={show} onPick={pick} onOpen={openAt("shear")} cursor={cursor} />
                             <Legend items={[[C_V, "inviluppo SLU V_max / V_min"]]} />
+                            {barFor("shear")}
                         </Card>
-                        <CrackCard beam={beam} an={an} onPick={addSection} onOpen={openSection} />
-                        <DeflectionCard beam={beam} an={an} upd={upd} />
+                        <InfluenceCard beam={beam} an={an} />
+                        <CrackCard beam={beam} an={an} onPick={pick} onOpen={openAt("crack")} cursor={cursor} bar={barFor("crack")} />
+                        <DeflectionCard beam={beam} an={an} upd={upd} onPick={pick} onOpen={openAt("defl")} cursor={cursor} bar={barFor("defl")} />
                         <SectionsTable beam={beam} an={an} upd={upd} openSection={openSection} />
                     </>
                 )}
@@ -1250,7 +1294,7 @@ function pickX(e, svg, L) {
     return { x: ((loc.x - ML) / (W - ML - MR)) * L, sx: loc.x, sy: loc.y };
 }
 
-function SchemeSVG({ beam, mini = false, onPick = null, onOpen = null, reac = null, an = null }) {
+function SchemeSVG({ beam, mini = false, onPick = null, onOpen = null, reac = null, an = null, cursor = null }) {
     const L = beam.spans.reduce((t, s) => t + num(s.L), 0);
     const X = useX(L);
     const ref = useRef(null);
@@ -1337,10 +1381,11 @@ function SchemeSVG({ beam, mini = false, onPick = null, onOpen = null, reac = nu
                     {!mini && <>
                         <rect x={X(s.x) - 14} y={yB + 22} width="28" height="15" rx="7" fill={C_SEC} />
                         <text x={X(s.x)} y={yB + 33} fontSize="9.5" textAnchor="middle" fill="#fff" fontWeight="bold">{s.label.length > 4 ? s.label.slice(0, 4) : s.label}</text>
-                        <title>{`${s.label} — x = ${fmt(s.x, 2)} m (apri)`}</title>
+                        <title>{`${s.label} — x = ${fmt(s.x, 3)} m (apri)`}</title>
                     </>}
                 </g>
             ))}
+            {cursor && !mini && <CursorMark X={X} {...cursor} y1={yB - 42} y2={yB + 40} />}
         </svg>
     );
 }
@@ -1356,7 +1401,7 @@ const CRACK_COMBOS = [
 ];
 const C_CR = "#64748b", C_CRZONE = "#f97316";
 
-function CrackCard({ beam, an, onPick, onOpen }) {
+function CrackCard({ beam, an, onPick, onOpen, cursor = null, bar = null }) {
     const [combo, setCombo] = useState("Q");
     const [wLim, setWLim] = useState(0.3);
     const { b, h, c, fck } = beam.section;
@@ -1390,8 +1435,9 @@ function CrackCard({ beam, an, onPick, onOpen }) {
                     {[0.2, 0.3, 0.4].map((w) => <option key={w} value={w}>w_lim = {fmt(w, 1)} mm</option>)}
                 </select>
             </div>}>
-            <CrackSVG an={an} combo={combo} Mcr={Mcr} marks={marks} onPick={onPick} onOpen={onOpen} />
+            <CrackSVG an={an} combo={combo} Mcr={Mcr} marks={marks} onPick={onPick} onOpen={onOpen} cursor={cursor} />
             <Legend items={[[C_SLE, `M ${cb.label.toLowerCase()} (max / min)`], [C_CR, `±M_cr = ${fmt(Mcr, 1)} kNm (f_ctm/1,2 su b·h²/6)`, true], [C_CRZONE, "zona fessurata (|M| > M_cr)"]]} />
+            {bar}
             <p className="mt-2 text-[11px] leading-4 text-slate-500">
                 {sub("Nelle sezioni progettate (cascata) w_k è calcolato con l'armatura adottata e la combinazione scelta (quasi permanente: carichi di lunga durata, k_t = 0,4); nelle sezioni non ancora progettate e fessurate compare «da progettare».")}
             </p>
@@ -1399,7 +1445,7 @@ function CrackCard({ beam, an, onPick, onOpen }) {
     );
 }
 
-function CrackSVG({ an, combo, Mcr, marks, onPick, onOpen }) {
+function CrackSVG({ an, combo, Mcr, marks, onPick, onOpen, cursor = null }) {
     const ref = useRef(null);
     const [hov, setHov] = useState(null);
     const L = an.Ltot, X = useX(L), H = 230, top = 22, bot = H - 30;
@@ -1460,6 +1506,7 @@ function CrackSVG({ an, combo, Mcr, marks, onPick, onOpen }) {
                     </g>
                 );
             })}
+            {cursor && <CursorMark X={X} {...cursor} y1={top - 6} y2={bot + 10} />}
             {hov && hov.v && (() => {
                 const xs = X(hov.x), right = xs > W - 190, bx = right ? xs - 150 : xs + 10;
                 const rows = [["x", `${fmt(hov.x, 2)} m`, "#334155"], ["M max", fmt(hov.v[kMax], 1), C_SLE], ["M min", fmt(hov.v[kMin], 1), C_SLE]];
@@ -1471,6 +1518,275 @@ function CrackSVG({ an, combo, Mcr, marks, onPick, onOpen }) {
                     </g>
                 );
             })()}
+        </svg>
+    );
+}
+
+// ---------------------------------------------------------------------------
+// LINEE DI INFLUENZA E PROCEDIMENTO: come si arriva al valore dell'inviluppo in
+// una sezione. 1) linea di influenza di M o V in x₀ (forza unitaria viaggiante) e
+// sue aree per campata; 2) disposizione dei carichi per il massimo e il minimo
+// (permanenti ovunque, variabili dove l'area ha il segno che aggrava);
+// 3) calcolo S = Σ q_G·A + Σ q_Q·A; 4) diagrammi delle due disposizioni a
+// confronto con l'inviluppo
+// ---------------------------------------------------------------------------
+const C_IP = "#0284c7", C_IN = "#dc2626", C_GBAND = "#94a3b8", C_QBAND = "#0ea5e9";
+const STATE_SHORT = { U: "SLU", R: "Rara", F: "Frequente", Q: "Quasi perm." };
+
+function InfluenceCard({ beam, an }) {
+    const L = an.Ltot;
+    const [x0, setX0] = useState(() => beam.sections[0]?.x ?? an.pts.reduce((m, p) => (p.MmaxU > m.MmaxU ? p : m), an.pts[0]).x);
+    const [kind, setKind] = useState("M");
+    const [state, setState] = useState("U");
+    const [side, setSide] = useState("sx");
+    const xc = Math.min(L, Math.max(0, Math.round(num(x0) * 1000) / 1000));
+    const onNode = an.xs0.slice(1).some((x) => Math.abs(x - xc) < 1e-9);
+    const sideEff = kind === "V" && onNode ? side : "dx";
+    const sk = structKey(beam);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const il = useMemo(() => influenceLine(beam, xc, kind, sideEff), [sk, xc, kind, sideEff]);
+    if (!il.ok) return null;
+    const isM = kind === "M";
+    const list = an.combos.filter((c) => c.state === state);
+    const procs = list.map((c) => ({ c, p: influenceProcedure(il, c) }));
+    const bMax = procs.reduce((b, r) => (r.p.Smax > b.p.Smax + 1e-9 ? r : b), procs[0]);
+    const bMin = procs.reduce((b, r) => (r.p.Smin < b.p.Smin - 1e-9 ? r : b), procs[0]);
+    const qsMax = bMax.c.qG.map((g, k) => g + (bMax.p.rows[k].max ? bMax.c.qQ[k] : 0));
+    const qsMin = bMin.c.qG.map((g, k) => g + (bMin.p.rows[k].min ? bMin.c.qQ[k] : 0));
+    const dMax = diagramFor(beam, qsMax, kind), dMin = diagramFor(beam, qsMin, kind);
+    const env = valuesAt(an, xc);
+    const envMax = env?.[`${kind}max${state}`], envMin = env?.[`${kind}min${state}`];
+    const cmpEnv = !(kind === "V" && onNode) && env;
+    const S = isM ? "M" : "V", uS = isM ? "kNm" : "kN", uA = isM ? "m²" : "m", uEta = isM ? "m" : "–";
+    const name = (c) => `${comboName(c, an.combos)}${c.lead !== null && an.acts.length > 1 ? ` (Q${c.lead + 1} principale)` : ""}`;
+    const seg = (opts, val, set) => (
+        <div className="inline-flex rounded-lg bg-slate-100 p-0.5">
+            {opts.map(([v, l]) => (
+                <button key={v} type="button" onClick={() => set(v)} className={`rounded-md px-2 py-1 text-[11px] font-semibold ${val === v ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>{l}</button>
+            ))}
+        </div>
+    );
+    const stepT = (n, t) => <p className="mb-1.5 mt-4 flex items-center gap-2 text-xs font-bold text-slate-700 first:mt-0"><span className="flex h-5 w-5 items-center justify-center rounded-full bg-sky-600 text-[10px] text-white">{n}</span>{t}</p>;
+    const cell = "px-2 py-1.5 text-right tabular-nums";
+    const secSel = beam.sections.find((q) => Math.abs(q.x - xc) < 1e-6);
+    return (
+        <Card title="Linee di influenza e procedimento" subtitle={sub("Come si arriva al valore dell'inviluppo in una sezione: clicca sulla linea di influenza per spostare la sezione x₀.")} right={
+            <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold text-slate-600">
+                {seg([["M", "M"], ["V", "V"]], kind, setKind)}
+                <select value={secSel?.id ?? ""} onChange={(e) => { const q = beam.sections.find((z) => z.id === e.target.value); if (q) setX0(q.x); }} aria-label="Sezione"
+                    className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-600">
+                    <option value="">{secSel ? "" : "x libera"}</option>
+                    {beam.sections.map((q) => <option key={q.id} value={q.id}>{q.label} · {fmt(q.x, 3)} m</option>)}
+                </select>
+                <input type="range" min="0" max={L} step="0.001" value={xc} onChange={(e) => setX0(Number(e.target.value))} aria-label="Posizione della sezione x₀"
+                    className="h-1.5 w-36 cursor-pointer accent-sky-500" />
+                <label className="inline-flex items-center gap-1">x₀
+                    <input type="number" step="0.001" min="0" max={L} value={x0} onChange={(e) => setX0(e.target.value)} aria-label="Ascissa della sezione"
+                        className="w-16 rounded-md border border-slate-200 px-1.5 py-0.5 text-right text-xs tabular-nums outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100" /> m
+                </label>
+                {kind === "V" && onNode && seg([["sx", "a sinistra"], ["dx", "a destra"]], side, setSide)}
+                {seg(COMBO_STATES.map((st) => [st.id, STATE_SHORT[st.id]]), state, setState)}
+            </div>}>
+            {stepT(1, <>Linea di influenza di {sub(`${S}`)} in x₀ = {fmt(xc, 2)} m{kind === "V" && onNode ? ` (${sideEff === "sx" ? "a sinistra" : "a destra"} dell'appoggio)` : ""} – forza unitaria viaggiante, η [{uEta}]</>)}
+            <InfluenceSVG beam={beam} an={an} il={il} isM={isM} uA={uA} onPick={(x) => setX0(Math.round(x * 1000) / 1000)} />
+            <p className="mt-1 text-[11px] leading-4 text-slate-500">
+                {sub(`L'area A_k della linea sulla campata k è il valore di ${S} in x₀ per un carico unitario distribuito sulla sola campata k: un carico q_k su quella campata dà q_k·A_k. Per il massimo si caricano coi variabili le campate con area positiva, per il minimo quelle con area negativa; i permanenti stanno sempre ovunque.`)}
+            </p>
+
+            {stepT(2, "Disposizione dei carichi [kN/m]")}
+            <div className="space-y-2">
+                {[["max", bMax, qsMax, C_POS], ["min", bMin, qsMin, C_NEG]].map(([w, r, qs, col]) => (
+                    <div key={w} className="rounded-xl border border-slate-200 p-2">
+                        <p className="text-[11px] font-semibold" style={{ color: col }}>{sub(`Per ${S}_${w}`)} · <span className="text-slate-600">{name(r.c)}</span></p>
+                        <LoadPatternSVG beam={beam} an={an} combo={r.c} loaded={r.p.rows.map((row) => row[w])} xc={xc} />
+                        <p className="text-[10px] text-slate-500">{sub(`Variabili su: ${r.p.rows.filter((row) => row[w]).map((row) => `campata ${row.k + 1}`).join(", ") || "nessuna campata"} · totale per campata: ${qs.map((q) => fmt(q, 2)).join(" / ")}`)}</p>
+                    </div>
+                ))}
+            </div>
+
+            {stepT(3, `Calcolo (${COMBO_STATES.find((q) => q.id === state).long})`)}
+            <div className="scroll-thin-x pb-1">
+                <table className="w-full min-w-[760px] text-xs">
+                    <thead>
+                        <tr className="border-b border-slate-200 text-[11px] text-slate-500">
+                            <th className="px-2 py-1.5 text-left font-semibold">Campata</th>
+                            <th className={cell}>{sub("A_k")} [{uA}]</th>
+                            <th className={cell}>{sub("q_G,k")} [kN/m]</th>
+                            <th className={cell}>{sub("q_G,k·A_k")} [{uS}]</th>
+                            <th className={cell}>{sub("q_Q,k")} [kN/m]</th>
+                            <th className={cell}>{sub("q_Q,k·A_k")} [{uS}]</th>
+                            <th className={cell} style={{ color: C_POS }}>{sub(`per ${S}_max`)}</th>
+                            <th className={cell} style={{ color: C_NEG }}>{sub(`per ${S}_min`)}</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {il.areas.map((A, k) => {
+                            const rM = bMax.p.rows[k], rm = bMin.p.rows[k];
+                            const same = bMax.c.id === bMin.c.id;
+                            return (
+                                <tr key={k} className="border-b border-slate-100">
+                                    <td className="px-2 py-1.5 font-semibold text-slate-700">{k + 1}</td>
+                                    <td className={`${cell} font-semibold`} style={{ color: A >= 0 ? C_IP : C_IN }}>{A >= 0 ? "+" : ""}{fmt(A, 3)}</td>
+                                    <td className={cell}>{fmt(rM.qG, 2)}</td>
+                                    <td className={cell}>{fmt(rM.g, 2)}</td>
+                                    <td className={cell}>{same ? fmt(rM.qQ, 2) : `${fmt(rM.qQ, 2)} / ${fmt(rm.qQ, 2)}`}</td>
+                                    <td className={cell}>{same ? fmt(rM.qv, 2) : `${fmt(rM.qv, 2)} / ${fmt(rm.qv, 2)}`}</td>
+                                    <td className={cell}>{rM.max ? <span className="font-bold" style={{ color: C_POS }}>{"+" + fmt(rM.qv, 2)}</span> : <span className="text-slate-300">—</span>}</td>
+                                    <td className={cell}>{rm.min ? <span className="font-bold" style={{ color: C_NEG }}>{fmt(rm.qv, 2)}</span> : <span className="text-slate-300">—</span>}</td>
+                                </tr>
+                            );
+                        })}
+                    </tbody>
+                </table>
+            </div>
+            <div className="mt-2 grid gap-2 lg:grid-cols-2">
+                {[["max", bMax, bMax.p.Smax, envMax, C_POS, (row) => row.max], ["min", bMin, bMin.p.Smin, envMin, C_NEG, (row) => row.min]].map(([w, r, val, ev, col, f]) => (
+                    <div key={w} className="rounded-xl bg-slate-50 px-3 py-2 text-xs text-slate-700">
+                        <Tex>{String.raw`${S}_{${w}}=\sum_k q_{G,k}A_k+\sum_{k\,:\,q_{Q,k}A_k ${w === "max" ? ">" : "<"} 0} q_{Q,k}A_k`}</Tex>
+                        <p className="mt-1 tabular-nums">
+                            = {fmt(r.p.G, 2)} {r.p.rows.filter(f).map((row) => <span key={row.k}>{row.qv >= 0 ? " + " : " − "}{fmt(Math.abs(row.qv), 2)}</span>)}
+                            {" "}= <b style={{ color: col }}>{fmt(val, 2)} {uS}</b>
+                            <span className="text-slate-500"> ({name(r.c)})</span>
+                        </p>
+                        {cmpEnv && ev !== undefined && (
+                            <p className={`mt-0.5 text-[11px] ${Math.abs(ev - val) < 1e-3 * Math.max(1, Math.abs(ev)) ? "text-emerald-700" : "text-amber-700"}`}>
+                                {Math.abs(ev - val) < 1e-3 * Math.max(1, Math.abs(ev)) ? "✓ coincide con l'inviluppo" : `inviluppo: ${fmt(ev, 2)} ${uS}`}
+                            </p>
+                        )}
+                    </div>
+                ))}
+            </div>
+            {procs.length > 1 && (
+                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500">
+                    <span className="font-semibold text-slate-600">Tutte le combinazioni dello stato:</span>
+                    {procs.map(({ c, p: pr }) => (
+                        <span key={c.id} className="tabular-nums">{comboName(c, an.combos)}: <span className={c.id === bMax.c.id ? "font-bold" : ""} style={{ color: C_POS }}>{fmt(pr.Smax, 1)}</span> / <span className={c.id === bMin.c.id ? "font-bold" : ""} style={{ color: C_NEG }}>{fmt(pr.Smin, 1)}</span></span>
+                    ))}
+                </div>
+            )}
+
+            {stepT(4, `Diagrammi di ${S} delle due disposizioni e inviluppo [${uS}]`)}
+            <ResultPatternSVG an={an} isM={isM} state={state} kind={kind} dMax={dMax} dMin={dMin} xc={xc} vMax={bMax.p.Smax} vMin={bMin.p.Smin} />
+            <Legend items={[["#cbd5e1", `inviluppo ${STATE_SHORT[state]}`], [C_POS, `disposizione per ${S}max`], [C_NEG, `disposizione per ${S}min`]]} />
+            {isM && state === "U" && <p className="mt-1 text-[11px] text-slate-500">{sub(`Il progetto usa l'inviluppo traslato di a_l = ${fmt(an.aL * 100, 1)} cm: in x₀ è il massimo di questi valori nell'intorno ±a_l.`)}</p>}
+        </Card>
+    );
+}
+
+// sostegni in piccolo per i disegni del procedimento
+function MiniSupports({ beam, an, X, y }) {
+    return beam.nodes.map((nd, i) => {
+        const x = X(an.xs0[i] ?? an.Ltot);
+        if (nd.type === "free") return null;
+        if (nd.type === "fixed") return <rect key={i} x={x - 2} y={y - 9} width="4" height="18" fill="#334155" />;
+        return <path key={i} d={`M${x},${y} l-6,10 h12 Z`} fill="#fff" stroke="#334155" strokeWidth="1.1" />;
+    });
+}
+
+function InfluenceSVG({ beam, an, il, isM, uA, onPick }) {
+    const ref = useRef(null);
+    const L = an.Ltot, X = useX(L), H = 220, top = 28, bot = H - 34;
+    const etas = il.pts.map((p) => p.eta);
+    const hi = Math.max(0, ...etas), lo = Math.min(0, ...etas);
+    const k = (bot - top) / (hi - lo || 1);
+    // stessa convenzione dei diagrammi: M positivo verso il basso, V positivo verso l'alto
+    const Y = isM ? (v) => top + (v - lo) * k : (v) => top + (hi - v) * k;
+    const y0 = Y(0);
+    const bySpan = beam.spans.map((_, j) => il.pts.filter((p) => p.span === j));
+    const fillPath = (pts, sgn) => `M${X(pts[0].x)},${y0} ${pts.map((p) => `L${X(p.x).toFixed(1)},${Y(sgn > 0 ? Math.max(0, p.eta) : Math.min(0, p.eta)).toFixed(1)}`).join(" ")} L${X(pts[pts.length - 1].x)},${y0} Z`;
+    const line = il.pts.map((p, i) => `${i && il.pts[i - 1].span === p.span ? "L" : "M"}${X(p.x).toFixed(1)},${Y(p.eta).toFixed(1)}`).join(" ");
+    const pk = il.pts.filter((p) => Math.abs(p.x - il.x0) < 1e-6 * Math.max(1, L));
+    const click = (e) => { const p = pickX(e, ref.current, L); if (p.x >= 0 && p.x <= L) onPick(p.x); };
+    return (
+        <svg ref={ref} viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="Linea di influenza" onClick={click} style={{ cursor: "crosshair" }}>
+            {[0, ...an.xs0.slice(1), L].map((x, i) => <line key={i} x1={X(x)} x2={X(x)} y1={top - 14} y2={bot + 14} stroke="#e2e8f0" />)}
+            {bySpan.map((pts, j) => (
+                <g key={j}>
+                    <path d={fillPath(pts, 1)} fill={C_IP} fillOpacity="0.16" />
+                    <path d={fillPath(pts, -1)} fill={C_IN} fillOpacity="0.16" />
+                </g>
+            ))}
+            <line x1={X(0)} x2={X(L)} y1={y0} y2={y0} stroke="#334155" strokeWidth="1.3" />
+            <MiniSupports beam={beam} an={an} X={X} y={y0} />
+            <path d={line} fill="none" stroke="#0f172a" strokeWidth="1.8" />
+            {/* aree per campata */}
+            {il.areas.map((A, j) => {
+                const xm = X(an.xs0[j] + beam.spans[j].L / 2);
+                const pos = A >= 0, yl = pos === isM ? bot + 26 : top - 16;
+                return (
+                    <text key={j} x={xm} y={yl} fontSize="11" textAnchor="middle" fontWeight="bold" fill={pos ? C_IP : C_IN}>
+                        A<tspan baselineShift="-0.12em" fontSize="70%">{j + 1}</tspan> = {pos ? "+" : ""}{fmt(A, 3)} {uA}
+                    </text>
+                );
+            })}
+            {/* sezione x₀ e ordinata */}
+            <line x1={X(il.x0)} x2={X(il.x0)} y1={top - 14} y2={bot + 10} stroke={C_SEC} strokeWidth="1.1" strokeDasharray="3 2" />
+            <text x={X(il.x0)} y={top - 18} fontSize="10" textAnchor="middle" fill={C_SEC} fontWeight="bold">x₀</text>
+            {pk.map((p, i) => (
+                <g key={i}>
+                    <circle cx={X(p.x)} cy={Y(p.eta)} r="3.5" fill="#0f172a" stroke="#fff" strokeWidth="1.2" />
+                    <text x={X(p.x) + 6 + i * 0} y={Y(p.eta) + (i ? 14 : -6)} fontSize="10" fill="#0f172a" stroke="#fff" strokeWidth="3" paintOrder="stroke">η = {fmt(p.eta, 3)}</text>
+                </g>
+            ))}
+        </svg>
+    );
+}
+
+function LoadPatternSVG({ beam, an, combo, loaded, xc }) {
+    const L = an.Ltot, X = useX(L), H = 96, yB = 70;
+    const qmax = Math.max(1e-9, ...combo.qG, ...combo.qQ.map((q, k) => (loaded[k] ? q : 0)));
+    const hG = (q) => 6 + 18 * (q / qmax), hQ = (q) => 6 + 18 * (q / qmax);
+    return (
+        <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="Disposizione dei carichi">
+            {beam.spans.map((sp, j) => {
+                const x0 = X(an.xs0[j]), x1 = X(an.xs0[j] + sp.L), g = combo.qG[j], q = combo.qQ[j];
+                const yg = yB - 2 - hG(g), yq = yg - (loaded[j] ? hQ(q) : 0);
+                return (
+                    <g key={j}>
+                        <rect x={x0} y={yg} width={x1 - x0} height={hG(g)} fill={C_GBAND} fillOpacity="0.35" stroke={C_GBAND} />
+                        <text x={(x0 + x1) / 2} y={yg + hG(g) / 2 + 4} fontSize="11" textAnchor="middle" fill="#334155">q<tspan baselineShift="-0.12em" fontSize="70%">G</tspan> = {fmt(g, 2)}</text>
+                        {loaded[j] ? (
+                            <>
+                                <rect x={x0} y={yq} width={x1 - x0} height={hQ(q)} fill={C_QBAND} fillOpacity="0.35" stroke={C_QBAND} />
+                                <text x={(x0 + x1) / 2} y={yq + hQ(q) / 2 + 4} fontSize="11" textAnchor="middle" fill="#0369a1" fontWeight="bold">q<tspan baselineShift="-0.12em" fontSize="70%">Q</tspan> = {fmt(q, 2)}</text>
+                            </>
+                        ) : Math.abs(q) > 1e-9 && (
+                            <text x={(x0 + x1) / 2} y={yg - 5} fontSize="10" textAnchor="middle" fill="#94a3b8">variabile assente</text>
+                        )}
+                    </g>
+                );
+            })}
+            <line x1={X(0)} x2={X(L)} y1={yB} y2={yB} stroke="#334155" strokeWidth="2.5" />
+            <MiniSupports beam={beam} an={an} X={X} y={yB} />
+            <line x1={X(xc)} x2={X(xc)} y1={8} y2={yB + 14} stroke={C_SEC} strokeWidth="1" strokeDasharray="3 2" />
+        </svg>
+    );
+}
+
+function ResultPatternSVG({ an, isM, state, kind, dMax, dMin, xc, vMax, vMin }) {
+    const L = an.Ltot, X = useX(L), H = 220, top = 22, bot = H - 22;
+    const kMax = `${kind}max${state}`, kMin = `${kind}min${state}`;
+    const all = [...an.pts.flatMap((p) => [p[kMax], p[kMin]]), ...dMax.map((p) => p.v), ...dMin.map((p) => p.v)];
+    const hi = Math.max(0, ...all), lo = Math.min(0, ...all), k = (bot - top) / (hi - lo || 1);
+    const Y = isM ? (v) => top + (v - lo) * k : (v) => top + (hi - v) * k;
+    const y0 = Y(0);
+    const pathOf = (pts, get) => pts.map((p, i) => `${i && pts[i - 1].span === p.span ? "L" : "M"}${X(p.x).toFixed(1)},${Y(get(p)).toFixed(1)}`).join(" ");
+    const envArea = `M${X(0)},${Y(an.pts[0][kMax])} ${an.pts.map((p) => `L${X(p.x).toFixed(1)},${Y(p[kMax]).toFixed(1)}`).join(" ")} ${[...an.pts].reverse().map((p) => `L${X(p.x).toFixed(1)},${Y(p[kMin]).toFixed(1)}`).join(" ")} Z`;
+    return (
+        <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="Diagrammi delle disposizioni">
+            {[0, ...an.xs0.slice(1), L].map((x, i) => <line key={i} x1={X(x)} x2={X(x)} y1={top - 8} y2={bot + 8} stroke="#e2e8f0" />)}
+            <path d={envArea} fill="#e2e8f0" fillOpacity="0.7" stroke="#cbd5e1" />
+            <line x1={X(0)} x2={X(L)} y1={y0} y2={y0} stroke="#334155" strokeWidth="1.2" />
+            <path d={pathOf(dMax, (p) => p.v)} fill="none" stroke={C_POS} strokeWidth="1.8" />
+            <path d={pathOf(dMin, (p) => p.v)} fill="none" stroke={C_NEG} strokeWidth="1.8" strokeDasharray="6 3" />
+            <line x1={X(xc)} x2={X(xc)} y1={top - 10} y2={bot + 10} stroke={C_SEC} strokeWidth="1.1" strokeDasharray="3 2" />
+            {/* etichetta dal lato esterno: M positivo in basso, V positivo in alto */}
+            {[[vMax, C_POS, isM ? 18 : -9], [vMin, C_NEG, isM ? -9 : 18]].map(([v, col, dy]) => (
+                <g key={col}>
+                    <circle cx={X(xc)} cy={Y(v)} r="4" fill={col} stroke="#fff" strokeWidth="1.5" />
+                    <text x={X(xc) + (X(xc) > W - 160 ? -8 : 8)} y={Y(v) + dy} fontSize="10.5" fontWeight="bold" textAnchor={X(xc) > W - 160 ? "end" : "start"} fill={col} stroke="#fff" strokeWidth="3" paintOrder="stroke">{fmt(v, 2)}</text>
+                </g>
+            ))}
         </svg>
     );
 }
@@ -1514,8 +1830,10 @@ function useDeflection(beam, an) {
     return { opts, R, res };
 }
 
-function DeflectionCard({ beam, an, upd, focusX = null }) {
+function DeflectionCard({ beam, an, upd, focusX = null, onPick = null, onOpen = null, cursor = null, bar = null }) {
     const { opts, R, res } = useDeflection(beam, an);
+    // amplificazione della deformata disegnata (solo visualizzazione, non entra nei calcoli)
+    const [amp, setAmp] = useState(60);
     if (!res.ok) return null;
     const setD = (patch) => upd((b) => ({ ...b, defl: { ...DEFL_DEFAULT, ...(b.defl ?? {}), ...patch } }));
     const setAs = (kind, i, v) => upd((b) => {
@@ -1544,8 +1862,20 @@ function DeflectionCard({ beam, an, upd, focusX = null }) {
                     <input type="checkbox" checked={!!opts.partitions} onChange={(e) => setD({ partitions: e.target.checked })} className="accent-violet-600" /> Tramezzi fragili
                 </label>
             </div>}>
-            <DeflectionSVG beam={beam} an={an} res={res} focusX={focusX} />
+            {/* deformata amplificata: lo slider cambia solo il disegno */}
+            <div className="mb-3 rounded-xl border border-slate-200 bg-slate-50/60 px-3 pb-1 pt-2">
+                <div className="flex flex-wrap items-center gap-3 text-[11px] font-semibold text-slate-600">
+                    <span>Deformata della trave</span>
+                    <input type="range" min="0" max="100" step="1" value={amp} onChange={(e) => setAmp(Number(e.target.value))} aria-label="Amplificazione della deformata"
+                        className="h-1.5 min-w-[160px] flex-1 cursor-pointer accent-cyan-600" />
+                    <span className="w-28 text-right tabular-nums text-slate-500">{amp === 0 ? "indeformata" : `amplificazione ×${fmt(deformedFactor(an, res, amp), 0)}`}</span>
+                </div>
+                <DeformedBeamSVG beam={beam} an={an} res={res} amp={amp} />
+                <p className="pb-1 text-[10px] text-slate-400">Solo per visualizzare la deformazione (f∞, combinazione quasi permanente): lo slider amplifica il disegno e non modifica i calcoli.</p>
+            </div>
+            <DeflectionSVG beam={beam} an={an} res={res} focusX={focusX} onPick={onPick} onOpen={onOpen} cursor={cursor} />
             <Legend items={[[C_DEF, "freccia a lungo termine f∞ (q.p.)"], ...(opts.partitions ? [[C_DINC, "incremento f∞ − f₀(G₁)", true]] : []), [C_DLIM, "limite L/250", true]]} />
+            {bar}
             <div className="scroll-thin-x mt-3 pb-1">
                 <table className="w-full min-w-[980px] text-xs">
                     <thead>
@@ -1598,8 +1928,61 @@ function DeflectionCard({ beam, an, upd, focusX = null }) {
     );
 }
 
-function DeflectionSVG({ beam, an, res, focusX }) {
+// deformata amplificata: a slider = 100 la freccia massima vale DEF_PX px nel disegno
+const DEF_PX = 60;
+const deflMax = (res) => Math.max(1e-9, ...res.spans.flatMap((s) => s.w.map(Math.abs)));
+// fattore di amplificazione = spostamento disegnato / spostamento reale (nella scala delle lunghezze)
+function deformedFactor(an, res, amp) {
+    const pxPerM = (W - ML - MR) / (an.Ltot || 1);
+    return ((amp / 100) * DEF_PX) / ((deflMax(res) / 1000) * pxPerM);
+}
+function DeformedBeamSVG({ beam, an, res, amp }) {
+    const L = an.Ltot, X = useX(L), H = 180, y0 = 82;
+    const pxPerM = (W - ML - MR) / (L || 1);
+    const t = Math.min(24, Math.max(8, (beam.section.h / 1000) * pxPerM));   // spessore disegnato della trave
+    const k = ((amp / 100) * DEF_PX) / deflMax(res);                           // px per mm di freccia
+    // ogni campata con la sua disposizione dei variabili (quella della sua freccia massima)
+    const pts = res.spans.flatMap((s) => s.xs.map((xl, i) => ({ x: an.xs0[s.j] + xl, w: s.w[i] })));
+    const top = pts.map((p, i) => `${i ? "L" : "M"}${X(p.x).toFixed(1)},${(y0 - t / 2 + k * p.w).toFixed(1)}`).join(" ");
+    const botR = [...pts].reverse().map((p) => `L${X(p.x).toFixed(1)},${(y0 + t / 2 + k * p.w).toFixed(1)}`).join(" ");
+    const axis = pts.map((p, i) => `${i ? "L" : "M"}${X(p.x).toFixed(1)},${(y0 + k * p.w).toFixed(1)}`).join(" ");
+    return (
+        <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="Deformata amplificata della trave">
+            {/* trave indeformata */}
+            <rect x={X(0)} y={y0 - t / 2} width={X(L) - X(0)} height={t} fill="none" stroke="#94a3b8" strokeWidth="1" strokeDasharray="5 4" />
+            {/* trave deformata */}
+            <path d={`${top} ${botR} Z`} fill={C_DEF} fillOpacity="0.18" stroke={C_DEF} strokeWidth="1.4" strokeLinejoin="round" />
+            <path d={axis} fill="none" stroke={C_DEF} strokeWidth="0.8" strokeDasharray="2 3" />
+            {beam.nodes.map((nd, i) => {
+                const x = X(an.xs0[i] ?? L), yb = y0 + t / 2;
+                if (nd.type === "free") return null;
+                if (nd.type === "fixed") return <g key={i}><rect x={i === 0 ? x - 8 : x} y={y0 - t / 2 - 14} width="8" height={t + 28} fill="#cbd5e1" stroke="#334155" strokeWidth="1" /></g>;
+                return <path key={i} d={`M${x},${yb} l-8,13 h16 Z`} fill="#fff" stroke="#334155" strokeWidth="1.2" />;
+            })}
+            {/* freccia massima di ogni campata */}
+            {amp > 0 && res.spans.map((s) => {
+                const xs = X(an.xs0[s.j] + s.xf), yv = y0 + k * s.f + (s.f >= 0 ? t / 2 + 14 : -t / 2 - 6);
+                return (
+                    <text key={s.j} x={xs} y={yv} fontSize="10" textAnchor="middle" fill={C_DEF} fontWeight="bold" stroke="#fff" strokeWidth="3" paintOrder="stroke">
+                        {fmt(Math.abs(s.f), 1)} mm
+                    </text>
+                );
+            })}
+        </svg>
+    );
+}
+
+function DeflectionSVG({ beam, an, res, focusX, onPick = null, onOpen = null, cursor = null }) {
+    const ref = useRef(null);
     const L = an.Ltot, X = useX(L), H = 210, top = 26, bot = H - 26;
+    // freccia nel punto x (curva della campata che lo contiene)
+    const wAt = (x) => {
+        const j = Math.max(0, an.xs0.findLastIndex((x0) => x >= x0 - 1e-9));
+        const sp = res.spans[Math.min(j, res.spans.length - 1)];
+        const i = Math.max(0, Math.min(sp.xs.length - 1, Math.round(((x - an.xs0[sp.j]) / sp.L) * (sp.xs.length - 1))));
+        return sp.w[i];
+    };
+    const click = (e) => { if (!onPick) return; const p = pickX(e, ref.current, L); if (p.x >= -0.02 && p.x <= L + 0.02) onPick(p.x); };
     const part = !!res.partitions;
     const vals = res.spans.flatMap((s) => [...s.w, s.fLim, ...(part ? s.dw : [])]);
     // limite dal lato della freccia (verso il basso o, per le mensole, anche verso l'alto)
@@ -1608,7 +1991,7 @@ function DeflectionSVG({ beam, an, res, focusX }) {
     const k = (bot - top) / (hi - lo || 1), Y = (v) => top + (v - lo) * k, y0 = Y(0);
     const xAt = (s, i) => X(an.xs0[s.j] + s.xs[i]);
     return (
-        <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="Frecce della trave">
+        <svg ref={ref} viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="Frecce della trave" onClick={click} style={onPick ? { cursor: "crosshair" } : undefined}>
             {[0, ...an.xs0.slice(1), L].map((x, i) => <line key={i} x1={X(x)} x2={X(x)} y1={top - 10} y2={bot + 6} stroke="#e2e8f0" />)}
             <line x1={X(0)} x2={X(L)} y1={y0} y2={y0} stroke="#334155" strokeWidth="1.4" />
             {beam.nodes.map((nd, i) => nd.type !== "free" && (
@@ -1635,6 +2018,26 @@ function DeflectionSVG({ beam, an, res, focusX }) {
                 );
             })}
             {focusX !== null && <line x1={X(focusX)} x2={X(focusX)} y1={top - 12} y2={bot + 8} stroke={C_SEC} strokeWidth="1.1" strokeDasharray="3 2" />}
+            {/* sezioni (clic: apre la sezione sulla verifica di deformabilità) */}
+            {onOpen && beam.sections.map((q) => (
+                <g key={q.id} onClick={(e) => { e.stopPropagation(); onOpen(q.id); }} style={{ cursor: "pointer" }}>
+                    <line x1={X(q.x)} x2={X(q.x)} y1={top - 10} y2={bot + 8} stroke={C_SEC} strokeWidth="1.1" strokeDasharray="3 2" />
+                    <rect x={X(q.x) - 6} y={top - 12} width="12" height={bot - top + 22} fill="transparent" />
+                    <text x={X(q.x)} y={top - 12} fontSize="9" textAnchor="middle" fill={C_SEC} fontWeight="bold">{q.label.length > 6 ? q.label.slice(0, 6) : q.label}</text>
+                </g>
+            ))}
+            {cursor && (() => {
+                const w = wAt(cursor.x), xs = X(cursor.x), right = xs > W - 150;
+                return (
+                    <>
+                        <CursorMark X={X} {...cursor} y1={top - 4} y2={bot + 8} />
+                        <circle cx={xs} cy={Y(w)} r="3.5" fill={C_CUR} stroke="#fff" strokeWidth="1.2" pointerEvents="none" />
+                        <text x={xs + (right ? -8 : 8)} y={Y(w) + (w >= 0 ? -7 : 14)} fontSize="10" textAnchor={right ? "end" : "start"} fill="#0369a1" fontWeight="bold" stroke="#fff" strokeWidth="3" paintOrder="stroke" pointerEvents="none">
+                            w = {fmt(Math.abs(w), 2)} mm
+                        </text>
+                    </>
+                );
+            })()}
         </svg>
     );
 }
@@ -1658,7 +2061,7 @@ function DeflectionStep({ beam, an, section, updateBeam }) {
                 {s.lamLim !== null && <Status ok={s.simpleOk} text={`Snellezza λ = ${fmt(s.lam, 1)} ${s.simpleOk ? "≤" : ">"} λ_lim = ${fmt(s.lamLim, 1)}${s.simpleOk ? " (calcolo omissibile)" : ""}`} />}
             </div>
             <div className="grid gap-4 lg:grid-cols-2">
-                <Card title={`Sezione ${section.label} – x = ${fmt(section.x, 2)} m`}>
+                <Card title={`Sezione ${section.label} – x = ${fmt(section.x, 3)} m`}>
                     {row(sub("M_qp (disposizione della campata)"), `${fmt(q.M, 2)} kNm`)}
                     {row(sub("Lato teso"), q.M >= 0 ? "inferiore" : "superiore")}
                     {row(sub("I_I (omogeneizzata, α_e − 1)"), `${fmt(q.I1 / 1e6, 0)} ·10⁶ mm⁴`)}
@@ -1718,7 +2121,7 @@ function formulaNodes(coefs, beam, an, pow) {
     return out;
 }
 
-function DiagramSVG({ beam, an, kind, show, onPick, onOpen }) {
+function DiagramSVG({ beam, an, kind, show, onPick, onOpen, cursor = null }) {
     const ref = useRef(null);
     const [hov, setHov] = useState(null);
     const L = an.Ltot, X = useX(L), H = 230, top = 22, bot = H - 22;
@@ -1775,6 +2178,7 @@ function DiagramSVG({ beam, an, kind, show, onPick, onOpen }) {
                     <text x={X(s.x)} y={top - 12} fontSize="9" textAnchor="middle" fill={C_SEC} fontWeight="bold">{s.label.length > 6 ? s.label.slice(0, 6) : s.label}</text>
                 </g>
             ))}
+            {cursor && <CursorMark X={X} {...cursor} y1={top - 4} y2={bot + 10} />}
             {/* puntatore con i valori */}
             {hov && hov.v && (() => {
                 const xs = X(hov.x), right = xs > W - 190;
@@ -1798,6 +2202,43 @@ function DiagramSVG({ beam, an, kind, show, onPick, onOpen }) {
 // ---------------------------------------------------------------------------
 // TABELLA DELLE SEZIONI (valori automatici, sovrascrivibili)
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// CURSORE DI SEZIONE: slider e input per spostare la sezione attiva (o la
+// posizione di una nuova), oltre al clic sui disegni
+// ---------------------------------------------------------------------------
+const C_CUR = "#0ea5e9";
+function CursorMark({ X, x, isNew, y1, y2 }) {
+    const xs = X(x);
+    return (
+        <g pointerEvents="none">
+            <line x1={xs} x2={xs} y1={y1} y2={y2} stroke={C_CUR} strokeWidth="2" strokeOpacity="0.8" strokeDasharray={isNew ? "6 3" : undefined} />
+            <path d={`M${xs - 6},${y1 - 9} h12 l-6,8 Z`} fill={C_CUR} />
+        </g>
+    );
+}
+function SectionCursorBar({ beam, L, curSec, curX, setCur, moveTo, onAdd, onOpen }) {
+    const field = "rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100";
+    return (
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-600">
+            <select value={curSec?.id ?? ""} onChange={(e) => setCur(e.target.value ? { id: e.target.value, x: null } : { id: null, x: curX })} aria-label="Sezione da spostare" className={`${field} cursor-pointer font-semibold text-slate-700`}>
+                <option value="">Nuova sezione</option>
+                {beam.sections.map((q) => <option key={q.id} value={q.id}>{q.label} · {fmt(q.x, 3)} m</option>)}
+            </select>
+            <input type="range" min="0" max={L} step="0.001" value={curX} onChange={(e) => moveTo(Number(e.target.value))} aria-label="Posizione della sezione"
+                className="h-1.5 min-w-[160px] flex-1 cursor-pointer accent-sky-500" />
+            <label className="inline-flex items-center gap-1">x
+                <input type="number" step="0.001" min="0" max={L} value={curX} onChange={(e) => { if (e.target.value !== "") moveTo(Number(e.target.value)); }} aria-label="Ascissa della sezione"
+                    className={`${field} w-20 text-right tabular-nums`} /> m
+            </label>
+            {curSec ? (
+                <button type="button" onClick={() => onOpen(curSec.id)} className="inline-flex items-center gap-1 rounded-lg bg-sky-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-sky-700" title={`Apri ${curSec.label}`}>Apri <ChevronRight size={12} /></button>
+            ) : (
+                <button type="button" onClick={onAdd} className="inline-flex items-center gap-1 rounded-lg border border-sky-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-sky-700 hover:bg-sky-50"><Plus size={12} /> Aggiungi sezione qui</button>
+            )}
+        </div>
+    );
+}
+
 function SectionsTable({ beam, an, upd, openSection }) {
     const setS = (id, fn) => upd((b) => ({ ...b, sections: b.sections.map((s) => (s.id === id ? fn(s) : s)) }));
     const del = (id) => upd((b) => ({ ...b, sections: b.sections.filter((s) => s.id !== id) }));
@@ -1825,7 +2266,7 @@ function SectionsTable({ beam, an, upd, openSection }) {
                                 return (
                                     <tr key={s.id} className="border-b border-slate-100 align-middle">
                                         <td className="py-1.5 pr-2"><input value={s.label} onChange={(e) => setS(s.id, (x) => ({ ...x, label: e.target.value }))} className="w-24 rounded-md border border-slate-200 px-1.5 py-1 text-xs" /></td>
-                                        <td className="py-1.5 pr-2"><input type="number" step="0.05" value={s.x} onChange={(e) => setS(s.id, (x) => ({ ...x, x: Math.min(an.Ltot, Math.max(0, num(e.target.value))) }))} className="w-16 rounded-md border border-slate-200 px-1.5 py-1 text-xs" /></td>
+                                        <td className="py-1.5 pr-2"><input type="number" step="0.001" value={s.x} onChange={(e) => setS(s.id, (x) => ({ ...x, x: Math.min(an.Ltot, Math.max(0, num(e.target.value))) }))} className="w-20 rounded-md border border-slate-200 px-1.5 py-1 text-right text-xs tabular-nums" /></td>
                                         {cols.map(([k]) => {
                                             const manual = s.over?.[k] !== undefined && s.over?.[k] !== null && s.over?.[k] !== "";
                                             return (
@@ -1865,18 +2306,28 @@ const STEPS = [
     { id: "defl", label: "5. Deformabilità (SLE)" },
 ];
 
-function SectionWorkspace({ beam, an, section, onBack, updateBeam }) {
+function SectionWorkspace({ beam, an, section, initialStep = null, onBack, updateBeam }) {
     const v = sectionValues(beam, an, section);
     const { b, h, c, fck, fyk } = beam.section;
     // momento di progetto: il più gravoso fra M⁺ e M⁻ (selezionabile)
     const signs = [v.Mpos > 1e-6 ? 1 : null, v.Mneg < -1e-6 ? -1 : null].filter(Boolean);
     const [sign, setSign] = useState(() => (Math.abs(v.Mneg) > Math.abs(v.Mpos) ? -1 : 1));
-    const [step, setStep] = useState("design");
+    const [step, setStep] = useState(() => (STEPS.some((q) => q.id === initialStep) ? initialStep : "design"));
+    // atterrando sulla pagina della sezione lo scroll riparte dall'alto
+    useLayoutEffect(() => {
+        const main = document.querySelector("main.page-scroll");
+        if (main) main.scrollTop = 0; else window.scrollTo(0, 0);
+    }, []);
     const MEd = sign > 0 ? v.Mpos : v.Mneg;
     const adopted = section.adopted?.[sign > 0 ? "pos" : "neg"] ?? null;
 
     const onAdopted = useCallback((a) => {
-        updateBeam((bm) => ({ ...bm, sections: bm.sections.map((s) => (s.id === section.id ? { ...s, adopted: { ...(s.adopted ?? {}), [sign > 0 ? "pos" : "neg"]: a } } : s)) }));
+        const k = sign > 0 ? "pos" : "neg";
+        updateBeam((bm) => {
+            const cur = bm.sections.find((s) => s.id === section.id);
+            if (!cur || JSON.stringify(cur.adopted?.[k] ?? null) === JSON.stringify(a)) return bm;
+            return { ...bm, sections: bm.sections.map((s) => (s.id === section.id ? { ...s, adopted: { ...(s.adopted ?? {}), [k]: a } } : s)) };
+        });
     }, [updateBeam, section.id, sign]);
 
     // armature inferiore/superiore della sezione adottata
@@ -1893,7 +2344,11 @@ function SectionWorkspace({ beam, an, section, onBack, updateBeam }) {
     const summary = checks.length ? { ok: checks.every((q) => q.ok), text: checks.map((q) => `${q.m > 0 ? "M⁺" : "M⁻"} ${fmt(q.util * 100, 0)}%`).join(" · ") } : null;
     const summaryKey = JSON.stringify(summary);
     useEffect(() => {
-        updateBeam((bm) => ({ ...bm, sections: bm.sections.map((s) => (s.id === section.id && JSON.stringify(s.check ?? null) !== summaryKey ? { ...s, check: summary } : s)) }));
+        updateBeam((bm) => {
+            const cur = bm.sections.find((s) => s.id === section.id);
+            if (!cur || JSON.stringify(cur.check ?? null) === summaryKey) return bm;
+            return { ...bm, sections: bm.sections.map((s) => (s.id === section.id ? { ...s, check: summary } : s)) };
+        });
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [summaryKey]);
 
@@ -1904,32 +2359,34 @@ function SectionWorkspace({ beam, an, section, onBack, updateBeam }) {
     const Mser = v.Mqp;                               // fessurazione: combinazione quasi permanente
     const crackInput = bars ? { b, h: hA, c, cPrime: c, As: Mser >= 0 ? bars.bot : bars.top, AsPrime: Mser >= 0 ? bars.top : bars.bot, phi: bars.phiT, MSer: Math.abs(Mser), fck, longTerm: true } : null;
     const key = (o) => JSON.stringify(o);
+    // verifica mostrata: quelle che richiedono l'armatura partono dal progetto
+    // finché la sezione non ne ha una adottata
+    const shown = step !== "design" && step !== "defl" && !bars ? "design" : step;
 
     return (
         <div className="space-y-4">
+            {/* intestazione della sezione: sticky sotto il titolo della pagina */}
+            <div className="sticky z-20 bg-slate-100 pb-1" style={{ top: "var(--tool-header-h, 0px)" }}>
             <Card>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="flex items-center gap-3">
                         <button type="button" onClick={onBack} className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50"><ArrowLeft size={14} /> {beam.name}</button>
                         <div>
                             <p className="text-sm font-bold text-slate-800">{beam.name} › {section.label}</p>
-                            <p className="text-xs text-slate-500">x = {fmt(section.x, 2)} m · sezione {b}×{h} mm · copriferro {c} mm</p>
+                            <p className="text-xs text-slate-500">x = {fmt(section.x, 3)} m · sezione {b}×{h} mm · copriferro {c} mm</p>
                         </div>
                     </div>
-                    <div className="flex flex-wrap gap-2 text-xs">
-                        <Chip col={C_POS} label={<>M<sup>+</sup><sub>Ed</sub></>} val={`${fmt(v.Mpos, 1)} kNm`} />
-                        <Chip col={C_NEG} label={<>M<sup>−</sup><sub>Ed</sub></>} val={`${fmt(v.Mneg, 1)} kNm`} />
-                        <Chip col={C_V} label={<>V<sub>Ed</sub></>} val={`${fmt(v.V, 1)} kN`} />
-                        <Chip col={C_SLE} label="M q.p." val={`${fmt(v.Mqp, 1)} kNm`} />
-                    </div>
-                </div>
-                <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-3">
                     <div className="flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1">
                         {STEPS.map((s) => (
                             <button key={s.id} type="button" onClick={() => setStep(s.id)} disabled={s.id !== "design" && s.id !== "defl" && !bars}
-                                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${step === s.id ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>{s.label}</button>
+                                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${shown === s.id ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>{s.label}</button>
                         ))}
                     </div>
+                </div>
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-3">
+                    {bars
+                        ? <span className="text-[11px] text-slate-400">Armatura adottata: inferiore {fmt(bars.bot, 0)} mm², superiore {fmt(bars.top, 0)} mm²</span>
+                        : <span className="text-[11px] text-slate-500">Completa il progetto: l'armatura adottata passa automaticamente alle verifiche.</span>}
                     {signs.length > 1 && (
                         <div className="flex items-center gap-2 text-xs text-slate-600">
                             Momento di progetto:
@@ -1943,25 +2400,19 @@ function SectionWorkspace({ beam, an, section, onBack, updateBeam }) {
                         </div>
                     )}
                 </div>
-                {checks.length > 0 && (
-                    <div className="mt-3 flex flex-wrap gap-2">
-                        {checks.map((q) => <Status key={q.m} ok={q.ok} text={`Flessione ${q.m > 0 ? "M⁺" : "M⁻"} = ${fmt(q.m, 1)} kNm: M_Rd = ${fmt(q.MRd, 1)} kNm (${fmt(q.util * 100, 0)}%)`} />)}
-                        <span className="text-[11px] text-slate-400">con l'armatura adottata: inferiore {fmt(bars.bot, 0)} mm², superiore {fmt(bars.top, 0)} mm²</span>
-                    </div>
-                )}
-                {!bars && <p className="mt-2 text-[11px] text-slate-500">Completa il progetto: l'armatura adottata passa automaticamente alle verifiche.</p>}
             </Card>
+            </div>
 
-            {step === "design" && <SectionDesignTool key={`d${sign}${key(designInput)}`} initialInput={designInput} onAdopted={onAdopted} />}
-            {step === "bending" && verifyInput && <VerifySectionTool key={`v${key(verifyInput)}`} initialInput={verifyInput} />}
-            {step === "shear" && shearInput && <VerifyShearTool key={`s${key(shearInput)}`} initialInput={shearInput} />}
-            {step === "crack" && crackInput && (
+            {shown === "design" && <SectionDesignTool key={`d${sign}${key(designInput)}`} initialInput={designInput} onAdopted={onAdopted} />}
+            {shown === "bending" && verifyInput && <VerifySectionTool key={`v${key(verifyInput)}`} initialInput={verifyInput} />}
+            {shown === "shear" && shearInput && <VerifyShearTool key={`s${key(shearInput)}`} initialInput={shearInput} />}
+            {shown === "crack" && crackInput && (
                 <>
                     <p className="text-xs text-slate-500">{sub(`Fessurazione con la combinazione quasi permanente: M_qp = ${fmt(Mser, 1)} kNm (rara: ${fmt(v.Mrara, 1)} kNm). Armatura tesa dal lato ${Mser >= 0 ? "inferiore" : "superiore"}.`)}</p>
                     <VerifyCrackTool key={`c${key(crackInput)}`} initialInput={crackInput} />
                 </>
             )}
-            {step === "defl" && <DeflectionStep beam={beam} an={an} section={section} updateBeam={updateBeam} />}
+            {shown === "defl" && <DeflectionStep beam={beam} an={an} section={section} updateBeam={updateBeam} />}
         </div>
     );
 }
@@ -2014,9 +2465,6 @@ function IconBtn({ children, onClick, title }) {
 }
 function MiniBtn({ children, onClick, title }) {
     return <button type="button" onClick={onClick} title={title} aria-label={title} className="ml-1 rounded-md p-1 text-slate-500 transition hover:bg-slate-100 hover:text-slate-800">{children}</button>;
-}
-function Chip({ col, label, val }) {
-    return <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1"><span className="h-2 w-2 rounded-full" style={{ background: col }} /><span className="text-slate-500">{typeof label === "string" ? sub(label) : label}</span><b className="text-slate-800">{val}</b></span>;
 }
 function Status({ ok, text }) {
     return <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold ${ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>{ok ? <CheckCircle2 size={12} /> : <XCircle size={12} />}{sub(text)}</span>;
