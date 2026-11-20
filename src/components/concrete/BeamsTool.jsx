@@ -283,11 +283,13 @@ export default function BeamsTool() {
                 { key: "h", label: "Altezza h", unit: "mm", type: "number", value: 500, min: 1 },
                 { key: "n", label: "Numero di campate", type: "number", value: 2, min: 1, step: 1 },
                 { key: "L", label: "Luce di ogni campata", unit: "m", type: "number", value: 5, min: 0.1 },
-                { key: "scheme", label: "Vincoli di partenza", type: "select", value: "pin", span: 2, options: [
-                    { value: "pin", label: "Appoggi (trave continua)" },
-                    { value: "fixed", label: "Incastri alle estremità, appoggi intermedi" },
-                    { value: "cantilever", label: "Incastro a sinistra, estremo destro libero" },
-                ] },
+                {
+                    key: "scheme", label: "Vincoli di partenza", type: "select", value: "pin", span: 2, options: [
+                        { value: "pin", label: "Appoggi (trave continua)" },
+                        { value: "fixed", label: "Incastri alle estremità, appoggi intermedi" },
+                        { value: "cantilever", label: "Incastro a sinistra, estremo destro libero" },
+                    ]
+                },
             ]} note="Campate, vincoli, continuità e carichi si modificano poi nella pagina della trave." />
     ) : form === "col" ? (
         <FormModal title="Nuovo pilastro" submit="Crea il pilastro" onClose={() => setForm(null)} onSubmit={(v) => { createColumn(v); setForm(null); }}
@@ -347,7 +349,7 @@ export default function BeamsTool() {
             <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.3fr)_minmax(0,1fr)]">
                 <FloorsColumn floors={floors} value={floorSel} onChange={changeFloor} onAdd={addFloor} onRename={renameFloor} onDelete={delFloor}
                     counts={Object.fromEntries(floors.map((f) => [f.id, { b: beams.filter((b) => floorOf(b) === f.id).length, c: columns.filter((c) => floorOf(c) === f.id).length }]))}
- />
+                />
                 <BeamsColumn beams={visible} activeId={selected?.id} onSelect={setSelId} onOpen={openBeam} onAdd={addBeam} onDup={dupBeam} onDel={delBeam}
                     noFloor={!floorSel} floorTitle={floorSel ? floorName(floorSel) : "nessun piano"} />
                 <PillarsColumn columns={visibleCols} activeId={colSel} onSelect={setColSel} onOpen={openCol} onAdd={addColumn} onDel={delColumn}
@@ -474,20 +476,20 @@ function PageBar({ onBack, crumbs, sub: subtitle, onDelete = null, deleteLabel =
     // insieme restano in cima all'area che scorre
     return (
         <div className="sticky z-20 bg-slate-100 pb-1" style={{ top: "var(--tool-header-h, 0px)" }}>
-        <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
-            <button type="button" onClick={onBack} className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50">
-                <ArrowLeft size={14} /> Struttura
-            </button>
-            <div className="min-w-0">
-                <p className="truncate text-sm font-bold text-slate-800">{crumbs.join(" › ")}</p>
-                {subtitle && <p className="truncate text-xs text-slate-500">{subtitle}</p>}
-            </div>
-            {onDelete && (
-                <button type="button" onClick={onDelete} className="ml-auto inline-flex items-center gap-1.5 rounded-xl border border-red-200 px-3 py-1.5 text-xs font-semibold text-red-600 transition hover:bg-red-50">
-                    <Trash2 size={14} /> {deleteLabel}
+            <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+                <button type="button" onClick={onBack} className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50">
+                    <ArrowLeft size={14} /> Struttura
                 </button>
-            )}
-        </div>
+                <div className="min-w-0">
+                    <p className="truncate text-sm font-bold text-slate-800">{crumbs.join(" › ")}</p>
+                    {subtitle && <p className="truncate text-xs text-slate-500">{subtitle}</p>}
+                </div>
+                {onDelete && (
+                    <button type="button" onClick={onDelete} className="ml-auto inline-flex items-center gap-1.5 rounded-xl border border-red-200 px-3 py-1.5 text-xs font-semibold text-red-600 transition hover:bg-red-50">
+                        <Trash2 size={14} /> {deleteLabel}
+                    </button>
+                )}
+            </div>
         </div>
     );
 }
@@ -656,7 +658,7 @@ function BeamsColumn({ beams, activeId, onSelect, onOpen, onAdd, onDup, onDel, n
                             <div className="flex w-full items-start justify-between gap-2">
                                 <div className="min-w-0">
                                     <p className="truncate text-sm font-semibold text-slate-800">{b.name}
-</p>
+                                    </p>
                                     <p className="text-[11px] text-slate-500">{b.spans.length} {b.spans.length === 1 ? "campata" : "campate"} · L = {fmt(L, 2)} m · {b.section.b}×{b.section.h} · {b.sections.length} sez.</p>
                                 </div>
                                 <div className="flex shrink-0 opacity-50 transition group-hover:opacity-100 group-focus-within:opacity-100">
@@ -701,7 +703,7 @@ function PillarsColumn({ columns, activeId, onSelect, onOpen, onAdd, onDel, noFl
                             </svg>
                             <div className="min-w-0 flex-1">
                                 <p className="truncate text-sm font-semibold text-slate-800">{c.name}
-</p>
+                                </p>
                                 <p className="text-[11px] text-slate-500">{c.b}×{c.h} mm · H = {fmt(num(c.H), 2)} m</p>
                             </div>
                             <div className="flex shrink-0 opacity-50 transition group-hover:opacity-100 group-focus-within:opacity-100">
@@ -873,9 +875,9 @@ function BeamEditor({ beam, an, upd, addSection, addCharacteristic, openSection,
                             {barFor("design")}
                             {showReac && (
                                 <p className="mt-1 text-[11px] leading-4 text-slate-500">
-                                    {sub("Reazioni allo SLU con tutte le campate caricate: q = q_d = γ_G1·g_1 + γ_G2·g_2 + γ_Q·q")}
-                                    {" "}({an.qd.map((q, k) => `${an.qd.length > 1 ? `campata ${k + 1}: ` : ""}${fmt(q, 2)} kN/m`).join(", ")}).
-                                    {" "}Se l'alternanza dei variabili dà una reazione maggiore, sotto la freccia compare anche il massimo dell'inviluppo.
+                                    {/* {sub("Reazioni allo SLU con tutte le campate caricate: q = q_d = γ_G1·g_1 + γ_G2·g_2 + γ_Q·q")} */}
+                                    {/* {" "}({an.qd.map((q, k) => `${an.qd.length > 1 ? `campata ${k + 1}: ` : ""}${fmt(q, 2)} kN/m`).join(", ")}). */}
+                                    {/* {" "}Se l'alternanza dei variabili dà una reazione maggiore, sotto la freccia compare anche il massimo dell'inviluppo. */}
                                 </p>
                             )}
                         </Card>
@@ -946,20 +948,20 @@ function CombinationCard({ beam, upd, an }) {
                 <button type="button" onClick={() => setInfo(true)} title="Formule delle combinazioni" aria-label="Formule delle combinazioni di carico"
                     className="rounded-full p-0.5 text-slate-400 transition hover:bg-sky-50 hover:text-sky-600"><Info size={15} /></button>
             </span>} subtitle={sub("Carichi distribuiti in kN/m: g_1 strutturali (più il peso proprio, se attivo), g_2 permanenti non strutturali, q_k variabile.")} right={
-            <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold text-slate-500">
-                <button type="button" onClick={() => setList(true)} title="Elenco delle combinazioni eseguite, con la più gravosa"
-                    className="inline-flex items-center gap-1.5 rounded-full border border-slate-300 bg-white px-3 py-1 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50">
-                    <ListChecks size={13} /> Tutte le combinazioni <span className="rounded-full bg-slate-100 px-1.5 text-[10px] text-slate-500">{nComb}</span>
-                </button>
-                {/* coefficienti parziali compatti nell'intestazione */}
-                {[["g1", "γ_G1"], ["g2", "γ_G2"], ["q", "γ_Q"]].map(([k, l]) => (
-                    <label key={k} className="inline-flex items-center gap-1">
-                        {sub(l)}
-                        <input type="number" step="0.05" value={g[k]} onChange={(e) => setG(k)(num(e.target.value))} aria-label={l}
-                            className="w-14 rounded-md border border-slate-200 px-1.5 py-0.5 text-right text-xs tabular-nums text-slate-700 outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100" />
-                    </label>
-                ))}
-            </div>}>
+                <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold text-slate-500">
+                    <button type="button" onClick={() => setList(true)} title="Elenco delle combinazioni eseguite, con la più gravosa"
+                        className="inline-flex items-center gap-1.5 rounded-full border border-slate-300 bg-white px-3 py-1 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50">
+                        <ListChecks size={13} /> Tutte le combinazioni <span className="rounded-full bg-slate-100 px-1.5 text-[10px] text-slate-500">{nComb}</span>
+                    </button>
+                    {/* coefficienti parziali compatti nell'intestazione */}
+                    {[["g1", "γ_G1"], ["g2", "γ_G2"], ["q", "γ_Q"]].map(([k, l]) => (
+                        <label key={k} className="inline-flex items-center gap-1">
+                            {sub(l)}
+                            <input type="number" step="0.05" value={g[k]} onChange={(e) => setG(k)(num(e.target.value))} aria-label={l}
+                                className="w-14 rounded-md border border-slate-200 px-1.5 py-0.5 text-right text-xs tabular-nums text-slate-700 outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100" />
+                        </label>
+                    ))}
+                </div>}>
             <div>
                 {/* carichi per campata */}
                 <div className="scroll-thin-x pb-1">
@@ -1469,9 +1471,9 @@ function CrackCard({ beam, an, onPick, onSelect = null, onOpen, cursor = null, b
             <CrackSVG an={an} combo={combo} Mcr={Mcr} marks={showSections ? marks : []} onPick={onPick} onSelect={onSelect} onOpen={onOpen} cursor={cursor} />
             <Legend items={[[C_SLE, `M ${cb.label.toLowerCase()} (max / min)`], [C_CR, `±M_cr = ${fmt(Mcr, 1)} kNm (f_ctm/1,2 su b·h²/6)`, true], [C_CRZONE, "zona fessurata (|M| > M_cr)"]]} />
             {bar}
-            <p className="mt-2 text-[11px] leading-4 text-slate-500">
+            {/* <p className="mt-2 text-[11px] leading-4 text-slate-500">
                 {sub("Nelle sezioni progettate (cascata) w_k è calcolato con l'armatura adottata e la combinazione scelta (quasi permanente: carichi di lunga durata, k_t = 0,4); nelle sezioni non ancora progettate e fessurate compare «da progettare».")}
-            </p>
+            </p> */}
         </Card>
     );
 }
@@ -2098,7 +2100,8 @@ function DeformedBeamSVG({ beam, an, res, amp }) {
 
 function DeflectionSVG({ beam, an, res, focusX, onPick = null, onSelect = null, onOpen = null, cursor = null, showSections = true }) {
     const ref = useRef(null);
-    const L = an.Ltot, X = useX(L), H = 210, top = 26, bot = H - 26;
+    // in basso lo spazio per le quote delle campate
+    const L = an.Ltot, X = useX(L), H = 238, top = 26, bot = H - 54;
     // freccia nel punto x (curva della campata che lo contiene)
     const wAt = (x) => {
         const j = Math.max(0, an.xs0.findLastIndex((x0) => x >= x0 - 1e-9));
@@ -2138,6 +2141,18 @@ function DeflectionSVG({ beam, an, res, focusX, onPick = null, onSelect = null, 
                         <text x={xm > W - 170 ? xm - 6 : xm < 170 ? xm + 6 : xm} y={s.f >= 0 ? ym + 16 : ym - 8} fontSize="10" textAnchor={xm > W - 170 ? "end" : xm < 170 ? "start" : "middle"} fill={col} fontWeight="bold" stroke="#fff" strokeWidth="3" paintOrder="stroke">
                             {fmt(Math.abs(s.f), 2)} mm
                         </text>
+                    </g>
+                );
+            })}
+            {/* quote delle campate (come nello schema statico) */}
+            {beam.spans.map((sp, j) => {
+                const x0 = X(an.xs0[j]), x1 = X(an.xs0[j] + sp.L);
+                return (
+                    <g key={`q${j}`}>
+                        <line x1={x0} x2={x1} y1={H - 18} y2={H - 18} stroke="#94a3b8" strokeWidth="0.8" />
+                        <line x1={x0} x2={x0} y1={H - 23} y2={H - 13} stroke="#94a3b8" strokeWidth="0.8" />
+                        <line x1={x1} x2={x1} y1={H - 23} y2={H - 13} stroke="#94a3b8" strokeWidth="0.8" />
+                        <text x={(x0 + x1) / 2} y={H - 22} fontSize="10.5" textAnchor="middle" fill="#334155" fontWeight="600">L = {fmt(num(sp.L), 2)} m</text>
                     </g>
                 );
             })}
@@ -2369,54 +2384,54 @@ function SectionsModal({ beam, an, upd, openSection, onClose }) {
                     <button type="button" onClick={close} aria-label="Chiudi" className="rounded-full p-1.5 text-slate-500 hover:bg-slate-100"><X size={16} /></button>
                 </div>
                 <div className="scroll-thin min-h-0 flex-1 py-4 pl-5 pr-4">
-            {beam.sections.length === 0 ? (
-                <p className="text-sm text-slate-500">Nessuna sezione: clicca sullo schema o sui diagrammi, oppure usa «Sezioni caratteristiche».</p>
-            ) : (
-                <div className="scroll-thin-x pb-1">
-                    <table className="w-full min-w-[720px] text-xs">
-                        <thead>
-                            <tr className="border-b border-slate-200 text-left text-[11px] text-slate-500">
-                                <th className="py-1.5 pr-2 font-semibold">Sezione</th>
-                                <th className="py-1.5 pr-2 font-semibold">x [m]</th>
-                                {cols.map(([k, l, u]) => <th key={k} className="py-1.5 pr-2 font-semibold">{typeof l === "string" ? sub(l) : l} <span className="font-normal text-slate-400">[{u}]</span></th>)}
-                                <th className="py-1.5 font-semibold">Stato</th>
-                                <th />
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {beam.sections.map((s) => {
-                                const v = sectionValues(beam, an, s);
-                                const st = s.check;
-                                return (
-                                    <tr key={s.id} className="border-b border-slate-100 align-middle">
-                                        <td className="py-1.5 pr-2"><input value={s.label} onChange={(e) => setS(s.id, (x) => ({ ...x, label: e.target.value }))} className="w-24 rounded-md border border-slate-200 px-1.5 py-1 text-xs" /></td>
-                                        <td className="py-1.5 pr-2"><input type="number" step="0.001" value={s.x} onChange={(e) => setS(s.id, (x) => ({ ...x, x: Math.min(an.Ltot, Math.max(0, num(e.target.value))) }))}
-                                            disabled={!!charRef(s)} title={charRef(s) ? "Sezione caratteristica: posizione fissata dalla trave" : undefined}
-                                            className="w-20 rounded-md border border-slate-200 px-1.5 py-1 text-right text-xs tabular-nums disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500" /></td>
-                                        {cols.map(([k]) => {
-                                            const manual = s.over?.[k] !== undefined && s.over?.[k] !== null && s.over?.[k] !== "";
-                                            return (
-                                                <td key={k} className="py-1.5 pr-2">
-                                                    <input type="number" value={manual ? s.over[k] : ""} placeholder={fmt(v[k], 1)}
-                                                        onChange={(e) => setS(s.id, (x) => ({ ...x, over: { ...x.over, [k]: e.target.value === "" ? null : e.target.value } }))}
-                                                        title={manual ? "Valore inserito a mano (svuota per tornare al calcolo)" : "Valore calcolato: scrivi per sovrascriverlo"}
-                                                        className={`w-20 rounded-md border px-1.5 py-1 text-xs tabular-nums ${manual ? "border-amber-300 bg-amber-50 font-semibold text-amber-800" : "border-slate-200 placeholder:text-slate-700"}`} />
-                                                </td>
-                                            );
-                                        })}
-                                        <td className="py-1.5 pr-2">{st ? <Status ok={st.ok} text={st.text} /> : <span className="text-slate-400">da fare</span>}</td>
-                                        <td className="py-1.5 text-right whitespace-nowrap">
-                                            <button type="button" onClick={() => close(() => openSection(s.id))} className="inline-flex shrink-0 items-center gap-0.5 rounded-lg border border-sky-200 bg-sky-50 px-2 py-1 text-[11px] font-semibold text-sky-700 transition hover:bg-sky-100" title={`Apri ${s.label}`}>Apri <ChevronRight size={12} /></button>
-                                            <MiniBtn title="Elimina sezione" onClick={() => del(s.id)}><Trash2 size={12} /></MiniBtn>
-                                        </td>
+                    {beam.sections.length === 0 ? (
+                        <p className="text-sm text-slate-500">Nessuna sezione: clicca sullo schema o sui diagrammi, oppure usa «Sezioni caratteristiche».</p>
+                    ) : (
+                        <div className="scroll-thin-x pb-1">
+                            <table className="w-full min-w-[720px] text-xs">
+                                <thead>
+                                    <tr className="border-b border-slate-200 text-left text-[11px] text-slate-500">
+                                        <th className="py-1.5 pr-2 font-semibold">Sezione</th>
+                                        <th className="py-1.5 pr-2 font-semibold">x [m]</th>
+                                        {cols.map(([k, l, u]) => <th key={k} className="py-1.5 pr-2 font-semibold">{typeof l === "string" ? sub(l) : l} <span className="font-normal text-slate-400">[{u}]</span></th>)}
+                                        <th className="py-1.5 font-semibold">Stato</th>
+                                        <th />
                                     </tr>
-                                );
-                            })}
-                        </tbody>
-                    </table>
-                    <p className="mt-2 text-[11px] text-slate-400">Le celle vuote mostrano i valori calcolati (inviluppo{beam.useTranslated !== false ? " traslato" : ""} per M⁺/M⁻); scrivendo un valore lo si sovrascrive (in ambra).</p>
-                </div>
-            )}
+                                </thead>
+                                <tbody>
+                                    {beam.sections.map((s) => {
+                                        const v = sectionValues(beam, an, s);
+                                        const st = s.check;
+                                        return (
+                                            <tr key={s.id} className="border-b border-slate-100 align-middle">
+                                                <td className="py-1.5 pr-2"><input value={s.label} onChange={(e) => setS(s.id, (x) => ({ ...x, label: e.target.value }))} className="w-24 rounded-md border border-slate-200 px-1.5 py-1 text-xs" /></td>
+                                                <td className="py-1.5 pr-2"><input type="number" step="0.001" value={s.x} onChange={(e) => setS(s.id, (x) => ({ ...x, x: Math.min(an.Ltot, Math.max(0, num(e.target.value))) }))}
+                                                    disabled={!!charRef(s)} title={charRef(s) ? "Sezione caratteristica: posizione fissata dalla trave" : undefined}
+                                                    className="w-20 rounded-md border border-slate-200 px-1.5 py-1 text-right text-xs tabular-nums disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500" /></td>
+                                                {cols.map(([k]) => {
+                                                    const manual = s.over?.[k] !== undefined && s.over?.[k] !== null && s.over?.[k] !== "";
+                                                    return (
+                                                        <td key={k} className="py-1.5 pr-2">
+                                                            <input type="number" value={manual ? s.over[k] : ""} placeholder={fmt(v[k], 1)}
+                                                                onChange={(e) => setS(s.id, (x) => ({ ...x, over: { ...x.over, [k]: e.target.value === "" ? null : e.target.value } }))}
+                                                                title={manual ? "Valore inserito a mano (svuota per tornare al calcolo)" : "Valore calcolato: scrivi per sovrascriverlo"}
+                                                                className={`w-20 rounded-md border px-1.5 py-1 text-xs tabular-nums ${manual ? "border-amber-300 bg-amber-50 font-semibold text-amber-800" : "border-slate-200 placeholder:text-slate-700"}`} />
+                                                        </td>
+                                                    );
+                                                })}
+                                                <td className="py-1.5 pr-2">{st ? <Status ok={st.ok} text={st.text} /> : <span className="text-slate-400">da fare</span>}</td>
+                                                <td className="py-1.5 text-right whitespace-nowrap">
+                                                    <button type="button" onClick={() => close(() => openSection(s.id))} className="inline-flex shrink-0 items-center gap-0.5 rounded-lg border border-sky-200 bg-sky-50 px-2 py-1 text-[11px] font-semibold text-sky-700 transition hover:bg-sky-100" title={`Apri ${s.label}`}>Apri <ChevronRight size={12} /></button>
+                                                    <MiniBtn title="Elimina sezione" onClick={() => del(s.id)}><Trash2 size={12} /></MiniBtn>
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                            <p className="mt-2 text-[11px] text-slate-400">Le celle vuote mostrano i valori calcolati (inviluppo{beam.useTranslated !== false ? " traslato" : ""} per M⁺/M⁻); scrivendo un valore lo si sovrascrive (in ambra).</p>
+                        </div>
+                    )}
                 </div>
             </div>
         </div>
@@ -2495,40 +2510,41 @@ function SectionWorkspace({ beam, an, section, initialStep = null, onBack, updat
         <div className="space-y-4">
             {/* intestazione della sezione: sticky sotto il titolo della pagina */}
             <div className="sticky z-20 bg-slate-100 pb-1" style={{ top: "var(--tool-header-h, 0px)" }}>
-            <Card>
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div className="flex items-center gap-3">
-                        <button type="button" onClick={onBack} className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50"><ArrowLeft size={14} /> {beam.name}</button>
-                        <div>
-                            <p className="text-sm font-bold text-slate-800">{beam.name} › {section.label}</p>
-                            <p className="text-xs text-slate-500">x = {fmt(section.x, 3)} m · sezione {b}×{h} mm · copriferro {c} mm</p>
-                        </div>
-                    </div>
-                    <div className="flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1">
-                        {STEPS.map((s) => (
-                            <button key={s.id} type="button" onClick={() => setStep(s.id)} disabled={s.id !== "design" && s.id !== "defl" && !bars}
-                                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${shown === s.id ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>{s.label}</button>
-                        ))}
-                    </div>
-                </div>
-                <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-3">
-                    {bars
-                        ? <span className="text-[11px] text-slate-400">Armatura adottata: inferiore {fmt(bars.bot, 0)} mm², superiore {fmt(bars.top, 0)} mm²</span>
-                        : <span className="text-[11px] text-slate-500">Completa il progetto: l'armatura adottata passa automaticamente alle verifiche.</span>}
-                    {signs.length > 1 && (
-                        <div className="flex items-center gap-2 text-xs text-slate-600">
-                            Momento di progetto:
-                            <div className="inline-flex rounded-lg bg-slate-100 p-0.5">
-                                {signs.map((sg) => (
-                                    <button key={sg} type="button" onClick={() => setSign(sg)} className={`rounded-md px-2 py-1 font-semibold ${sign === sg ? "bg-white shadow-sm" : "text-slate-500"}`} style={{ color: sign === sg ? (sg > 0 ? C_POS : C_NEG) : undefined }}>
-                                        {sg > 0 ? `M⁺ = ${fmt(v.Mpos, 1)}` : `M⁻ = ${fmt(v.Mneg, 1)}`}
-                                    </button>
-                                ))}
+                <Card>
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex items-center gap-3">
+                            <button type="button" onClick={onBack} className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50"><ArrowLeft size={14} /> {beam.name}</button>
+                            <div>
+                                <p className="text-sm font-bold text-slate-800">{beam.name} › {section.label}</p>
+                                <p className="text-xs text-slate-500">x = {fmt(section.x, 3)} m · sezione {b}×{h} mm · copriferro {c} mm</p>
                             </div>
                         </div>
-                    )}
-                </div>
-            </Card>
+                        <div className="flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1">
+                            {STEPS.map((s) => (
+                                <button key={s.id} type="button" onClick={() => setStep(s.id)} disabled={s.id !== "design" && s.id !== "defl" && !bars}
+                                    className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${shown === s.id ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>{s.label}</button>
+                            ))}
+                        </div>
+                    </div>
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-3">
+                        {/* {bars
+                            ? <span className="text-[11px] text-slate-400">Armatura adottata: inferiore {fmt(bars.bot, 0)} mm², superiore {fmt(bars.top, 0)} mm²</span>
+                            : <span className="text-[11px] text-slate-500">Completa il progetto: l'armatura adottata passa automaticamente alle verifiche.</span>
+                        } */}
+                        {signs.length > 1 && (
+                            <div className="flex items-center gap-2 text-xs text-slate-600">
+                                Momento di progetto:
+                                <div className="inline-flex rounded-lg bg-slate-100 p-0.5">
+                                    {signs.map((sg) => (
+                                        <button key={sg} type="button" onClick={() => setSign(sg)} className={`rounded-md px-2 py-1 font-semibold ${sign === sg ? "bg-white shadow-sm" : "text-slate-500"}`} style={{ color: sign === sg ? (sg > 0 ? C_POS : C_NEG) : undefined }}>
+                                            {sg > 0 ? `M⁺ = ${fmt(v.Mpos, 1)}` : `M⁻ = ${fmt(v.Mneg, 1)}`}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </Card>
             </div>
 
             {shown === "design" && <SectionDesignTool key={`d${sign}${key(designInput)}`} initialInput={designInput} onAdopted={onAdopted} />}

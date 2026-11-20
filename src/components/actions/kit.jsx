@@ -3,7 +3,8 @@
 // Primitivi UI condivisi dagli strumenti della materia "Azioni sulle
 // strutture" (accento verde, coerente con la materia).
 
-import { CheckCircle2, XCircle, Info } from "lucide-react";
+import { useState } from "react";
+import { CheckCircle2, XCircle, Info, ChevronDown, RotateCcw } from "lucide-react";
 
 export function fmt(v, dec = 2) {
     if (v === undefined || v === null || Number.isNaN(v) || !Number.isFinite(v)) return "-";
@@ -111,6 +112,48 @@ export function VerdictBanner({ ok, title, subtitle }) {
             <div>
                 <p className="text-base font-bold text-slate-800">{title}</p>
                 {subtitle && <p className="mt-0.5 text-sm text-slate-600">{subtitle}</p>}
+            </div>
+        </div>
+    );
+}
+
+// sezione richiudibile (come nel calcestruzzo): apertura animata con una griglia CSS;
+// a sezione aperta il contenuto può sporgere (es. menu a tendina della ricerca)
+export function Section({ title, open, onToggle, right = null, children }) {
+    const [settled, setSettled] = useState(true);
+    const [prevOpen, setPrevOpen] = useState(open);
+    if (prevOpen !== open) { setPrevOpen(open); setSettled(false); }
+    return (
+        <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex items-center justify-between gap-2">
+                <button type="button" aria-expanded={open} onClick={onToggle}
+                    className="flex flex-1 cursor-pointer items-center justify-between gap-2 text-left text-sm font-bold text-slate-800">
+                    {title}
+                    <ChevronDown size={16} aria-hidden="true" className={`text-slate-400 transition-transform duration-300 ${open ? "" : "-rotate-90"}`} />
+                </button>
+                {right}
+            </div>
+            <div aria-hidden={!open} inert={!open} onTransitionEnd={(e) => { if (e.target === e.currentTarget) setSettled(true); }}
+                className={`grid transition-[grid-template-rows] duration-300 ease-in-out motion-reduce:transition-none ${open ? "grid-rows-[1fr]" : "grid-rows-[0fr]"}`}>
+                <div className={`min-h-0 ${open && settled ? "overflow-visible" : "overflow-hidden"}`}>
+                    <div className="pt-3">{children}</div>
+                </div>
+            </div>
+        </section>
+    );
+}
+
+// barra sopra le sezioni: valori predefiniti, apri tutti, collassa tutti
+export function SectionsToolbar({ onReset, onAll }) {
+    const btn = "rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50";
+    return (
+        <div className="flex items-center justify-between gap-2">
+            <button type="button" onClick={onReset} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50">
+                <RotateCcw size={14} /> Valori predefiniti
+            </button>
+            <div className="flex gap-2">
+                <button type="button" onClick={() => onAll(true)} className={btn}>Apri tutti</button>
+                <button type="button" onClick={() => onAll(false)} className={btn}>Collassa tutti</button>
             </div>
         </div>
     );
